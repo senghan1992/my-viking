@@ -351,3 +351,21 @@ def test_trace_output_is_the_answer_not_the_assembled_context(coding):
 
     coding.commit("app", "테스트 어떻게?", "pytest -q 입니다", trace_id=prepared.trace_id)
     assert coding.trace(prepared.trace_id)["output"] == "pytest -q 입니다"
+
+
+def test_alias_bound_by_hand_resolves_across_url_forms(jarvis):
+    """`jv link`/UI 가 저장한 별칭도 ssh/https 어느 형태로 물어도 해석돼야 한다.
+
+    저장은 원문, 조회는 정규화 — 프로젝트 이름이 repo basename 과 다르면
+    같은 remote 를 그대로 물어도 영영 해석되지 않았다."""
+    jarvis.init_project("my-backend-svc")
+    jarvis.bind_alias("git@github.com:me/backend.git", "my-backend-svc")
+
+    for form in (
+        "git@github.com:me/backend.git",
+        "https://github.com/me/backend",
+        "https://github.com/me/backend.git",
+    ):
+        r = jarvis.resolve_project(repo=form)
+        assert r["project"] == "my-backend-svc"
+        assert r["resolved_by"] == "repo"

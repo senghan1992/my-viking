@@ -492,7 +492,10 @@ def test_connection_reports_bound_repos(client):
     client.post("/projects", json={"project": "backend"})
     client.post("/aliases", json={"alias": "git@github.com:me/backend.git", "project": "backend"})
     c = client.get("/projects/backend/connection").json()
-    assert [a["alias"] for a in c["aliases"]] == ["git@github.com:me/backend.git"]
+    # Stored in the canonical form lookups use, so ssh- and https-form remotes
+    # both resolve. Storing the raw string meant an alias could fail to match
+    # even the exact remote it was created from.
+    assert [a["alias"] for a in c["aliases"]] == ["github.com/me/backend"]
 
 
 def test_project_cards_report_what_the_ui_shows(client):

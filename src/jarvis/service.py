@@ -1411,8 +1411,11 @@ class Jarvis:
     # project resolution (same repo -> same project, from any machine)
     # ==================================================================
     def bind_alias(self, alias: str, project: str, kind: str = "repo") -> None:
+        # Stored normalised, because lookups are: `resolve_project` normalises
+        # the incoming remote/path before searching, so a raw ssh-form alias
+        # bound here would never match — not even against itself.
         self.store.ensure_project(project)
-        self.tracer.bind_alias(alias, project, kind)
+        self.tracer.bind_alias(_normalise_alias(alias), project, kind)
 
     def aliases(self, project: str = "") -> list[dict[str, Any]]:
         return self.tracer.aliases(project)
