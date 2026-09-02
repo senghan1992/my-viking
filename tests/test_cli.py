@@ -389,3 +389,31 @@ def test_agent_config_shows_hooks_for_claude_code(jv, capsys):
     assert "자동 캡처 훅" in out
     assert "jv hook session-start" in out
     assert "`jarvis_commit` 은 호출하지 않는다" in out
+
+
+def test_backup_cli_config_run_list_restore(jv, jarvis, home, tmp_path, capsys):
+    jarvis.init_project("app", template="coding")
+    jarvis.remember("app", "commands", "테스트", "pytest -q")
+    remote = tmp_path / "bk"
+
+    jv("backup", "config", "--provider", "local", "--path", str(remote), "--every", "6", "--keep", "3")
+    out = capsys.readouterr().out
+    assert str(remote) in out and "6.0시간" in out
+
+    jv("backup", "run")
+    assert "올렸습니다" in capsys.readouterr().out
+    jv("--json", "backup", "list")
+    files = _json(capsys)
+    assert len(files) == 1 and files[0]["name"].startswith("myviking-")
+
+    # 복원은 명시적 동의 없이는 거부된다 — 라이브 데이터를 덮어쓴다.
+    jv("backup", "restore", expect=1)
+    jv("backup", "restore", "--yes")
+    assert "복원했습니다" in capsys.readouterr().out
+
+
+def test_backup_status_before_setup_points_the_way(jv, capsys):
+    jv("backup", "status")
+    out = capsys.readouterr().out
+    assert "설정 안 됨" in out
+    assert "jv backup connect" in out

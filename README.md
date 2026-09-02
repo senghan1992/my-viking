@@ -37,8 +37,9 @@ bash deploy/up.sh --public       # 외부 노출 + API 키 자동 발급
 ```
 
 `up.sh` 가 이미지를 빌드하고 기동한 뒤 헬스체크까지 확인하고, 다음에 실행할
-명령을 알려줍니다. 데이터는 `myviking-data` 볼륨에 남으므로 컨테이너를 지워도
-살아있고, 백업은 이 볼륨만 챙기면 됩니다.
+명령을 알려줍니다. 데이터는 `myviking-data` 볼륨에 남으므로 `docker compose
+down && up` 은 물론 컨테이너를 지워도 살아있습니다. 볼륨이나 호스트 자체를
+잃는 경우는 아래 [백업](#백업--볼륨이-사라져도-살아남는-사본)이 커버합니다.
 
 ```
 대시보드   http://127.0.0.1:8787/
@@ -74,6 +75,42 @@ jv serve
 `deploy/` 에 systemd 유닛과 Caddyfile(자동 TLS)도 있습니다. 코어는 PyYAML 하나만
 의존하므로 `[server]` extra 없이 설치하면 CLI 만 동작하고 `jv serve` 는 어떤
 패키지가 필요한지 알려주며 종료합니다.
+
+### 백업 — 볼륨이 사라져도 살아남는 사본
+
+쌓이는 것은 몇 달치 프로젝트 지식입니다. 볼륨은 `down/up` 에는 살아남지만
+볼륨 삭제나 호스트 장애에는 살아남지 못하므로, 서버가 **개인 구글 드라이브로
+직접 백업**합니다. 서비스를 띄운 뒤 언제든 연결할 수 있습니다.
+
+1. [Google Cloud 콘솔](https://console.cloud.google.com/apis/credentials)에서
+   OAuth 클라이언트를 만듭니다 — 유형은 **"TV 및 제한된 입력 장치"**. Drive API
+   를 사용 설정하고 ID·시크릿을 받아둡니다. (개인 계정이면 한 번이면 됩니다.)
+2. 대시보드 첫 화면의 **백업** 패널에 넣거나, 터미널에서:
+
+```bash
+docker compose exec myviking jv backup connect \
+  --client-id 123-abc.apps.googleusercontent.com --client-secret GOCSPX-...
+# → 표시된 URL 을 아무 브라우저에서 열고 코드를 입력하면 연결 끝
+```
+
+서버에 브라우저가 없어도 되는 기기 코드 방식이고, 발급된 토큰은 `drive.file`
+범위라 **이 앱이 만든 폴더 밖은 읽지 못합니다**. 연결되면 서버가 주기(기본
+12시간)마다 스냅샷을 올리고 보관 개수(기본 14개)를 넘는 것은 지웁니다.
+스냅샷은 실행 중에도 안전합니다(SQLite backup API).
+
+```bash
+jv backup status          # 대상·주기·마지막 결과
+jv backup run             # 지금 즉시 한 번
+jv backup list            # 드라이브에 있는 스냅샷
+jv backup restore --yes   # 최신 스냅샷으로 복원 (복원 후 컨테이너 재시작)
+```
+
+새 머신에서의 재해 복구는 세 줄입니다: `up.sh` 로 띄우고 → `jv backup connect`
+로 같은 드라이브에 연결하고 → `jv backup restore --yes`.
+
+구글 드라이브 대신 마운트한 디렉터리(NAS 등)에 남기려면
+`jv backup config --provider local --path /backups` 로 바꾸고 compose 에 그
+경로를 볼륨으로 추가하면 됩니다.
 
 ### 저장소를 프로젝트에 연결
 

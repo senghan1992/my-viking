@@ -5,7 +5,14 @@
 #   docker compose logs -f
 #
 # 데이터(메모리·프롬프트·세션·추적)는 myviking-data 볼륨에 남습니다.
-# 컨테이너를 지워도 남고, 백업은 이 볼륨만 챙기면 됩니다.
+# down/up 은 물론 컨테이너를 지워도 남습니다. 볼륨·호스트를 잃는 경우까지
+# 대비하려면 Google Drive 백업을 연결하세요 (기동 후 언제든):
+#
+#   docker compose exec myviking jv backup connect --client-id ... --client-secret ...
+#   docker compose exec myviking jv backup status
+#
+# 이후 서버가 주기적으로 스냅샷을 올리고 오래된 것은 회전시킵니다.
+# 새 볼륨에 복원: docker compose exec myviking jv backup restore --yes
 
 name: myviking
 

@@ -181,6 +181,10 @@ DASHBOARD_HTML = r"""<!doctype html>
           <span id="np-msg" style="color:var(--muted)"></span></div>
       </div>
     </section>
+    <section>
+      <h2>백업 — 볼륨이 사라져도 살아남는 사본</h2>
+      <div class="panel pad" id="bk-panel">불러오는 중...</div>
+    </section>
   </div>
 
   <!-- ============ 지식 ============ -->
@@ -758,6 +762,110 @@ function fillProjectSelects() {
   }
 }
 
+// ---------------- 백업 ----------------
+let bkPoll = null;
+
+async function loadBackup() {
+  try {
+    renderBackup(await api("/backup/status"));
+  } catch (e) {
+    $("bk-panel").innerHTML = `<span class="bad">${esc(e.message)}</span>`;
+  }
+}
+
+function renderBackup(st) {
+  const target = st.provider === "gdrive"
+    ? `Google Drive · <span class="mono">${esc(st.folder)}</span>`
+    : st.provider === "local"
+      ? `디렉터리 · <span class="mono">${esc(st.local_path || "(미설정)")}</span>`
+      : "설정 안 됨";
+  const last = st.last_run
+    ? `${st.last_run.slice(0, 16).replace("T", " ")} — ${
+        st.last_status === "ok" ? "성공" : `<span class="bad">${esc(st.last_status)}</span>`}` +
+      (st.last_name ? ` · <span class="mono">${esc(st.last_name)}</span> (${(st.last_size / 1e6).toFixed(1)}MB)` : "")
+    : "아직 없음";
+  $("bk-panel").innerHTML = `
+    <div class="row" style="justify-content:space-between">
+      <div>
+        <div><strong style="font-size:13px">대상</strong> ${target}
+          ${st.connected ? `<span class="chip">연결됨</span>` : ""}</div>
+        <div style="color:var(--muted);font-size:12.5px;margin-top:4px">
+          docker 를 내렸다 올려도 데이터 볼륨은 남습니다. 이 백업은 볼륨·호스트를
+          잃었을 때를 위한 서버 밖 사본입니다. 마지막 백업: ${last}</div>
+      </div>
+      ${st.connected ? `<button class="small" id="bk-run">지금 백업</button>` : ""}
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label style="font-size:12.5px;color:var(--muted)">주기(시간)</label>
+      <input id="bk-every" style="width:70px" value="${Number(st.every_hours)}">
+      <label style="font-size:12.5px;color:var(--muted)">보관 개수</label>
+      <input id="bk-keep" style="width:70px" value="${Number(st.keep)}">
+      <button class="small" id="bk-save">저장</button>
+      <span id="bk-msg" style="color:var(--muted);font-size:12.5px"></span>
+    </div>
+    ${st.provider === "gdrive" && st.connected ? "" : `
+    <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+      <strong style="font-size:13px">Google Drive 연결</strong>
+      <div style="color:var(--muted);font-size:12.5px;margin:4px 0 8px">
+        Google Cloud 콘솔에서 OAuth 클라이언트(<b>"TV 및 제한된 입력 장치"</b> 유형)를 만들어
+        ID·시크릿을 넣으세요. 서버에 브라우저가 없어도 코드 승인만으로 연결되고,
+        백업은 이 앱이 만든 폴더에만 접근합니다 (drive.file 범위).
+      </div>
+      <div class="row">
+        <input id="bk-cid" placeholder="client_id" style="flex:1;min-width:200px">
+        <input id="bk-csec" placeholder="client_secret" type="password" style="width:180px">
+        <button class="small" id="bk-connect">연결 시작</button>
+      </div>
+      <div id="bk-auth" style="margin-top:8px;font-size:13px"></div>
+    </div>`}
+  `;
+  const run = $("bk-run");
+  if (run) run.onclick = async () => {
+    run.disabled = true; run.textContent = "백업 중...";
+    try { await api("/backup/run", { method: "POST" }); }
+    catch (e) { $("bk-msg").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+    await loadBackup();
+  };
+  $("bk-save").onclick = async () => {
+    try {
+      await api("/backup/config", { method: "POST", body: JSON.stringify({
+        every_hours: parseFloat($("bk-every").value) || null,
+        keep: parseInt($("bk-keep").value, 10) || null,
+      })});
+      $("bk-msg").textContent = "저장했습니다.";
+    } catch (e) { $("bk-msg").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  };
+  const cn = $("bk-connect");
+  if (cn) cn.onclick = async () => {
+    const cid = $("bk-cid").value.trim(), sec = $("bk-csec").value.trim();
+    if (!cid || !sec) { $("bk-auth").textContent = "client_id 와 client_secret 을 넣으세요."; return; }
+    cn.disabled = true;
+    try {
+      const info = await api("/backup/connect/start", { method: "POST",
+        body: JSON.stringify({ client_id: cid, client_secret: sec }) });
+      $("bk-auth").innerHTML = `
+        <b>1)</b> <a href="${esc(info.verification_url)}" target="_blank">${esc(info.verification_url)}</a> 열기
+        &nbsp; <b>2)</b> 코드 입력: <span class="mono" style="font-size:15px">${esc(info.user_code)}</span>
+        <div style="color:var(--muted);font-size:12.5px;margin-top:4px">승인을 기다리는 중...</div>`;
+      clearInterval(bkPoll);
+      bkPoll = setInterval(async () => {
+        try {
+          const r = await api("/backup/connect/poll", { method: "POST" });
+          if (r.status === "ok") { clearInterval(bkPoll); await loadBackup(); }
+          else if (r.status === "error") {
+            clearInterval(bkPoll);
+            $("bk-auth").innerHTML = `<span class="bad">실패: ${esc(r.error || "")}</span>`;
+            cn.disabled = false;
+          }
+        } catch (e) { clearInterval(bkPoll); cn.disabled = false; }
+      }, Math.max(3, info.interval || 5) * 1000);
+    } catch (e) {
+      $("bk-auth").innerHTML = `<span class="bad">${esc(e.message)}</span>`;
+      cn.disabled = false;
+    }
+  };
+}
+
 async function boot() {
   PROJECTS = await api("/projects");
   if (!TEMPLATES.length) {
@@ -776,7 +884,7 @@ async function load() {
     $("ver").textContent = "v" + h.version;
     $("status").textContent = h.auth_required ? "인증 필요" : "인증 없음";
     await boot();
-    if (tab === "projects") renderProjects();
+    if (tab === "projects") { renderProjects(); await loadBackup(); }
     else if (tab === "knowledge") await loadKnowledge();
     else await loadActivity();
     if (tab !== "knowledge") {

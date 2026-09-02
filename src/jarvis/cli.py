@@ -879,6 +879,151 @@ def cmd_hook(args, j: Jarvis | None = None) -> int:
 cmd_hook.no_jarvis = True  # type: ignore[attr-defined]
 
 
+# ----- backup ---------------------------------------------------------------
+def _backup_manager(args):
+    from .backup import BackupManager
+
+    return BackupManager(args.home)
+
+
+def cmd_backup_status(args, j: Jarvis | None = None) -> int:
+    st = _backup_manager(args).status()
+    if args.json:
+        _out(st, True)
+        return 0
+    where = {
+        "gdrive": f"Google Drive / {st['folder']}",
+        "local": st["local_path"] or "(경로 미설정)",
+        "none": "설정 안 됨",
+    }[st["provider"]]
+    print(f"대상       {where}")
+    print(f"연결       {'예' if st['connected'] else ('인증 진행 중' if st['pending_auth'] else '아니오')}")
+    print(f"주기       {st['every_hours']}시간 · 보관 {st['keep']}개")
+    if st["last_run"]:
+        size_mb = st["last_size"] / 1_000_000
+        print(f"마지막     {st['last_run']} · {st['last_status']}"
+              + (f" · {st['last_name']} ({size_mb:.1f}MB)" if st["last_name"] else ""))
+    else:
+        print("마지막     아직 없음")
+    if st["provider"] == "none":
+        print("\nGoogle Drive 연결:  jv backup connect --client-id ... --client-secret ...")
+        print("디렉터리 백업:      jv backup config --provider local --path /backups")
+    return 0
+
+
+cmd_backup_status.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_backup_config(args, j: Jarvis | None = None) -> int:
+    mgr = _backup_manager(args)
+    mgr.configure(
+        provider=args.provider,
+        every_hours=args.every,
+        keep=args.keep,
+        folder=args.folder,
+        local_path=args.path,
+    )
+    return cmd_backup_status(args)
+
+
+cmd_backup_config.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_backup_connect(args, j: Jarvis | None = None) -> int:
+    """Device-flow OAuth in the terminal: show the code, wait for approval."""
+    import time as _time
+
+    mgr = _backup_manager(args)
+    try:
+        info = mgr.connect_start(args.client_id, args.client_secret)
+    except RuntimeError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    print(f"1) 브라우저에서 열기:  {info['verification_url']}")
+    print(f"2) 코드 입력:          {info['user_code']}")
+    print("\n승인을 기다리는 중... (Ctrl-C 로 중단)")
+    interval = max(3, int(info.get("interval", 5)))
+    deadline = _time.time() + int(info.get("expires_in", 1800))
+    while _time.time() < deadline:
+        _time.sleep(interval)
+        res = mgr.connect_poll()
+        if res["status"] == "ok":
+            print("연결됐습니다. 이제 백업이 Google Drive 로 올라갑니다.")
+            print("바로 한 번 올리려면:  jv backup run")
+            return 0
+        if res["status"] == "error":
+            print(f"실패: {res.get('error')}", file=sys.stderr)
+            return 1
+        if res.get("error") == "slow_down":
+            interval += 5
+    print("시간이 초과됐습니다. 다시 실행하세요.", file=sys.stderr)
+    return 1
+
+
+cmd_backup_connect.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_backup_run(args, j: Jarvis | None = None) -> int:
+    try:
+        res = _backup_manager(args).run()
+    except RuntimeError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        _out(res, True)
+        return 0
+    print(f"올렸습니다: {res['name']} ({res['size'] / 1_000_000:.1f}MB)")
+    if res["deleted"]:
+        print(f"회전으로 삭제: {', '.join(res['deleted'])}")
+    return 0
+
+
+cmd_backup_run.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_backup_list(args, j: Jarvis | None = None) -> int:
+    try:
+        files = _backup_manager(args).list_remote()
+    except RuntimeError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        _out(files, True)
+        return 0
+    if not files:
+        print("(원격에 백업이 없습니다)")
+        return 0
+    for f in files:
+        print(f"{f['name']}  {int(f.get('size') or 0) / 1_000_000:.1f}MB")
+    return 0
+
+
+cmd_backup_list.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_backup_restore(args, j: Jarvis | None = None) -> int:
+    """Overwrites the live store — hence the explicit --yes."""
+    if not args.yes:
+        print(
+            "복원은 현재 데이터를 백업 시점으로 되돌립니다 (이후 기록은 사라집니다).\n"
+            "진행하려면 --yes 를 붙이세요. 대상 확인은 jv backup list.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        res = _backup_manager(args).restore(args.name or "")
+    except (RuntimeError, ValueError) as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    print(f"복원했습니다: {res['restored']}")
+    print("실행 중인 서버가 있다면 재시작해야 복원본을 읽습니다:")
+    print("  docker compose restart myviking")
+    return 0
+
+
+cmd_backup_restore.no_jarvis = True  # type: ignore[attr-defined]
+
+
 # ----- observability ------------------------------------------------------
 def cmd_traces(args, j: Jarvis) -> int:
     rows = j.traces(args.project or "", limit=args.limit, min_latency=args.slower_than)
@@ -1641,6 +1786,34 @@ def build_parser() -> argparse.ArgumentParser:
     s2.set_defaults(func=cmd_agent_hooks)
     s2 = asub.add_parser("list", help="연결된 에이전트 목록")
     s2.set_defaults(func=cmd_agents)
+
+    # backup — the copy that survives losing the volume
+    sp = sub.add_parser("backup", help="서버 밖 백업 (Google Drive / 디렉터리)")
+    bsub = sp.add_subparsers(dest="sub", required=True)
+    s2 = bsub.add_parser("status", help="백업 설정과 마지막 결과")
+    s2.set_defaults(func=cmd_backup_status)
+    s2 = bsub.add_parser("config", help="백업 대상·주기·보관 개수 설정")
+    s2.add_argument("--provider", choices=["none", "gdrive", "local"])
+    s2.add_argument("--every", type=float, help="백업 주기 (시간)")
+    s2.add_argument("--keep", type=int, help="원격에 보관할 백업 개수")
+    s2.add_argument("--folder", help="Drive 폴더 이름 (기본 MyViking-Backups)")
+    s2.add_argument("--path", help="local 백업 디렉터리")
+    s2.set_defaults(func=cmd_backup_config)
+    s2 = bsub.add_parser(
+        "connect",
+        help="Google Drive 연결 (기기 코드 방식 — 서버에 브라우저가 없어도 됩니다)",
+    )
+    s2.add_argument("--client-id", required=True, help="Google Cloud OAuth 클라이언트 ID (TV/제한된 입력 장치 유형)")
+    s2.add_argument("--client-secret", required=True)
+    s2.set_defaults(func=cmd_backup_connect)
+    s2 = bsub.add_parser("run", help="지금 즉시 백업 한 번")
+    s2.set_defaults(func=cmd_backup_run)
+    s2 = bsub.add_parser("list", help="원격에 있는 백업 목록")
+    s2.set_defaults(func=cmd_backup_list)
+    s2 = bsub.add_parser("restore", help="원격 백업으로 복원 (기본: 최신)")
+    s2.add_argument("name", nargs="?", help="복원할 백업 파일명 (생략하면 최신)")
+    s2.add_argument("--yes", action="store_true", help="현재 데이터를 덮어쓰는 데 동의")
+    s2.set_defaults(func=cmd_backup_restore)
 
     # hook — called by the coding agent's hook system, not by people
     sp = sub.add_parser("hook", help="코딩 에이전트 훅 수신기 (Claude Code hooks 가 stdin 으로 호출)")

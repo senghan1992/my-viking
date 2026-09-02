@@ -318,6 +318,12 @@ def test_every_post_route_parses_its_body(client):
         "/keys": {"name": "test-key"},
         "/memories/confirm": {"uri": "jarvis://projects/app/memories/commands/t"},
         "/reindex": None,
+        "/backup/config": {"keep": 5},
+        # Empty credentials are rejected before any network call is attempted,
+        # so this exercises body parsing without dialing Google from a test.
+        "/backup/connect/start": {"client_id": "", "client_secret": ""},
+        "/backup/connect/poll": None,
+        "/backup/run": None,
     }
     posts = [
         r.path

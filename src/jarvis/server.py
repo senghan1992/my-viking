@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .auth import KeyStore
+from .backup import BackupManager, start_backup_loop
 from .connect import CLIENTS, build as build_connection, instruction_file
 from .mcp_core import Handler, tools
 from .service import Jarvis
@@ -151,6 +152,19 @@ class FeedbackBody(BaseModel):
     uri: str
     helpful: bool = True
     note: str = ""
+
+
+class BackupConfigBody(BaseModel):
+    provider: str | None = None  # none | gdrive | local
+    every_hours: float | None = None
+    keep: int | None = None
+    folder: str | None = None
+    local_path: str | None = None
+
+
+class BackupConnectBody(BaseModel):
+    client_id: str
+    client_secret: str
 
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -715,6 +729,51 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     def reindex(project: str | None = None) -> dict[str, int]:
         return jarvis.reindex(project)
 
+    # ----- backup ------------------------------------------------------
+    # Everything here sits behind the same key middleware as the rest: the
+    # config file holds OAuth secrets and the archives hold every project.
+    backups = BackupManager(home)
+
+    @app.get("/backup/status")
+    def backup_status() -> dict[str, Any]:
+        return backups.status()
+
+    @app.post("/backup/config")
+    def backup_config(body: BackupConfigBody) -> dict[str, Any]:
+        backups.configure(
+            provider=body.provider,
+            every_hours=body.every_hours,
+            keep=body.keep,
+            folder=body.folder,
+            local_path=body.local_path,
+        )
+        return backups.status()
+
+    @app.post("/backup/connect/start")
+    def backup_connect_start(body: BackupConnectBody) -> dict[str, Any]:
+        try:
+            return backups.connect_start(body.client_id, body.client_secret)
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/backup/connect/poll")
+    def backup_connect_poll() -> dict[str, Any]:
+        return backups.connect_poll()
+
+    @app.post("/backup/run")
+    def backup_run() -> dict[str, Any]:
+        try:
+            return backups.run()
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/backup/list")
+    def backup_list() -> list[dict[str, Any]]:
+        try:
+            return backups.list_remote()
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     return app
 
 
@@ -756,6 +815,9 @@ def run(
 
     app = create_app(home)
     start_maintenance(home, maintain_every)
+    # The backup cadence lives in backup.yaml (set via UI/CLI); this thread
+    # only checks whether one is due, so a short interval costs nothing.
+    start_backup_loop(home)
     uvicorn.run(app, host=host, port=port)
 
 
