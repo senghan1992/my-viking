@@ -1,0 +1,35 @@
+# MyViking 상시 실행용 systemd 유닛
+#
+#   sudo cp deploy/myviking.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now myviking
+#   journalctl -u myviking -f
+#
+# User/경로는 환경에 맞게 바꾸세요. --host 0.0.0.0 으로 열기 전에
+# `jv key create <이름>` 으로 API 키를 먼저 발급하세요.
+
+[Unit]
+Description=MyViking context server for coding agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+Environment=JARVIS_HOME=/var/lib/myviking
+# LLM 을 붙이려면 여기에 (증류·요약 품질만 올라갑니다)
+# Environment=ANTHROPIC_API_KEY=...
+WorkingDirectory=/opt/myviking
+ExecStart=/opt/myviking/.venv/bin/jv serve --host 0.0.0.0 --port 8787
+Restart=always
+RestartSec=3
+
+# 이 서비스가 건드려야 하는 것은 자기 데이터 디렉터리뿐입니다.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/myviking
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+# 컨테이너로 돌리는 경우. 데이터는 볼륨에 남습니다.
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#   docker compose -f deploy/docker-compose.yml exec myviking jv key create laptop
+
+services:
+  myviking:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8787:8787"
+    volumes:
+      - myviking-data:/var/lib/myviking
+    environment:
+      JARVIS_HOME: /var/lib/myviking
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8787/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  myviking-data:

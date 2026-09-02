@@ -50,6 +50,7 @@ def test_mcp_handshake_and_tool_list(home):
         "jarvis_context",
         "jarvis_remember",
         "jarvis_commit",
+        "jarvis_score",
         "jarvis_browse",
         "jarvis_prompt",
         "jarvis_profile",
@@ -86,11 +87,12 @@ def test_mcp_full_loop(home):
     assert _payload(out[0])["profile"]["template"] == "coding"
     assert _payload(out[1])["uri"].endswith("commands/테스트-실행")
     ctx = _payload(out[2])
-    assert ctx["cache_hit"] is False
+    assert ctx["reused"] is False
     assert "pytest" in ctx["context"]
+    assert ctx["trace_id"].startswith("tr_")
     assert _payload(out[3])["session"]
     hit = _payload(out[4])
-    assert hit["cache_hit"] is True
+    assert hit["reused"] is True
     assert hit["answer"] == "pytest -q"
 
 
@@ -151,10 +153,15 @@ def test_http_health_and_loop(client):
     )
     assert r.status_code == 200
 
-    r = client.post("/prepare", json={"project": "app", "question": "테스트 실행 방법"})
+    r = client.post(
+        "/prepare",
+        json={"project": "app", "question": "테스트 실행 방법", "agent": "test-agent"},
+    )
     body = r.json()
     assert body["cache_hit"] is None
     assert "pytest" in body["system"]
+    trace_id = body["trace_id"]
+    assert trace_id.startswith("tr_")
 
     r = client.post(
         "/commit",
@@ -164,6 +171,8 @@ def test_http_health_and_loop(client):
             "answer": "pytest -q",
             "tokens_in": 800,
             "tokens_out": 10,
+            "trace_id": trace_id,
+            "latency_ms": 1500,
         },
     )
     assert r.json()["session"]
@@ -206,3 +215,116 @@ def test_http_browse_endpoints(client):
     assert client.get("/grep", params={"term": "make build"}).json()
     tree = client.get("/tree", params={"uri": "jarvis://projects/app", "depth": 2}).json()
     assert tree["name"] == "app"
+
+
+def test_mcp_resolves_project_from_git_remote(home):
+    """An agent knows its git remote, not what you named the project here."""
+    out = _mcp(
+        home,
+        [
+            _call("jarvis_profile", {"op": "init", "project": "backend"}, 1),
+            _call(
+                "jarvis_remember",
+                {
+                    "project": "backend",
+                    "repo": "git@github.com:me/backend.git",
+                    "category": "facts",
+                    "title": "포트",
+                    "statement": "8080 포트를 쓴다",
+                },
+                2,
+            ),
+            # No project at all: the remote alone must resolve it.
+            _call(
+                "jarvis_context",
+                {"repo": "https://github.com/me/backend", "question": "포트 뭐 쓰지?"},
+                3,
+            ),
+        ],
+    )
+    assert _payload(out[1])["uri"].startswith("jarvis://projects/backend/")
+    ctx = _payload(out[2])
+    assert ctx["project"] == "backend"
+    assert "8080" in ctx["context"]
+
+
+def test_mcp_score_feeds_back_into_memory(home):
+    out = _mcp(
+        home,
+        [
+            _call("jarvis_profile", {"op": "init", "project": "app", "template": "coding"}, 1),
+            _call(
+                "jarvis_remember",
+                {
+                    "project": "app",
+                    "category": "commands",
+                    "title": "배포",
+                    "statement": "make deploy 로 배포한다",
+                    "confidence": 0.6,
+                },
+                2,
+            ),
+            _call("jarvis_context", {"project": "app", "question": "배포 어떻게 해?"}, 3),
+        ],
+    )
+    trace_id = _payload(out[2])["trace_id"]
+    out2 = _mcp(
+        home,
+        [
+            _call(
+                "jarvis_score",
+                {"trace_id": trace_id, "value": 0.0, "comment": "그런 명령 없음"},
+                1,
+            ),
+            _call("jarvis_browse", {"op": "read", "uri": "jarvis://projects/app/memories/commands/배포"}, 2),
+        ],
+    )
+    scored = _payload(out2[0])
+    assert scored["memories_adjusted"]
+    # A zero score must actually cost the memory confidence, not just log a number.
+    assert out2[1]["result"]["isError"] or _payload(out2[1])["confidence"] < 0.6
+
+
+def test_mcp_unresolvable_project_says_what_exists(home):
+    out = _mcp(home, [_call("jarvis_context", {"question": "무엇이든"}, 1)])
+    assert out[0]["result"]["isError"] is True
+    assert "프로젝트를 특정할 수 없습니다" in out[0]["result"]["content"][0]["text"]
+
+
+def test_every_post_route_parses_its_body(client):
+    """Guard against route signatures whose annotations FastAPI cannot resolve.
+
+    A name imported inside create_app() is invisible to FastAPI under postponed
+    annotations, and the symptom is a 422 claiming a body field is a missing
+    query parameter. This walks the real routes so the failure cannot return
+    quietly on some endpoint nobody tested.
+    """
+    app = client.app
+    client.post("/projects", json={"project": "app", "template": "coding"})
+    samples: dict[str, dict] = {
+        "/projects": {"project": "app"},
+        "/prompts": {"project": "app", "name": "p", "template": "x"},
+        "/prompts/render": {"project": "app", "name": "p"},
+        "/memories": {"project": "app", "category": "commands", "title": "t", "statement": "s"},
+        "/resources": {"project": "app", "name": "r", "text": "본문"},
+        "/prepare": {"project": "app", "question": "질문"},
+        "/commit": {"project": "app", "question": "질문", "answer": "답변"},
+        "/scores": {"trace_id": "nope", "value": 1.0},
+        "/feedback": {"project": "app", "uri": "jarvis://projects/app/memories/commands/t"},
+        "/aliases": {"alias": "github.com/me/app", "project": "app"},
+        "/resolve": {"project": "app"},
+        "/keys": {"name": "test-key"},
+        "/reindex": None,
+    }
+    posts = [
+        r.path
+        for r in app.routes
+        if "POST" in getattr(r, "methods", set()) and "{" not in r.path and r.path != "/mcp"
+    ]
+    unchecked = [p for p in posts if p not in samples]
+    assert not unchecked, f"샘플 본문이 없는 POST 경로: {unchecked}"
+
+    for path in posts:
+        body = samples[path]
+        res = client.post(path, json=body) if body is not None else client.post(path)
+        assert res.status_code != 422, f"{path} 가 본문을 해석하지 못했습니다: {res.text[:200]}"

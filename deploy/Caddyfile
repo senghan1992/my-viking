@@ -1,0 +1,16 @@
+# TLS 종료를 붙이는 가장 짧은 방법. Caddy 가 인증서를 자동 발급합니다.
+#
+#   sudo caddy run --config deploy/Caddyfile
+#
+# 이 뒤에 있는 MyViking 은 127.0.0.1 에만 바인딩하면 됩니다:
+#   jv serve --port 8787
+#
+# 에이전트는 https://viking.example.com/mcp 로 붙습니다.
+
+viking.example.com {
+	reverse_proxy 127.0.0.1:8787
+
+	# MCP 응답은 스트리밍이 아니지만, 대시보드 폴링과 함께
+	# 버퍼링 없이 흘려보내는 편이 응답 지연이 낮습니다.
+	encode gzip
+}

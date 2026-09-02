@@ -1,7 +1,7 @@
 [project]
 name = "my-viking"
 version = "0.1.0"
-description = "MyViking — 프로젝트별 자가학습 컨텍스트 데이터베이스 (개인 Jarvis 백엔드)"
+description = "MyViking — 코딩 에이전트를 위한 셀프호스트 컨텍스트 서버 (프로젝트별 자가학습 메모리 + 추적)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -10,10 +10,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The server also carries the dashboard and the remote MCP endpoint.
 server = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2.6"]
-mcp = ["mcp>=1.2"]
+# Optional but recommended: batches vector scoring, cutting retrieval latency
+# by roughly 3x. Results are identical either way.
+speed = ["numpy>=1.26"]
 llm = ["httpx>=0.27"]
-dev = ["pytest>=8.0", "httpx>=0.27"]
+dev = ["pytest>=8.0", "httpx>=0.27", "numpy>=1.26"]
+all = [
+    "fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2.6",
+    "numpy>=1.26", "httpx>=0.27",
+]
 
 [project.scripts]
 jv = "jarvis.cli:main"

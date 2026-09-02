@@ -676,6 +676,340 @@ def _config_set(cfg: Config, key: str, value: str) -> None:
     setattr(target, leaf, cast)
 
 
+
+
+# ----- server operations ---------------------------------------------------
+def cmd_key_create(args, j: Jarvis) -> int:
+    from .auth import KeyStore
+
+    store = KeyStore(j.store.db)
+    first = not store.any_active()
+    kid, raw = store.create(args.name, args.project or ["*"])
+    if args.json:
+        _out({"id": kid, "name": args.name, "key": raw}, True)
+        return 0
+    print(f"발급: {kid} ({args.name})")
+    print(f"\n  {raw}\n")
+    print("이 값은 다시 볼 수 없습니다. 지금 저장하세요.")
+    if first:
+        print("\n첫 키를 만들었으므로 이제부터 서버 전체가 인증을 요구합니다.")
+    return 0
+
+
+def cmd_key_list(args, j: Jarvis) -> int:
+    from .auth import KeyStore
+
+    rows = KeyStore(j.store.db).list()
+    if args.json:
+        _out(rows, True)
+        return 0
+    print(
+        _table(
+            [
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "projects": r["projects"],
+                    "calls": r["calls"],
+                    "last": (r["last_used"] or "-")[:19],
+                    "state": "폐기" if r["revoked"] else "활성",
+                }
+                for r in rows
+            ],
+            [
+                ("id", "id"),
+                ("name", "이름"),
+                ("projects", "프로젝트"),
+                ("calls", "호출"),
+                ("last", "최근 사용"),
+                ("state", "상태"),
+            ],
+        )
+    )
+    return 0
+
+
+def cmd_key_revoke(args, j: Jarvis) -> int:
+    from .auth import KeyStore
+
+    ok = KeyStore(j.store.db).revoke(args.key_id)
+    print("폐기했습니다." if ok else "해당 키가 없거나 이미 폐기되었습니다.")
+    return 0 if ok else 1
+
+
+def _git_remote(path: str = ".") -> str:
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", path, "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def cmd_link(args, j: Jarvis) -> int:
+    """Bind this checkout to a project so any agent here resolves to it."""
+    target = str(Path(args.path or ".").resolve())
+    repo = args.repo or _git_remote(target)
+    project = args.project or (
+        _slug_from_repo(repo) if repo else Path(target).name
+    )
+    j.init_project(project, template=args.template)
+    bound = []
+    if repo:
+        j.bind_alias(repo, project, "repo")
+        bound.append(f"repo {repo}")
+    j.bind_alias(target, project, "path")
+    bound.append(f"path {target}")
+    if args.json:
+        _out({"project": project, "bound": bound}, True)
+        return 0
+    print(f"'{project}' 에 연결했습니다.")
+    for b in bound:
+        print(f"  {b}")
+    if not repo:
+        print("\n(git remote 를 찾지 못해 경로로만 연결했습니다. 다른 머신에서도 같은")
+        print(" 프로젝트로 붙이려면 --repo 로 remote 를 지정하세요.)")
+    return 0
+
+
+def _slug_from_repo(repo: str) -> str:
+    from .service import _project_from_alias
+
+    return _project_from_alias(repo) or "project"
+
+
+AGENT_TEMPLATES = {
+    "claude-code": (
+        "claude mcp add --transport http myviking {url}/mcp"
+        "{auth}",
+        "이 명령을 붙이려는 머신에서 실행하세요.",
+    ),
+    "cursor": (
+        '// ~/.cursor/mcp.json\n'
+        '{{\n'
+        '  "mcpServers": {{\n'
+        '    "myviking": {{\n'
+        '      "url": "{url}/mcp"{headers}\n'
+        '    }}\n'
+        '  }}\n'
+        '}}',
+        "Cursor 설정 파일에 넣으세요.",
+    ),
+    "codex": (
+        "# ~/.codex/config.toml\n"
+        "[mcp_servers.myviking]\n"
+        'url = "{url}/mcp"{toml_headers}',
+        "Codex 설정 파일에 넣으세요.",
+    ),
+}
+
+
+def cmd_agent_config(args, j: Jarvis) -> int:
+    url = args.url.rstrip("/")
+    key = args.key or ""
+    client = args.client
+    template, note = AGENT_TEMPLATES[client]
+    text = template.format(
+        url=url,
+        auth=f' --header "Authorization: Bearer {key}"' if key else "",
+        headers=f',\n      "headers": {{ "Authorization": "Bearer {key}" }}' if key else "",
+        toml_headers=f'\nheaders = {{ Authorization = "Bearer {key}" }}' if key else "",
+    )
+    if args.json:
+        _out({"client": client, "config": text, "url": url + "/mcp"}, True)
+        return 0
+    print(f"# {client} — {note}\n")
+    print(text)
+    print()
+    print(_agent_instructions(args.project))
+    return 0
+
+
+def _agent_instructions(project: str) -> str:
+    """The prompt-side half of the setup. Wiring the tools up is not enough:
+    the agent has to be told when to use them."""
+    p = project or "<프로젝트>"
+    return (
+        "# 그리고 에이전트 지시문(CLAUDE.md / .cursorrules 등)에 추가하세요:\n\n"
+        f"이 저장소에서 작업할 때는 MyViking 을 컨텍스트 원천으로 사용한다.\n"
+        f"1. 작업을 시작하기 전에 jarvis_context 를 호출한다 "
+        f'(project="{p}" 또는 repo=git remote URL).\n'
+        "   반환된 컨텍스트는 이미 확인된 사실이므로 다시 조사하지 않는다.\n"
+        "   reused=true 로 오면 이전 답변이므로 유효성만 확인하고 재사용한다.\n"
+        "2. 새로 확정된 규칙·명령·함정은 jarvis_remember 로 남긴다.\n"
+        "3. 작업을 마치면 jarvis_commit 에 trace_id 와 함께 결과를 기록한다.\n"
+        "4. 사용자가 만족했거나 수정을 요구했으면 jarvis_score 로 알린다."
+    )
+
+
+# ----- observability ------------------------------------------------------
+def cmd_traces(args, j: Jarvis) -> int:
+    rows = j.traces(args.project or "", limit=args.limit, min_latency=args.slower_than)
+    if args.json:
+        _out(rows, True)
+        return 0
+    view = [
+        {
+            "id": r["id"],
+            "time": (r["started"] or "")[5:19].replace("T", " "),
+            "project": r["scope"],
+            "result": f"재사용 {r['cache_hit']}" if r["cache_hit"] else "생성",
+            "ctx": f"{r['latency_ms']}ms",
+            "total": f"{r['total_ms'] or r['latency_ms']}ms",
+            "score": "-" if r["avg_score"] is None else f"{r['avg_score']:.2f}",
+            "question": (r["input"] or "")[:60],
+        }
+        for r in rows
+    ]
+    print(
+        _table(
+            view,
+            [
+                ("time", "시각"),
+                ("project", "프로젝트"),
+                ("result", "결과"),
+                ("ctx", "조립"),
+                ("total", "전체"),
+                ("score", "점수"),
+                ("id", "트레이스"),
+                ("question", "질문"),
+            ],
+        )
+    )
+    return 0
+
+
+def cmd_trace_show(args, j: Jarvis) -> int:
+    t = j.trace(args.trace_id)
+    if t is None:
+        print("없는 트레이스입니다.")
+        return 1
+    if args.json:
+        _out(t, True)
+        return 0
+    print(f"{t['id']}  [{t['scope']}] {t['started']}")
+    print(
+        f"조립 {t['latency_ms']}ms · 전체 {t['total_ms'] or t['latency_ms']}ms · "
+        f"{'재사용 ' + t['cache_hit'] if t['cache_hit'] else '생성'}"
+        + (f" · agent {t['agent']}" if t["agent"] else "")
+    )
+    print(f"\n질문: {t['input'][:200]}")
+    if t["output"]:
+        print(f"답변: {t['output'][:300]}")
+    print("\n단계:")
+    for o in t["observations"]:
+        print(f"  {o['type']:<11} {o['name']:<16} {o['latency_ms']:>6}ms  {(o['output'] or '')[:50]}")
+    print("\n사용된 컨텍스트:")
+    for c in t["context"]:
+        print(f"  L{c['tier']} {c['tokens']:>5}t  {c['score']:.3f}  {c['uri']}")
+    if t["scores"]:
+        print("\n점수:")
+        for sc in t["scores"]:
+            print(f"  {sc['name']}={sc['value']} ({sc['source']}) {sc['comment']}")
+    return 0
+
+
+def cmd_score(args, j: Jarvis) -> int:
+    try:
+        res = j.score(
+            args.trace_id,
+            name=args.name,
+            value=args.value,
+            comment=args.comment or "",
+        )
+    except KeyError as exc:
+        print(f"오류: {exc.args[0]}", file=sys.stderr)
+        return 1
+    if args.json:
+        _out(res, True)
+        return 0
+    print(f"{args.name}={args.value} 기록 · 메모리 {len(res['memories_adjusted'])}건 신뢰도 조정")
+    for uri in res["memories_adjusted"]:
+        print(f"  → {uri}")
+    return 0
+
+
+def cmd_metrics(args, j: Jarvis) -> int:
+    m = j.metrics(args.project or "", days=args.days)
+    if args.json:
+        _out(m, True)
+        return 0
+    print(f"프로젝트: {m['scope']} · 최근 {m['days']}일 · 작업 {m['traces']}건 (오류 {m['errors']})")
+    a, c = m["answer_ms"], m["context_ms"]
+    print(f"\n응답 시간   p50 {a['p50']}ms · p95 {a['p95']}ms")
+    print(f"  재사용    p50 {a['p50_reused']}ms")
+    print(f"  생성      p50 {a['p50_generated']}ms")
+    print(f"컨텍스트 조립 p50 {c['p50']}ms · p95 {c['p95']}ms")
+    print(f"\n재사용률 {m['reuse']['rate'] * 100:.1f}% ({m['reuse']['hits']}/{m['traces']})")
+    if m["scores"]:
+        print("점수: " + ", ".join(f"{s['name']} {s['avg']:.2f} ({s['count']}건)" for s in m["scores"]))
+    else:
+        print("점수: 아직 없음 — jv score 또는 jarvis_score 로 남기면 메모리 품질이 개선됩니다")
+    if m["steps"]:
+        print("\n단계별 평균:")
+        for st in m["steps"]:
+            print(f"  {st['type']:<11} {st['avg_ms']:>6}ms  (최대 {st['max_ms']}ms, {st['count']}회)")
+    print(f"\n토큰: 입력 {m['tokens']['in']:,} · 출력 {m['tokens']['out']:,}")
+    return 0
+
+
+def cmd_impact(args, j: Jarvis) -> int:
+    rows = j.memory_impact(args.project, limit=args.limit)
+    if args.json:
+        _out(rows, True)
+        return 0
+    print(
+        _table(
+            [
+                {
+                    "uri": r["uri"].split("/", 4)[-1],
+                    "uses": r["uses"],
+                    "scored": r["scored"],
+                    "avg": "미검증" if r["avg_score"] is None else f"{r['avg_score']:.2f}",
+                    "tokens": r["avg_tokens"],
+                }
+                for r in rows
+            ],
+            [
+                ("uri", "컨텍스트"),
+                ("uses", "사용"),
+                ("scored", "점수받음"),
+                ("avg", "평균 점수"),
+                ("tokens", "평균 토큰"),
+            ],
+        )
+    )
+    return 0
+
+
+def cmd_agents(args, j: Jarvis) -> int:
+    rows = j.agents()
+    if args.json:
+        _out(rows, True)
+        return 0
+    print(
+        _table(
+            [
+                {
+                    "name": r["name"],
+                    "projects": ", ".join(r["projects"]),
+                    "calls": r["calls"],
+                    "last": (r["last_seen"] or "")[:19].replace("T", " "),
+                }
+                for r in rows
+            ],
+            [("name", "에이전트"), ("projects", "프로젝트"), ("calls", "호출"), ("last", "최근")],
+        )
+    )
+    return 0
+
+
 # --------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -872,17 +1206,94 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--set", action="append", help="예: llm.provider=anthropic")
     sp.set_defaults(func=cmd_config)
 
-    sp = sub.add_parser("serve", help="HTTP API 서버 실행")
-    sp.add_argument("--host", default="127.0.0.1")
+    sp = sub.add_parser("serve", help="서버 실행 (대시보드 + API + 원격 MCP)")
+    sp.add_argument("--host", default="127.0.0.1", help="0.0.0.0 으로 열면 외부에서 접속 가능")
     sp.add_argument("--port", type=int, default=8787)
     sp.set_defaults(func=cmd_serve)
+
+    # keys
+    sp = sub.add_parser("key", help="API 키 관리 (원격 접속용)")
+    ksub = sp.add_subparsers(dest="sub", required=True)
+    s2 = ksub.add_parser("create", help="키 발급 (첫 키 발급 시 서버가 인증을 요구하게 됩니다)")
+    s2.add_argument("name")
+    s2.add_argument("--project", action="append", help="접근 허용 프로젝트 (기본 전체)")
+    s2.set_defaults(func=cmd_key_create)
+    s2 = ksub.add_parser("list", help="키 목록")
+    s2.set_defaults(func=cmd_key_list)
+    s2 = ksub.add_parser("revoke", help="키 폐기")
+    s2.add_argument("key_id")
+    s2.set_defaults(func=cmd_key_revoke)
+
+    # link / agent
+    sp = sub.add_parser("link", help="현재 저장소를 프로젝트에 연결 (git remote/경로 기준)")
+    sp.add_argument("-p", "--project", help="프로젝트 이름 (생략하면 remote 에서 추론)")
+    sp.add_argument("--path", help="연결할 경로 (기본 현재 디렉터리)")
+    sp.add_argument("--repo", help="git remote URL 직접 지정")
+    sp.add_argument("-t", "--template", default="coding", choices=templates())
+    sp.set_defaults(func=cmd_link)
+
+    sp = sub.add_parser("agent", help="코딩 에이전트 연동 설정 출력")
+    asub = sp.add_subparsers(dest="sub", required=True)
+    s2 = asub.add_parser("config", help="클라이언트별 MCP 설정과 지시문 생성")
+    s2.add_argument(
+        "--client", default="claude-code", choices=sorted(AGENT_TEMPLATES)
+    )
+    s2.add_argument("--url", default="http://127.0.0.1:8787", help="서버 주소")
+    s2.add_argument("--key", help="API 키 (인증을 켰다면 필요)")
+    s2.add_argument("-p", "--project", help="지시문에 넣을 프로젝트 이름")
+    s2.set_defaults(func=cmd_agent_config)
+    s2 = asub.add_parser("list", help="연결된 에이전트 목록")
+    s2.set_defaults(func=cmd_agents)
+
+    # observability
+    sp = sub.add_parser("traces", help="최근 작업 기록")
+    proj(sp, required=False)
+    sp.add_argument("--limit", type=int, default=25)
+    sp.add_argument("--slower-than", type=int, default=0, help="이 ms 이상만 표시")
+    sp.set_defaults(func=cmd_traces)
+
+    sp = sub.add_parser("trace", help="트레이스 상세 (어디서 시간이 갔는지)")
+    sp.add_argument("trace_id")
+    sp.set_defaults(func=cmd_trace_show)
+
+    sp = sub.add_parser("score", help="작업 결과 평가 → 메모리 신뢰도 반영")
+    sp.add_argument("trace_id")
+    sp.add_argument("value", type=float, help="0=틀림, 0.5=중립, 1=도움됨")
+    sp.add_argument("--name", default="helpfulness")
+    sp.add_argument("--comment")
+    sp.set_defaults(func=cmd_score)
+
+    sp = sub.add_parser("metrics", help="속도·재사용·품질 지표")
+    proj(sp, required=False)
+    sp.add_argument("--days", type=int, default=7)
+    sp.set_defaults(func=cmd_metrics)
+
+    sp = sub.add_parser("impact", help="어떤 메모리가 좋은 결과에 기여했는지")
+    proj(sp)
+    sp.add_argument("--limit", type=int, default=20)
+    sp.set_defaults(func=cmd_impact)
 
     return p
 
 
 def cmd_serve(args, j: Jarvis) -> int:
+    from .auth import KeyStore
     from .server import run
 
+    secured = KeyStore(j.store.db).any_active()
+    shown = "localhost" if args.host in ("127.0.0.1", "localhost") else args.host
+    print(f"MyViking 서버 http://{shown}:{args.port}")
+    print(f"  대시보드   http://{shown}:{args.port}/")
+    print(f"  API 문서   http://{shown}:{args.port}/docs")
+    print(f"  원격 MCP   http://{shown}:{args.port}/mcp")
+    print(f"  인증       {'API 키 필요' if secured else '없음'}")
+    if args.host not in ("127.0.0.1", "localhost") and not secured:
+        # Opening the port without a key would publish every project's context.
+        print(
+            "\n경고: 외부 주소로 열었지만 API 키가 없어 누구나 접근할 수 있습니다.\n"
+            "       `jv key create <이름>` 으로 키를 먼저 발급하세요."
+        )
+    print()
     run(host=args.host, port=args.port, home=args.home)
     return 0
 

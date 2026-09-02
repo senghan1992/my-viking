@@ -10,17 +10,26 @@ pydantic); the rest of MyViking does not.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from . import __version__
+from .auth import KeyStore
+from .mcp_core import Handler, tools
 from .service import Jarvis
+from .ui import DASHBOARD_HTML
 
-# Request schemas live at module level on purpose: with postponed annotation
-# evaluation (``from __future__ import annotations``), FastAPI resolves a
-# handler's type hints against the *module* namespace. Models nested inside
-# create_app() would resolve to nothing and every body would be misread as a
-# query parameter.
+# Everything a route signature mentions must live at module level. With
+# postponed annotation evaluation (``from __future__ import annotations``),
+# FastAPI resolves a handler's type hints against the *module* namespace, so a
+# name imported or defined inside create_app() resolves to nothing — and the
+# parameter is silently misread as a query parameter instead of a body. That
+# failure mode is a 422 with no hint about the cause, so keep these here.
 class InitBody(BaseModel):
     project: str
     template: str = "default"
@@ -63,8 +72,12 @@ class ResourceBody(BaseModel):
 
 
 class PrepareBody(BaseModel):
-    project: str
+    project: str = ""
+    repo: str = ""
+    path: str = ""
     question: str
+    agent: str = ""
+    session_id: str = ""
     prompt: str = ""
     values: dict[str, Any] = Field(default_factory=dict)
     use_cache: bool = True
@@ -84,6 +97,36 @@ class CommitBody(BaseModel):
     tags: list[str] = Field(default_factory=list)
     outcome: str = ""
     distill: bool | None = None
+    trace_id: str = ""
+    latency_ms: int = 0
+    agent: str = ""
+
+
+class ScoreBody(BaseModel):
+    trace_id: str
+    name: str = "helpfulness"
+    value: float
+    comment: str = ""
+    source: str = "human"
+    apply_to_memory: bool = True
+
+
+class AliasBody(BaseModel):
+    alias: str
+    project: str
+    kind: str = "repo"
+
+
+class ResolveBody(BaseModel):
+    project: str = ""
+    repo: str = ""
+    path: str = ""
+    create: bool = False
+
+
+class KeyBody(BaseModel):
+    name: str
+    projects: list[str] = Field(default_factory=lambda: ["*"])
 
 
 class FeedbackBody(BaseModel):
@@ -93,26 +136,185 @@ class FeedbackBody(BaseModel):
     note: str = ""
 
 
-def create_app(home: str | None = None):
-    from fastapi import FastAPI, HTTPException
+PROTOCOL_VERSION = "2024-11-05"
 
+
+def _new_session_id() -> str:
+    import secrets
+
+    return secrets.token_hex(16)
+
+
+def _handle_rpc(mcp: Handler, msg: dict[str, Any]) -> dict[str, Any] | None:
+    """Answer one JSON-RPC message. Returns None for notifications."""
+    method = msg.get("method")
+    rid = msg.get("id")
+    if rid is None:
+        return None  # notification
+
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "id": rid,
+            "result": {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "myviking", "version": __version__},
+            },
+        }
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": rid, "result": {}}
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": tools()}}
+    if method == "tools/call":
+        params = msg.get("params") or {}
+        try:
+            payload = mcp.dispatch(params.get("name", ""), params.get("arguments") or {})
+            text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+            return {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {"content": [{"type": "text", "text": text}], "isError": False},
+            }
+        except Exception as exc:
+            # Tool failures are results, not transport errors: the agent should
+            # see the message and adjust rather than lose the connection.
+            return {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {
+                    "content": [{"type": "text", "text": f"오류: {exc}"}],
+                    "isError": True,
+                },
+            }
+    return {
+        "jsonrpc": "2.0",
+        "id": rid,
+        "error": {"code": -32601, "message": f"지원하지 않는 메서드: {method}"},
+    }
+
+
+# Endpoints that must work before you hold a key.
+PUBLIC_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/favicon.ico"}
+
+
+def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     jarvis = Jarvis(home=home)
+    keys = KeyStore(jarvis.store.db)
+    mcp = Handler(jarvis)
     app = FastAPI(
         title="MyViking",
-        description="프로젝트별 자가학습 컨텍스트 데이터베이스",
-        version="0.1.0",
+        description="프로젝트별 자가학습 컨텍스트 데이터베이스 · 에이전트 컨텍스트 서버",
+        version=__version__,
+        docs_url="/docs",
     )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins or ["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.middleware("http")
+    async def authenticate(request: Request, call_next):
+        """Require a key once one exists.
+
+        Before any key is created the server is open, which is right for a
+        localhost trial. Creating the first key flips the whole surface to
+        authenticated — there is no partially-protected state to misread.
+        """
+        path = request.url.path
+        if (
+            request.method == "OPTIONS"
+            or path in PUBLIC_PATHS
+            or path.startswith("/ui")
+            or path == "/"
+        ):
+            return await call_next(request)
+        if not keys.any_active():
+            return await call_next(request)
+
+        header = request.headers.get("authorization", "")
+        raw = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        raw = raw or request.headers.get("x-api-key", "")
+        info = keys.verify(raw)
+        if info is None:
+            return JSONResponse(
+                {"detail": "유효한 API 키가 필요합니다 (Authorization: Bearer jv_...)"},
+                status_code=401,
+            )
+        request.state.key = info
+        return await call_next(request)
+
+    def _guard(request: Request, project: str) -> None:
+        """A key scoped to some projects must not read the others."""
+        info = getattr(request.state, "key", None)
+        if info is not None and project and not info.allows(project):
+            raise HTTPException(403, f"이 키는 '{project}' 에 접근할 수 없습니다")
 
     # ----- meta -------------------------------------------------------
     @app.get("/health")
     def health() -> dict[str, Any]:
         return {
             "ok": True,
+            "version": __version__,
             "home": str(jarvis.config.home),
             "llm": jarvis.store.llm.available,
             "embed": jarvis.config.embed.provider,
             "projects": len(jarvis.store.projects()),
+            "auth_required": keys.any_active(),
+            "mcp_endpoint": "/mcp",
         }
+
+    # ----- remote MCP (Streamable HTTP) --------------------------------
+    @app.post("/mcp")
+    async def mcp_endpoint(request: Request) -> Response:
+        """MCP over HTTP, so an agent on any machine speaks the same protocol.
+
+        Responds with plain JSON rather than an SSE stream: every tool here
+        returns a single result, and the Streamable HTTP transport explicitly
+        permits a JSON response in that case.
+        """
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"jsonrpc": "2.0", "id": None,
+                 "error": {"code": -32700, "message": "잘못된 JSON"}},
+                status_code=400,
+            )
+        batch = payload if isinstance(payload, list) else [payload]
+        out = []
+        for msg in batch:
+            reply = _handle_rpc(mcp, msg)
+            if reply is not None:
+                out.append(reply)
+        if not out:
+            return Response(status_code=202)
+        body = out if isinstance(payload, list) else out[0]
+        headers = {}
+        if any(m.get("method") == "initialize" for m in batch):
+            headers["Mcp-Session-Id"] = _new_session_id()
+        return JSONResponse(body, headers=headers)
+
+    @app.get("/mcp")
+    def mcp_get() -> Response:
+        # No server-initiated messages: nothing to stream.
+        return Response(status_code=405)
+
+    @app.delete("/mcp")
+    def mcp_delete() -> dict[str, Any]:
+        return {"ok": True}
+
+    @app.get("/mcp/tools")
+    def mcp_tools() -> list[dict[str, Any]]:
+        return tools()
+
+    # ----- dashboard ---------------------------------------------------
+    @app.get("/", include_in_schema=False)
+    def dashboard() -> Response:
+        return HTMLResponse(DASHBOARD_HTML)
 
     @app.get("/templates")
     def list_templates() -> list[dict[str, Any]]:
@@ -223,10 +425,20 @@ def create_app(home: str | None = None):
 
     # ----- the loop ---------------------------------------------------
     @app.post("/prepare")
-    def prepare(body: PrepareBody) -> dict[str, Any]:
+    def prepare(body: PrepareBody, request: Request) -> dict[str, Any]:
+        resolved = jarvis.resolve_project(
+            body.project, body.repo, body.path, create=True
+        )
+        if not resolved["project"]:
+            raise HTTPException(
+                400,
+                "프로젝트를 특정할 수 없습니다. project 또는 repo 를 지정하세요. "
+                f"등록됨: {', '.join(resolved.get('candidates') or [])}",
+            )
+        _guard(request, resolved["project"])
         try:
             prepared = jarvis.prepare(
-                body.project,
+                resolved["project"],
                 body.question,
                 prompt=body.prompt,
                 values=body.values,
@@ -234,13 +446,16 @@ def create_app(home: str | None = None):
                 include_global=body.include_global,
                 max_tier=body.max_tier,
                 kinds=body.kinds,
+                agent=body.agent,
+                session_id=body.session_id,
             )
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
         return prepared.to_dict()
 
     @app.post("/commit")
-    def commit(body: CommitBody) -> dict[str, Any]:
+    def commit(body: CommitBody, request: Request) -> dict[str, Any]:
+        _guard(request, body.project)
         return jarvis.commit(
             body.project,
             body.question,
@@ -252,7 +467,91 @@ def create_app(home: str | None = None):
             tags=body.tags,
             outcome=body.outcome,
             distill=body.distill,
+            trace_id=body.trace_id,
+            latency_ms=body.latency_ms,
+            agent=body.agent,
         )
+
+    # ----- observability ----------------------------------------------
+    @app.post("/scores")
+    def add_score(body: ScoreBody) -> dict[str, Any]:
+        try:
+            return jarvis.score(
+                body.trace_id,
+                name=body.name,
+                value=body.value,
+                comment=body.comment,
+                source=body.source,
+                apply_to_memory=body.apply_to_memory,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.get("/traces")
+    def list_traces(
+        project: str = "",
+        limit: int = 50,
+        cursor: str = "",
+        name: str = "",
+        min_latency: int = 0,
+    ) -> list[dict[str, Any]]:
+        return jarvis.traces(project, limit, cursor, name, min_latency)
+
+    @app.get("/traces/{trace_id}")
+    def get_trace(trace_id: str) -> dict[str, Any]:
+        data = jarvis.trace(trace_id)
+        if data is None:
+            raise HTTPException(404, "없는 트레이스")
+        return data
+
+    @app.get("/metrics")
+    def get_metrics(project: str = "", days: int = 7) -> dict[str, Any]:
+        return jarvis.metrics(project, days)
+
+    @app.get("/timeseries")
+    def get_timeseries(project: str = "", days: int = 14) -> list[dict[str, Any]]:
+        return jarvis.timeseries(project, days)
+
+    @app.get("/projects/{project}/impact")
+    def get_impact(project: str, limit: int = 20) -> list[dict[str, Any]]:
+        return jarvis.memory_impact(project, limit)
+
+    @app.get("/agents")
+    def list_agents() -> list[dict[str, Any]]:
+        return jarvis.agents()
+
+    # ----- project resolution -----------------------------------------
+    @app.post("/resolve")
+    def resolve(body: ResolveBody) -> dict[str, Any]:
+        return jarvis.resolve_project(body.project, body.repo, body.path, body.create)
+
+    @app.post("/aliases")
+    def add_alias(body: AliasBody) -> dict[str, Any]:
+        jarvis.bind_alias(body.alias, body.project, body.kind)
+        return {"alias": body.alias, "project": body.project}
+
+    @app.get("/aliases")
+    def list_aliases(project: str = "") -> list[dict[str, Any]]:
+        return jarvis.aliases(project)
+
+    # ----- keys --------------------------------------------------------
+    @app.get("/keys")
+    def list_keys() -> list[dict[str, Any]]:
+        return keys.list()
+
+    @app.post("/keys")
+    def create_key(body: KeyBody) -> dict[str, Any]:
+        kid, raw = keys.create(body.name, body.projects)
+        return {
+            "id": kid,
+            "name": body.name,
+            "key": raw,
+            "note": "이 값은 다시 볼 수 없습니다. 지금 저장하세요.",
+        }
+
+    @app.delete("/keys/{key_id}")
+    def revoke_key(key_id: str) -> dict[str, Any]:
+        return {"revoked": keys.revoke(key_id)}
 
     @app.post("/projects/{project}/distill")
     def distill(project: str, limit: int = 20) -> dict[str, Any]:
