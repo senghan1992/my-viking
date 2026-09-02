@@ -1049,6 +1049,33 @@ def cmd_remote_score(args, j: Jarvis | None = None) -> int:
 cmd_remote_score.no_jarvis = True  # type: ignore[attr-defined]
 
 
+def cmd_remote_link(args, j: Jarvis | None = None) -> int:
+    """Bind this checkout to a project on the *server*. `jv link` writes a local
+    store the remote agent never reads; this is the one that actually sticks."""
+    import os
+
+    try:
+        client = _remote(args)
+        res = client.link(
+            args.project, repo=getattr(args, "repo", "") or "", path=os.getcwd()
+        )
+    except Exception as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        _out(res, True)
+        return 0
+    print(f"서버의 '{res['project']}' 에 연결했습니다.")
+    for b in res["bound"]:
+        print(f"  {b}")
+    if not res["bound"]:
+        print("(git remote·경로 어느 것도 없어 연결하지 못했습니다.)")
+    return 0
+
+
+cmd_remote_link.no_jarvis = True  # type: ignore[attr-defined]
+
+
 # ----- backup ---------------------------------------------------------------
 def _backup_manager(args):
     from .backup import BackupManager
@@ -2038,6 +2065,14 @@ def build_parser() -> argparse.ArgumentParser:
     s2.add_argument("--name", default="helpfulness")
     s2.add_argument("--comment", default="")
     s2.set_defaults(func=cmd_remote_score)
+    s2 = rsub.add_parser(
+        "link", help="이 저장소를 서버의 프로젝트에 연결 (훅이 해석하는 곳)"
+    )
+    s2.add_argument("project", help="연결할 프로젝트 이름")
+    s2.add_argument("--url", default="", help="서버 주소 (기본 $MYVIKING_URL)")
+    s2.add_argument("--key", default="", help="API 키 (기본 $MYVIKING_KEY)")
+    s2.add_argument("--repo", default="", help="git remote URL 직접 지정")
+    s2.set_defaults(func=cmd_remote_link)
 
     # backup — the copy that survives losing the volume
     sp = sub.add_parser("backup", help="서버 밖 백업 (Google Drive / 디렉터리)")

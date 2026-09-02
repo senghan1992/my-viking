@@ -128,6 +128,20 @@ def test_session_start_briefs_previous_work(transport, client, repo_dir, state_d
     assert "다시 조사하지" in ctx
 
 
+def test_session_start_announces_a_freshly_invented_project(transport, repo_dir, state_dir):
+    """매칭되는 프로젝트가 없어 새로 만든 경우, 조용히 넘어가지 말고 알린다 —
+    오타 난 디렉터리나 미연결 체크아웃이 유령 프로젝트를 낳는 걸 막는다."""
+    out = run(
+        "session-start",
+        {"session_id": "s-new", "cwd": str(repo_dir)},
+        transport,
+        state_dir=state_dir,
+    )
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "새 프로젝트" in ctx
+    assert "jv remote link" in ctx
+
+
 def test_http_transport_surfaces_the_server_reason(monkeypatch):
     """서버가 거절 이유를 JSON body 로 설명하는데, urlopen 은 그걸 버리고
     'HTTP Error 403' 만 남긴다. 브리지·훅 로그에 진짜 이유가 보여야 한다."""

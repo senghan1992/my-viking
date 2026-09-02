@@ -44,6 +44,22 @@ def _seed(http):
 # --------------------------------------------------------------------------
 # the loop, end to end
 # --------------------------------------------------------------------------
+def test_remote_link_binds_on_the_server_not_locally(rc, http):
+    """`jv link` 는 원격 에이전트가 읽지도 않는 로컬 저장소에 써서 조용히
+    무의미했다. `jv remote link` 는 훅이 실제로 해석하는 서버에 별칭을 심는다."""
+    res = rc.link("backend", repo="git@github.com:me/backend.git")
+    assert res["project"] == "backend"
+    assert any("repo" in b for b in res["bound"])
+    # 방금 심은 별칭으로 (다른 형태로 물어도) 서버에서 해석된다.
+    assert rc.resolve_or_fail(repo="https://github.com/me/backend") == "backend"
+    # 그리고 프로젝트는 코딩 템플릿으로 만들어져 pitfalls 가 실제로 들어간다.
+    uri = http.post("/memories", json={
+        "project": "backend", "category": "pitfalls",
+        "title": "함정", "statement": "이건 함정이다",
+    }).json()["uri"]
+    assert "pitfalls" in uri
+
+
 def test_full_loop_resolves_by_repo(rc, http):
     """회사에서든 집에서든: 이름 없이 git remote 만으로 같은 프로젝트."""
     _seed(http)

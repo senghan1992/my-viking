@@ -174,6 +174,10 @@ def _resolve(transport: Any, cwd: str, state: dict[str, Any]) -> str:
     if project:
         state["project"] = project
         state["repo"] = repo
+        # A brand-new project born from a guessed name is worth announcing once:
+        # a typo'd directory or an unbound checkout otherwise silently spawns a
+        # parallel project and the user never learns why their history is empty.
+        state["created"] = bool((res or {}).get("created"))
     return project
 
 
@@ -194,6 +198,13 @@ def session_start(
     text = _orientation(project, brief or {})
     if not text:
         return None
+    if state.get("created"):
+        text = (
+            f"[MyViking] 이 위치를 새 프로젝트 '{project}' 로 등록했습니다"
+            " (기존에 매칭되는 프로젝트가 없었음). 의도한 프로젝트가 따로 있다면"
+            " `jv remote link <프로젝트명>` 으로 이 체크아웃을 서버의 그 프로젝트에"
+            " 연결하세요.\n" + text
+        )
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",

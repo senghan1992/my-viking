@@ -66,6 +66,26 @@ class RemoteClient:
             },
         )
 
+    def link(
+        self, project: str, repo: str = "", path: str = "", template: str = "coding"
+    ) -> dict[str, Any]:
+        """Bind this checkout to a project *on the server* — where the hooks
+        actually resolve. Local `jv link` writes to a local store the remote
+        agent never reads, so it silently does nothing for remote users; this
+        is the correct verb for the home-server + port-forward setup."""
+        if not repo and path:
+            repo = _git_remote(path)
+        # Create it if missing so the alias always lands on a real project.
+        self.resolve(project=project, create=True, template=template)
+        bound = []
+        for alias, kind in ((repo, "repo"), (path, "path")):
+            if alias:
+                self.t.request(
+                    "POST", "/aliases", {"alias": alias, "project": project, "kind": kind}
+                )
+                bound.append(f"{kind} {alias}")
+        return {"project": project, "bound": bound}
+
     def resolve_or_fail(
         self, project: str = "", repo: str = "", path: str = "", create: bool = False
     ) -> str:
