@@ -65,6 +65,25 @@ def test_health_reports_quality_so_the_dashboard_can_nudge(client):
     assert any("임베딩" in n for n in q["notes"])
 
 
+def test_health_surfaces_a_dead_maintenance_sweep(client, home):
+    """유지보수 스윕이 조용히 죽으면 안 된다 — /health 가 마지막 결과를 증언한다."""
+    from jarvis.server import _record_maintain
+    from jarvis.service import Jarvis
+
+    # 아직 한 번도 안 돌았으면 정직하게 '미실행'.
+    h = client.get("/health").json()
+    assert h["maintenance"]["status"] == "미실행"
+    assert h["backup"]["provider"] == "none"
+
+    # 스윕이 터지면 그 실패가 /health 와 품질 노트에 드러난다.
+    worker = Jarvis(home=str(home))
+    _record_maintain(worker, started=0.0, ok=False, error="RuntimeError: boom")
+    h = client.get("/health").json()
+    assert h["maintenance"]["status"] == "error"
+    assert "boom" in h["maintenance"]["error"]
+    assert any("유지보수" in n for n in h["quality"]["notes"])
+
+
 def test_health_and_dashboard_stay_reachable_without_a_key(client):
     client.post("/keys", json={"name": "k"})
     assert client.get("/health").status_code == 200

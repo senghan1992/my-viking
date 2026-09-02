@@ -397,6 +397,18 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
             notes.append("LLM 미설정 — 증류/요약이 규칙 기반입니다 (JARVIS_LLM_PROVIDER+키 권장)")
         if not embed_real:
             notes.append("임베딩이 해싱 폴백 — 의미 기반 회상이 제한됩니다 (JARVIS_EMBED_PROVIDER 권장)")
+        # Self-observation: a background sweep or backup that dies must show here,
+        # not only in a stdout line nobody is watching.
+        raw = jarvis.store.db.get_meta("maintenance")
+        maintenance = json.loads(raw) if raw else {"last_run": None, "status": "미실행"}
+        if maintenance.get("status") == "error":
+            notes.append(f"유지보수 스윕 실패 — {maintenance.get('error', '원인 미상')}")
+        try:
+            backup = BackupManager(jarvis.config.home).status()
+        except Exception:
+            backup = {"provider": "none"}
+        if backup.get("last_status", "").startswith("error"):
+            notes.append(f"백업 실패 — {backup['last_status']}")
         return {
             "ok": True,
             "version": __version__,
@@ -406,6 +418,13 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
             "projects": len(jarvis.store.projects()),
             "auth_required": keys.any_active(),
             "mcp_endpoint": "/mcp",
+            "maintenance": maintenance,
+            "backup": {
+                "provider": backup.get("provider", "none"),
+                "last_status": backup.get("last_status", ""),
+                "last_run": backup.get("last_run"),
+                "due": backup.get("due"),
+            },
             "quality": {
                 # distillation: real model vs. rule-based fallback
                 "llm_provider": llm.cfg.provider,
@@ -927,6 +946,24 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     return app
 
 
+def _record_maintain(worker, started: float, ok: bool, error: str = "") -> None:
+    """Persist the last maintenance sweep so /health can vouch it is alive."""
+    import time as _time
+    from datetime import datetime, timezone
+
+    payload = {
+        "last_run": datetime.now(timezone.utc).isoformat(),
+        "status": "ok" if ok else "error",
+        "took_ms": round((_time.time() - started) * 1000),
+    }
+    if error:
+        payload["error"] = error
+    try:
+        worker.store.db.set_meta("maintenance", json.dumps(payload, ensure_ascii=False))
+    except Exception:  # pragma: no cover - never let bookkeeping crash the loop
+        pass
+
+
 def start_maintenance(home: str | None, every_hours: float) -> None:
     """Run distill/decay periodically inside the server process.
 
@@ -947,9 +984,15 @@ def start_maintenance(home: str | None, every_hours: float) -> None:
         worker = Jarvis(home=home)
         while True:
             time.sleep(every_hours * 3600)
+            started = time.time()
             try:
                 worker.maintain()
+                _record_maintain(worker, started, ok=True)
             except Exception as exc:  # pragma: no cover - background best effort
+                # A background sweep that dies quietly is a store that silently
+                # stops decaying and pruning. Leave a trace /health can show.
+                _record_maintain(worker, started, ok=False,
+                                 error=f"{type(exc).__name__}: {exc}")
                 print(f"[maintain] 실패: {type(exc).__name__}: {exc}", flush=True)
 
     threading.Thread(target=loop, name="jarvis-maintain", daemon=True).start()

@@ -158,6 +158,19 @@ class Database:
     def commit(self) -> None:
         self.conn.commit()
 
+    # ----- meta (small operational key/values) -------------------------
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meta (k, v) VALUES (?, ?) "
+            "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            (key, value),
+        )
+        self.conn.commit()
+
+    def get_meta(self, key: str, default: str | None = None) -> str | None:
+        row = self.one("SELECT v FROM meta WHERE k = ?", (key,))
+        return row["v"] if row else default
+
     # ----- nodes -------------------------------------------------------
     def upsert_node(self, row: dict[str, Any]) -> None:
         row = dict(row)
