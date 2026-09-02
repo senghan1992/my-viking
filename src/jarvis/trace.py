@@ -91,7 +91,12 @@ CREATE TABLE IF NOT EXISTS context_used (
     uri      TEXT NOT NULL,
     tier     INTEGER DEFAULT 0,
     tokens   INTEGER DEFAULT 0,
-    score    REAL DEFAULT 0
+    score    REAL DEFAULT 0,
+    -- The confidence adjustment actually attributed to this memory for this
+    -- trace's outcome (see Jarvis.score). Blame is weighted and floored, so a
+    -- memory that merely rode along in a bad trace keeps applied=0 and is never
+    -- mistaken for the one that caused it.
+    applied  REAL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_ctxused_trace ON context_used(trace_id);
 CREATE INDEX IF NOT EXISTS idx_ctxused_uri ON context_used(uri);
@@ -161,6 +166,9 @@ class Tracer:
         have = {r["name"] for r in self.db.query("PRAGMA table_info(traces)")}
         if "total_ms" not in have:
             self.db.conn.execute("ALTER TABLE traces ADD COLUMN total_ms INTEGER DEFAULT 0")
+        ctx = {r["name"] for r in self.db.query("PRAGMA table_info(context_used)")}
+        if "applied" not in ctx:
+            self.db.conn.execute("ALTER TABLE context_used ADD COLUMN applied REAL DEFAULT 0")
 
     # ----- traces ------------------------------------------------------
     def start_trace(
@@ -668,12 +676,41 @@ class Tracer:
         )
         return row is not None
 
+    def record_attribution(self, trace_id: str, deltas: dict[str, float]) -> None:
+        """Persist how much of a scored outcome was pinned on each memory.
+
+        ``deltas`` maps a context uri to the confidence adjustment ``score``
+        actually applied to it (positive or negative). Accumulates, so a memory
+        scored across several outcomes carries the sum of what it earned or cost.
+        Only what is passed is touched; co-occurring memories that were spared by
+        the blame floor keep ``applied`` untouched, which is the whole point.
+        """
+        for uri, delta in deltas.items():
+            self.db.execute(
+                "UPDATE context_used SET applied = applied + ?"
+                " WHERE trace_id = ? AND uri = ?",
+                (float(delta), trace_id, uri),
+            )
+        self.db.commit()
+
     def scores_for_uri(self, uri: str) -> dict[str, Any]:
-        """How did traces that used this memory turn out?"""
+        """How did traces that used this memory turn out?
+
+        ``avg_score`` is the raw average outcome of every trace this memory rode
+        in — fine for display, but it cannot tell a culprit from a bystander.
+        ``harm`` is the total *attributed* demotion this memory actually took
+        (see ``record_attribution``); that is the honest basis for calling a
+        memory harmful, because a bad answer's blame lands only on what drove it.
+        """
         row = self.db.one(
             "SELECT COUNT(DISTINCT c.trace_id) AS uses, AVG(s.value) AS avg_score,"
             " COUNT(s.id) AS scored FROM context_used c"
             " LEFT JOIN scores s ON s.trace_id = c.trace_id WHERE c.uri = ?",
+            (uri,),
+        )
+        harm = self.db.one(
+            "SELECT SUM(applied) AS harm FROM context_used"
+            " WHERE uri = ? AND applied < 0",
             (uri,),
         )
         return {
@@ -681,6 +718,7 @@ class Tracer:
             "uses": (row["uses"] if row else 0) or 0,
             "scored": (row["scored"] if row else 0) or 0,
             "avg_score": round(row["avg_score"], 4) if row and row["avg_score"] is not None else None,
+            "harm": round(harm["harm"], 4) if harm and harm["harm"] is not None else None,
         }
 
 

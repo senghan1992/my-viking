@@ -52,6 +52,12 @@ _REVIEW_WEIGHT = {
 # together and a *relative* threshold stops separating them.
 _BLAME_FLOOR = 0.9
 
+# A memory is flagged "harmful" once the demotion attributed to it (summed over
+# every bad outcome it actually drove) crosses this. One clearly-bad judgement on
+# a top-ranked memory lands around -0.06, so this catches a single real culprit
+# while ignoring the tiny nudges a memory picks up from riding along.
+_HARM_THRESHOLD = -0.05
+
 SYSTEM_PREFIX = (
     "당신은 이 프로젝트에 대한 누적 컨텍스트를 가진 어시스턴트입니다.\n"
     "아래 컨텍스트는 이 프로젝트의 메모리·프롬프트·과거 세션에서 관련도 순으로 선택된 것입니다.\n"
@@ -442,7 +448,9 @@ class Jarvis:
             ][:limit],
             "open_threads": self.tracer.unresolved_threads(project, limit=5),
             "recent_work": self.recent_work(project, limit=4),
-            "recently_learned": self.recently_learned(project, days=14, limit=limit),
+            "recently_learned": self.recently_learned(
+                project, days=14, limit=limit, established_only=True
+            ),
             "recent_sessions": self.recent_sessions(project, limit=5),
             "prompts": [
                 {"name": p["name"], "description": p["description"], "uses": p["uses"]}
@@ -709,7 +717,10 @@ class Jarvis:
         # A superseded contradiction is settled; only an open one needs a person.
         if clash and clash.get("resolution") != "superseded":
             reasons.append("conflict")
-        if impact["avg_score"] is not None and impact["avg_score"] < 0.4:
+        # Harmful means *this* memory was blamed for bad outcomes, not merely
+        # that it sat in traces that went badly for other reasons. So it keys off
+        # the attributed demotion, not the raw average of every co-occurring score.
+        if impact.get("harm") is not None and impact["harm"] <= _HARM_THRESHOLD:
             reasons.append("harmful")
         if impact["uses"] >= 3 and impact["scored"] == 0:
             # Leaned on repeatedly, never judged. Popular is not the same as
@@ -1412,6 +1423,12 @@ class Jarvis:
                 )
                 if node.confidence < self.config.learn.archive_below:
                     self.store.archive_node(uri, reason=f"low score ({name})")
+            # Pin the blame to the trace so the review queue can later tell the
+            # memory that caused a bad outcome from the ones that merely rode along.
+            if moved:
+                self.tracer.record_attribution(
+                    trace_id, {m["uri"]: m["delta"] for m in moved}
+                )
         return {
             "score_id": score_id,
             "trace_id": trace_id,
@@ -1474,13 +1491,24 @@ class Jarvis:
         return self.tracer.aliases(project)
 
     def resolve_project(
-        self, project: str = "", repo: str = "", path: str = "", create: bool = False
+        self,
+        project: str = "",
+        repo: str = "",
+        path: str = "",
+        create: bool = False,
+        template: str = "default",
     ) -> dict[str, Any]:
         """Work out which project an agent is talking about.
 
         An agent running in a checkout knows its git remote but not what you
         named the project here. Binding the remote once makes every later call
         from any machine resolve to the same context.
+
+        ``template`` only matters when this call *creates* the project: a coding
+        agent's hooks resolve with ``template='coding'`` so the very first
+        auto-made project already has commands/conventions/pitfalls/decisions
+        categories — otherwise ``remember('pitfalls', ...)`` silently has nowhere
+        to land and the whole learn-from-mistakes path dies quietly.
         """
         if project and self.store.project_exists(project):
             return {"project": project, "resolved_by": "name", "created": False}
@@ -1496,7 +1524,7 @@ class Jarvis:
             if not create:
                 return {"project": "", "resolved_by": "", "created": False,
                         "candidates": self.store.projects()}
-            self.store.ensure_project(project)
+            self.store.ensure_project(project, template=template)
             for alias, kind in ((repo, "repo"), (path, "path")):
                 if alias:
                     self.tracer.bind_alias(_normalise_alias(alias), project, kind)
@@ -1506,7 +1534,7 @@ class Jarvis:
         if guess and self.store.project_exists(guess):
             return {"project": guess, "resolved_by": "guess", "created": False}
         if guess and create:
-            self.store.ensure_project(guess)
+            self.store.ensure_project(guess, template=template)
             if repo:
                 self.tracer.bind_alias(_normalise_alias(repo), guess, "repo")
             return {"project": guess, "resolved_by": "guess", "created": True}

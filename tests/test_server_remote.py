@@ -103,6 +103,32 @@ def test_project_scoped_key_cannot_read_other_projects(client):
     assert client.post("/prepare", json={"project": "b", "question": "q"}, headers=hdr).status_code == 403
 
 
+def test_scope_is_enforced_across_every_route_shape(client):
+    """A scoped key must be blocked no matter how the project is addressed:
+    in the path, in a query param, in a body, or via a memory uri."""
+    client.post("/projects", json={"project": "a"})
+    client.post("/projects", json={"project": "b", "template": "coding"})
+    # A memory living in project b, addressed later by its uri.
+    b_uri = client.post(
+        "/memories",
+        json={"project": "b", "category": "commands", "title": "t", "statement": "s"},
+    ).json()["uri"]
+    key = client.post("/keys", json={"name": "only-a", "projects": ["a"]}).json()["key"]
+    hdr = {"authorization": f"Bearer {key}"}
+
+    # path-addressed, query-addressed, body-addressed, uri-addressed — all 403.
+    assert client.get("/projects/b/memories", headers=hdr).status_code == 403
+    assert client.get("/traces", params={"project": "b"}, headers=hdr).status_code == 403
+    assert client.post(
+        "/memories",
+        json={"project": "b", "category": "commands", "title": "x", "statement": "y"},
+        headers=hdr,
+    ).status_code == 403
+    assert client.get("/memories/detail", params={"uri": b_uri}, headers=hdr).status_code == 403
+    # ...but the key's own project stays reachable.
+    assert client.get("/projects/a/memories", headers=hdr).status_code == 200
+
+
 def test_plaintext_key_is_never_returned_again(client):
     made = client.post("/keys", json={"name": "k"}).json()
     listed = client.get("/keys", headers={"authorization": f"Bearer {made['key']}"}).json()

@@ -30,6 +30,7 @@ import os
 import socket
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -69,8 +70,23 @@ class HttpTransport:
         req.add_header("Content-Type", "application/json")
         if self.key:
             req.add_header("Authorization", f"Bearer {self.key}")
-        with urllib.request.urlopen(req, timeout=self.timeout) as res:
-            raw = res.read().decode("utf-8")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as res:
+                raw = res.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            # The server explains refusals in the JSON body (bad key, wrong
+            # scope, unknown project). urlopen throws that away and leaves only
+            # "HTTP Error 403", so read it back and raise the real reason —
+            # otherwise the shell bridge and the hook error log say nothing useful.
+            detail = ""
+            try:
+                payload = json.loads(exc.read().decode("utf-8") or "{}")
+                detail = payload.get("detail") or payload.get("error") or ""
+            except Exception:
+                detail = ""
+            raise RuntimeError(
+                f"MyViking {exc.code}: {detail or exc.reason}"
+            ) from exc
         return json.loads(raw) if raw else None
 
 
@@ -148,7 +164,11 @@ def _resolve(transport: Any, cwd: str, state: dict[str, Any]) -> str:
     res = transport.request(
         "POST",
         "/resolve",
-        {"project": "", "repo": repo, "path": cwd, "create": True},
+        # These hooks only ever fire inside a coding agent, so a project born
+        # here must carry the coding categories (commands/conventions/pitfalls/
+        # decisions) — the default template lacks them and the agent's
+        # remember('pitfalls', ...) calls would silently vanish.
+        {"project": "", "repo": repo, "path": cwd, "create": True, "template": "coding"},
     )
     project = str((res or {}).get("project") or "")
     if project:
@@ -461,9 +481,18 @@ def _orientation(project: str, brief: dict[str, Any], tail: str = "") -> str:
             lines.append(f"- {when} ({w.get('agent') or '?'}): {qs}")
 
     learned = brief.get("recently_learned") or []
+    learned_uris = {m.get("uri") for m in learned}
     if learned:
         lines.append("■ 최근에 정해진 것")
         for m in learned[:4]:
+            lines.append(f"- [{m.get('category')}] {_clip(m.get('title'), 40)}: {_clip(m.get('abstract'), 90)}")
+
+    # The durable, high-confidence knowledge — the point of coming back oriented.
+    # Skip anything already shown under "최근에 정해진 것" so it is not repeated.
+    know = [m for m in (brief.get("know") or []) if m.get("uri") not in learned_uris]
+    if know:
+        lines.append("■ 확립된 지식")
+        for m in know[:4]:
             lines.append(f"- [{m.get('category')}] {_clip(m.get('title'), 40)}: {_clip(m.get('abstract'), 90)}")
 
     warnings = brief.get("warnings") or []
@@ -518,9 +547,9 @@ def _context_note(project: str, prepared: dict[str, Any]) -> str:
     return "\n".join(
         x
         for x in [
-            f"[MyViking · {project}] 이 프로젝트에서 이미 확인된 지식입니다."
-            " 같은 것을 다시 조사하지 말고 여기서 시작하세요."
-            " ⚠ 주의 항목을 거스르는 제안은 하지 마세요.",
+            f"[MyViking · {project}] 이 질문과 관련 있을 만한, 이 프로젝트에 이미"
+            " 축적된 지식입니다. 관련된 부분은 다시 조사하지 말고 활용하되, 질문과"
+            " 무관하면 무시하세요. ⚠ 주의 항목을 거스르는 제안은 하지 마세요.",
             context,
             "상세가 필요하면 jarvis_browse(op=read) 로 URI 를 읽으세요. " + tail,
         ]

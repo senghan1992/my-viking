@@ -260,6 +260,9 @@ class Handler:
             repo=str(args.get("repo") or ""),
             path=str(args.get("path") or ""),
             create=create,
+            # MCP is a coding-agent surface; a project it creates gets the
+            # coding categories so pitfalls/decisions have somewhere to land.
+            template=str(args.get("template") or "coding"),
         )
         if not resolved["project"]:
             raise ValueError(

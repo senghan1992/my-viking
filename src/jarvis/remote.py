@@ -43,14 +43,27 @@ class RemoteClient:
 
     # ----- project resolution -----------------------------------------
     def resolve(
-        self, project: str = "", repo: str = "", path: str = "", create: bool = False
+        self,
+        project: str = "",
+        repo: str = "",
+        path: str = "",
+        create: bool = False,
+        template: str = "coding",
     ) -> dict[str, Any]:
         if not repo and path:
             repo = _git_remote(path)
+        # This bridge is what coding agents call, so a project it creates should
+        # start with the coding categories rather than the bare default set.
         return self.t.request(
             "POST",
             "/resolve",
-            {"project": project, "repo": repo, "path": path, "create": create},
+            {
+                "project": project,
+                "repo": repo,
+                "path": path,
+                "create": create,
+                "template": template,
+            },
         )
 
     def resolve_or_fail(
@@ -97,6 +110,7 @@ class RemoteClient:
                 "session_id": session_id,
                 "max_tier": max_tier,
                 "use_cache": use_cache,
+                "template": "coding",
             },
         )
 

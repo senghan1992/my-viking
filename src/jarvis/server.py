@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +24,7 @@ from .auth import KeyStore
 from .backup import BackupManager, start_backup_loop
 from .connect import CLIENTS, build as build_connection, instruction_file
 from .mcp_core import Handler, tools
+from .models import Uri
 from .service import Jarvis
 from .ui import DASHBOARD_HTML
 
@@ -86,6 +88,8 @@ class PrepareBody(BaseModel):
     include_global: bool = True
     max_tier: int = 2
     kinds: list[str] | None = None
+    # Template for the project if this call has to create it (see ResolveBody).
+    template: str = "default"
 
 
 class CommitBody(BaseModel):
@@ -140,6 +144,9 @@ class ResolveBody(BaseModel):
     repo: str = ""
     path: str = ""
     create: bool = False
+    # Only used when this call creates the project. Coding-agent hooks send
+    # "coding" so the auto-made project has the right categories from the start.
+    template: str = "default"
 
 
 class KeyBody(BaseModel):
@@ -313,13 +320,50 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
             )
         auth_failures.pop(ip, None)
         request.state.key = info
+
+        # Scope enforcement, centralised for the common vectors: a project named
+        # in the path (/projects/{project}/...) or in a ?project= query param.
+        # Body- and uri-addressed routes still guard themselves (the request body
+        # is not safely readable here), but this one check closes the bulk of the
+        # surface so a new scoped route cannot silently leak by forgetting a call.
+        if info is not None and not info.allows("*"):
+            scoped = ""
+            parts = path.strip("/").split("/")
+            if len(parts) >= 2 and parts[0] == "projects":
+                scoped = unquote(parts[1])
+            if not scoped:
+                scoped = request.query_params.get("project", "")
+            if scoped and not info.allows(scoped):
+                return JSONResponse(
+                    {"detail": f"이 키는 '{scoped}' 에 접근할 수 없습니다"},
+                    status_code=403,
+                )
         return await call_next(request)
 
     def _guard(request: Request, project: str) -> None:
-        """A key scoped to some projects must not read the others."""
+        """A key scoped to some projects must not touch the others. Used by
+        routes whose project lives in the body or a uri, where the middleware
+        cannot see it."""
         info = getattr(request.state, "key", None)
         if info is not None and project and not info.allows(project):
             raise HTTPException(403, f"이 키는 '{project}' 에 접근할 수 없습니다")
+
+    def _guard_uri(request: Request, uri: str) -> None:
+        """Guard a route addressed by a memory uri, whose scope is the project."""
+        try:
+            _guard(request, Uri.parse(uri).scope)
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+    def _guard_trace(request: Request, trace_id: str) -> None:
+        info = getattr(request.state, "key", None)
+        if info is None or info.allows("*"):
+            return
+        row = jarvis.store.db.one("SELECT scope FROM traces WHERE id=?", (trace_id,))
+        if row is not None:
+            _guard(request, row["scope"])
 
     # ----- meta -------------------------------------------------------
     @app.get("/health")
@@ -449,7 +493,8 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return jarvis.list_prompts(project)
 
     @app.post("/prompts")
-    def save_prompt(body: PromptBody) -> dict[str, Any]:
+    def save_prompt(body: PromptBody, request: Request) -> dict[str, Any]:
+        _guard(request, body.project)
         node = jarvis.save_prompt(
             body.project,
             body.name,
@@ -461,7 +506,8 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return {"uri": str(node.uri), "extra": node.extra}
 
     @app.post("/prompts/render")
-    def render_prompt(body: RenderBody) -> dict[str, Any]:
+    def render_prompt(body: RenderBody, request: Request) -> dict[str, Any]:
+        _guard(request, body.project)
         try:
             res = jarvis.render_prompt(body.project, body.name, body.values, body.strict)
         except KeyError as exc:
@@ -487,7 +533,8 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return jarvis.memories(project, category, limit)
 
     @app.post("/memories")
-    def add_memory(body: MemoryBody) -> dict[str, Any]:
+    def add_memory(body: MemoryBody, request: Request) -> dict[str, Any]:
+        _guard(request, body.project)
         try:
             uri = jarvis.remember(
                 body.project,
@@ -503,18 +550,21 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return {"uri": str(uri)}
 
     @app.delete("/memories")
-    def forget(uri: str, archive: bool = True) -> dict[str, Any]:
+    def forget(uri: str, request: Request, archive: bool = True) -> dict[str, Any]:
+        _guard_uri(request, uri)
         return {"ok": jarvis.forget(uri, archive)}
 
     @app.post("/feedback")
-    def feedback(body: FeedbackBody) -> dict[str, Any]:
+    def feedback(body: FeedbackBody, request: Request) -> dict[str, Any]:
+        _guard(request, body.project)
         node = jarvis.feedback(body.project, body.uri, body.helpful, body.note)
         if node is None:
             raise HTTPException(404, "대상을 찾지 못했습니다")
         return {"uri": str(node.uri), "confidence": node.confidence}
 
     @app.post("/resources")
-    def add_resource(body: ResourceBody) -> dict[str, Any]:
+    def add_resource(body: ResourceBody, request: Request) -> dict[str, Any]:
+        _guard(request, body.project)
         node = jarvis.add_resource(body.project, body.name, body.text, body.title, body.tags)
         return {"uri": str(node.uri)}
 
@@ -522,7 +572,7 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     @app.post("/prepare")
     def prepare(body: PrepareBody, request: Request) -> dict[str, Any]:
         resolved = jarvis.resolve_project(
-            body.project, body.repo, body.path, create=True
+            body.project, body.repo, body.path, create=True, template=body.template
         )
         if not resolved["project"]:
             raise HTTPException(
@@ -616,14 +666,16 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return jarvis.review_summary(project, include_unconfirmed)
 
     @app.get("/memories/detail")
-    def memory_detail(uri: str) -> dict[str, Any]:
+    def memory_detail(uri: str, request: Request) -> dict[str, Any]:
+        _guard_uri(request, uri)
         data = jarvis.memory_detail(uri)
         if data is None:
             raise HTTPException(404, "없는 메모리")
         return data
 
     @app.patch("/memories")
-    def edit_memory(body: EditMemoryBody) -> dict[str, Any]:
+    def edit_memory(body: EditMemoryBody, request: Request) -> dict[str, Any]:
+        _guard_uri(request, body.uri)
         try:
             return jarvis.edit_memory(
                 body.uri,
@@ -640,7 +692,8 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
             raise HTTPException(400, str(exc)) from exc
 
     @app.post("/memories/confirm")
-    def confirm_memory(body: ConfirmBody) -> dict[str, Any]:
+    def confirm_memory(body: ConfirmBody, request: Request) -> dict[str, Any]:
+        _guard_uri(request, body.uri)
         try:
             return jarvis.confirm_memory(body.uri, body.confidence)
         except KeyError as exc:
@@ -648,7 +701,8 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
 
     # ----- observability ----------------------------------------------
     @app.post("/scores")
-    def add_score(body: ScoreBody) -> dict[str, Any]:
+    def add_score(body: ScoreBody, request: Request) -> dict[str, Any]:
+        _guard_trace(request, body.trace_id)
         try:
             return jarvis.score(
                 body.trace_id,
@@ -673,7 +727,8 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return jarvis.traces(project, limit, cursor, name, min_latency)
 
     @app.get("/traces/{trace_id}")
-    def get_trace(trace_id: str) -> dict[str, Any]:
+    def get_trace(trace_id: str, request: Request) -> dict[str, Any]:
+        _guard_trace(request, trace_id)
         data = jarvis.trace(trace_id)
         if data is None:
             raise HTTPException(404, "없는 트레이스")
@@ -710,7 +765,9 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     # ----- project resolution -----------------------------------------
     @app.post("/resolve")
     def resolve(body: ResolveBody) -> dict[str, Any]:
-        return jarvis.resolve_project(body.project, body.repo, body.path, body.create)
+        return jarvis.resolve_project(
+            body.project, body.repo, body.path, body.create, template=body.template
+        )
 
     @app.post("/aliases")
     def add_alias(body: AliasBody) -> dict[str, Any]:
@@ -746,11 +803,13 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
 
     # ----- browsing ---------------------------------------------------
     @app.get("/ls")
-    def ls(uri: str) -> dict[str, Any]:
+    def ls(uri: str, request: Request) -> dict[str, Any]:
+        _guard_uri(request, uri)
         return jarvis.ls(uri)
 
     @app.get("/tree")
-    def tree(uri: str, depth: int = 3) -> dict[str, Any]:
+    def tree(uri: str, request: Request, depth: int = 3) -> dict[str, Any]:
+        _guard_uri(request, uri)
         return jarvis.tree(uri, depth)
 
     @app.get("/find")
@@ -758,11 +817,16 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return jarvis.find(q, project, limit=limit)
 
     @app.get("/grep")
-    def grep(term: str, uri: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+    def grep(
+        term: str, request: Request, uri: str | None = None, limit: int = 30
+    ) -> list[dict[str, Any]]:
+        if uri:
+            _guard_uri(request, uri)
         return jarvis.grep(term, uri, limit)
 
     @app.get("/read")
-    def read(uri: str, tier: int = 2) -> dict[str, Any]:
+    def read(uri: str, request: Request, tier: int = 2) -> dict[str, Any]:
+        _guard_uri(request, uri)
         data = jarvis.read(uri, tier)
         if data is None:
             raise HTTPException(404, "없습니다")

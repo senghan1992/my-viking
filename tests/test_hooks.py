@@ -8,7 +8,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from jarvis.connect import hook_settings  # noqa: E402
-from jarvis.hooks import _last_exchange, run  # noqa: E402
+from jarvis.hooks import _last_exchange, _orientation, run  # noqa: E402
 from jarvis.server import create_app  # noqa: E402
 
 
@@ -126,6 +126,40 @@ def test_session_start_briefs_previous_work(transport, client, repo_dir, state_d
     )
     ctx = out["hookSpecificOutput"]["additionalContext"]
     assert "다시 조사하지" in ctx
+
+
+def test_http_transport_surfaces_the_server_reason(monkeypatch):
+    """서버가 거절 이유를 JSON body 로 설명하는데, urlopen 은 그걸 버리고
+    'HTTP Error 403' 만 남긴다. 브리지·훅 로그에 진짜 이유가 보여야 한다."""
+    import io
+    import urllib.error
+
+    from jarvis.hooks import HttpTransport
+
+    def boom(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 403, "Forbidden", {},
+            io.BytesIO(json.dumps({"detail": "이 키는 'b' 에 접근할 수 없습니다"}).encode()),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    with pytest.raises(RuntimeError, match="이 키는 'b'"):
+        HttpTransport("http://x").request("GET", "/projects/b/brief")
+
+
+def test_orientation_surfaces_established_knowledge():
+    """확립된 지식(brief.know)이 세션 시작 브리핑에 실제로 나와야 한다 —
+    돌아온 세션이 알아야 할 핵심이 orientation 에서 빠지면 안 된다."""
+    brief = {
+        "know": [
+            {"uri": "backend/memories/commands/deploy", "category": "commands",
+             "title": "배포", "abstract": "scripts/deploy.sh 로 배포한다", "confidence": 0.9},
+        ],
+        "recently_learned": [],
+    }
+    out = _orientation("backend", brief)
+    assert "확립된 지식" in out
+    assert "scripts/deploy.sh" in out
 
 
 # --------------------------------------------------------------------------

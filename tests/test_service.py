@@ -189,6 +189,23 @@ def test_low_scoring_memory_is_flagged_harmful(coding):
     assert "harmful" in reasons
 
 
+def test_harmful_blames_the_driver_not_the_bystander(coding):
+    """A bad answer's fault lands on what drove it. A memory that merely rode
+    along in the same trace must not be smeared as harmful."""
+    coding.remember("app", "commands", "틀린 배포", "make deploy 로 배포한다", confidence=0.9)
+    coding.remember("app", "commands", "테스트", "pytest -q 로 돌린다", confidence=0.9)
+    prepared = coding.prepare("app", "배포는 어떻게 해?", use_cache=False)
+    coding.score(prepared.trace_id, "helpfulness", 0.0, comment="그런 명령 없음")
+
+    flagged = {
+        it["title"]
+        for it in coding.review_queue("app")
+        if "harmful" in it["reasons"]
+    }
+    assert "틀린 배포" in flagged  # the memory that answered the deploy question
+    assert "테스트" not in flagged  # innocent bystander, blame floor spared it
+
+
 def test_review_summary_counts_across_projects(jarvis):
     jarvis.init_project("a", template="coding")
     jarvis.init_project("b", template="coding")
@@ -369,6 +386,20 @@ def test_alias_bound_by_hand_resolves_across_url_forms(jarvis):
         r = jarvis.resolve_project(repo=form)
         assert r["project"] == "my-backend-svc"
         assert r["resolved_by"] == "repo"
+
+
+def test_auto_created_project_can_carry_a_coding_template(jarvis):
+    """A coding agent's hooks resolve-with-create; the project they bring into
+    being must have the coding categories, or remember('pitfalls', ...) has
+    nowhere to go and the whole learn-from-mistakes path dies silently."""
+    r = jarvis.resolve_project(
+        repo="git@github.com:me/fresh.git", create=True, template="coding"
+    )
+    assert r["created"] is True
+    project = r["project"]
+    # A coding-template category that the default template does not have.
+    uri = jarvis.remember(project, "pitfalls", "지뢰", "이 API 는 재시도하면 중복 생성된다")
+    assert str(uri) in {m["uri"] for m in jarvis.memories(project)}
 
 
 def test_record_layer_retention(coding):
