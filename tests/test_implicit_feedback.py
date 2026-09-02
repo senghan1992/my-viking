@@ -114,6 +114,17 @@ def test_moving_on_marks_the_previous_answer_as_settled(coding):
     assert got["value"] > 0.5
 
 
+def test_moving_on_does_not_promote_the_memories_it_used(coding):
+    """넘어감은 정답이었다는 약한 신호일 뿐 — 포기했을 수도 있다. 그러니 이때
+    쓰인 메모리의 신뢰도를 올려선 안 된다 (검색=정답 아님, reinforce=0.0 원칙)."""
+    uri = coding.remember("app", "commands", "테스트 실행", "pytest -q 로 돌린다")
+    before = coding.store.read_node(uri).confidence
+    # 이 메모리를 쓴 답을 남기고, 다음에 전혀 다른 주제로 넘어간다.
+    _turn(coding, "app", "테스트는 어떻게 돌려?")
+    _turn(coding, "app", "커밋 메시지 규칙이 뭐야?")
+    assert coding.store.read_node(uri).confidence == before
+
+
 def test_a_stated_score_is_never_overwritten_by_inference(coding):
     coding.remember("app", "commands", "배포 명령", "make deploy")
     first = _turn(coding, "app", "배포 어떻게 해?")
@@ -280,6 +291,27 @@ def test_a_correction_counts_even_on_a_new_subject(question):
 
 def test_trouble_words_do_count_when_the_subject_is_unchanged():
     kind, _v, _w = _classify_followup("배포가 실패해", 0.9, 2, 0.25)
+    assert kind == "reworked"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # 새 작업 요청에 붙은 품질 부사일 뿐, 직전 답에 대한 불만이 아니다.
+        "이제 배포 스크립트 제대로 짜줘",
+        "다시 한 번 로깅 설정 정리해줘",
+        "please refactor the parser again",
+    ],
+)
+def test_weak_repair_words_are_not_a_complaint_on_a_new_subject(question):
+    """'제대로'·'다시'·'again' 은 주제가 바뀌면 직전 답에 대한 교정이 아니다."""
+    kind, _v, _w = _classify_followup(question, 0.0, 2, 0.25)
+    assert kind != "reworked", question
+
+
+def test_weak_repair_words_do_count_when_the_subject_is_unchanged():
+    """같은 주제로 '제대로 해줘' 가 오면 직전 답에 대한 재작업이 맞다."""
+    kind, _v, _w = _classify_followup("배포 스크립트 제대로 다시 해줘", 0.9, 2, 0.25)
     assert kind == "reworked"
 
 

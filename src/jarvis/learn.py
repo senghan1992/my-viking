@@ -55,6 +55,10 @@ class MemoryCandidate:
     confidence: float = 0.5
     tags: list[str] = field(default_factory=list)
     source: str = ""
+    # "llm" or "rule": which extractor produced this. A rule-derived guess and
+    # an LLM reading of the transcript are not equally trustworthy, and the
+    # store must remember which one filed a memory so briefs can say so.
+    extractor: str = ""
 
 
 @dataclass
@@ -213,6 +217,7 @@ class Learner:
                     confidence=_clamp(item.get("confidence", 0.55)),
                     tags=[str(t) for t in (item.get("tags") or [])][:8],
                     source=str(session.uri),
+                    extractor="llm",
                 )
             )
         return out
@@ -244,9 +249,13 @@ class Learner:
                             # No provenance in the body: `sources` records it,
                             # and prose here ends up in the regenerated summary.
                             detail="",
-                            confidence=0.6,
+                            # Below the brief() "established knowledge" gate (0.6):
+                            # a bare marker match in the user's own sentence is a
+                            # guess worth keeping, not a fact to surface as settled.
+                            confidence=0.55,
                             tags=["규칙"],
                             source=str(session.uri),
+                            extractor="rule",
                         )
                     )
 
@@ -264,6 +273,7 @@ class Learner:
                         confidence=0.5,
                         tags=["코드"],
                         source=str(session.uri),
+                        extractor="rule",
                     )
                 )
 
@@ -291,6 +301,7 @@ class Learner:
                     confidence=0.4,
                     tags=["세션"],
                     source=str(session.uri),
+                    extractor="rule",
                 )
             )
         return out
@@ -324,6 +335,10 @@ class Learner:
                     node.body, cand, conflict, superseded=supersede_here
                 )
                 node.confidence = min(1.0, node.confidence + 0.12)
+                # Once an LLM reading lands in the file, it is no longer a purely
+                # rule-derived guess — record the stronger provenance.
+                if cand.extractor == "llm" and node.extra.get("extractor") != "llm":
+                    node.extra["extractor"] = "llm"
                 node.sources = _add_source(node.sources, cand.source)
                 node.tags = sorted(set(node.tags) | set(cand.tags))
                 if conflict:
@@ -423,6 +438,9 @@ class Learner:
             sources=[cand.source] if cand.source else [],
             extra={
                 "origin": "manual" if manual else "distilled",
+                # Which distiller wrote it — an LLM read of the transcript vs. a
+                # rule-based guess. Empty for manual entries.
+                "extractor": "" if manual else (cand.extractor or "rule"),
                 "reviewed": manual,
                 "reviewed_at": now_iso() if manual else "",
             },
@@ -611,7 +629,11 @@ class Learner:
             if stale_days < 7:
                 continue
             new_conf = float(row["confidence"]) * cfg.decay ** max(1, stale_days // 7)
-            if new_conf < cfg.archive_below and int(row["hits"]) == 0:
+            # Below the usefulness floor after sitting unused for at least a week:
+            # archive it whether or not it was ever used. A once-used note (hits>0)
+            # that has faded this far is dead weight in retrieval and the review
+            # queue just the same; archiving keeps it recoverable, not deleted.
+            if new_conf < cfg.archive_below:
                 if self.store.archive_node(uri, reason="decay") is not None:
                     archived.append(row["uri"])
                 continue

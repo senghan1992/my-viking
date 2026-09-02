@@ -698,6 +698,7 @@ class Jarvis:
                     "hits": node.hits,
                     "updated": node.updated,
                     "origin": node.extra.get("origin", "distilled"),
+                    "extractor": node.extra.get("extractor", ""),
                     "reviewed": bool(node.extra.get("reviewed")),
                     "conflict": node.extra.get("conflict"),
                     "uses": impact["uses"],
@@ -853,6 +854,7 @@ class Jarvis:
             "updated": node.updated,
             "sources": node.sources,
             "origin": node.extra.get("origin", "distilled"),
+            "extractor": node.extra.get("extractor", ""),
             "reviewed": bool(node.extra.get("reviewed")),
             "conflict": node.extra.get("conflict"),
             "tokens": {
@@ -1341,6 +1343,13 @@ class Jarvis:
             comment=why,
             source="implicit",
             strength=cfg.implicit_strength,
+            # Moving on is weak evidence the answer landed — the user might just
+            # as easily have given up. So a positive implicit signal stays a
+            # trace-level metric and must not *promote* the memories it used;
+            # only the negative signals (reworked/repeated) move confidence.
+            # This keeps faith with the design rule that being retrieved is not
+            # evidence of being right (config learn.reinforce=0.0).
+            apply_to_memory=value < 0.5,
         )
         self.tracer.annotate(prev["id"], {"implicit_outcome": outcome})
         self.tracer.event(
@@ -1690,14 +1699,24 @@ _HANGUL_RE = re.compile(r"^[가-힣]+$")
 # question *about* failure, not a complaint about the last answer — and it was
 # being read as one, marking a perfectly good answer as reworked.
 #
-# Corrections speak about the work just done, whatever the subject:
+# Corrections speak about the work just done, whatever the subject. These are
+# unambiguous even when the topic has moved on — "여전히 안 돼" / "still doesn't
+# work" can only be a verdict on the previous answer:
 _CORRECTION_MARKERS = (
     "안 되는데", "안되는데", "안 되네", "안되네", "안 돼", "안돼", "안 됩니다",
-    "여전히", "아직", "그대로", "다시 해", "다시 봐", "다시 한", "제대로",
-    "동작하지", "작동하지", "구현이 안", "왜 안", "고쳐", "수정해", "잘못",
-    "틀렸", "제대로 안",
-    "still", "doesn't work", "does not work", "not working", "again",
+    "여전히", "아직", "그대로",
+    "동작하지", "작동하지", "구현이 안", "왜 안",
+    "틀렸", "제대로 안", "고쳐", "수정해",
+    "still", "doesn't work", "does not work", "not working",
     "didn't work", "did not work", "fix it", "fix this", "broken",
+)
+# Weak quality-adverbs that read as a complaint only when the subject hasn't
+# changed. "이제 배포 스크립트 제대로 짜줘" contains "제대로" but is a brand-new
+# request, not a verdict on the last answer — so these count only with topic
+# overlap. (Repair imperatives like "고쳐"/"수정해" stay strong: they reference
+# work already produced regardless of subject.)
+_WEAK_CORRECTION_MARKERS = (
+    "다시 해", "다시 봐", "다시 한", "제대로", "잘못", "again",
 )
 # Trouble words only count as a complaint when the subject has not changed —
 # otherwise they are simply the topic of a new question:
@@ -1784,8 +1803,9 @@ def _classify_followup(
     continuing = any(m in low for m in _CONTINUATION_MARKERS)
     same_topic = overlap >= rework_similarity
     corrected = any(m in low for m in _CORRECTION_MARKERS)
+    weakly_corrected = any(m in low for m in _WEAK_CORRECTION_MARKERS)
     troubled = any(m in low for m in _TROUBLE_WORDS)
-    complained = corrected or (troubled and same_topic)
+    complained = corrected or ((weakly_corrected or troubled) and same_topic)
 
     if complained and not continuing:
         detail = "같은 주제로 " if same_topic else ""

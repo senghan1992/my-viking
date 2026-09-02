@@ -254,6 +254,27 @@ def test_distinct_questions_get_distinct_titles(coding):
     assert len(titles) == len(set(titles)), titles
 
 
+def test_rule_distilled_memory_carries_its_extractor_and_stays_below_established(coding):
+    """규칙 기반 추출은 LLM 추출과 구별돼 저장되고(extractor='rule'), 마커 하나만
+    맞은 선호는 '확립된 지식' 게이트(0.6) 아래에 머문다 — 추측이 사실로 둔갑하지
+    않도록. LLM 없는 기본 설정에서의 신뢰성 핵심."""
+    assert not coding.store.llm.available  # 기본 설정: 규칙 기반
+    coding.commit(
+        "app", "앞으로 주석은 항상 한글로 써줘", "네, 한글로 씁니다.", distill=False
+    )
+    rep = coding.distill("app")
+    pref = next(
+        coding.memory_detail(u) for u in rep.created
+        if Uri.parse(u).parts[1] in ("preferences", "conventions")
+    )
+    assert pref["extractor"] == "rule"
+    assert pref["origin"] == "distilled"
+    assert pref["confidence"] < 0.6, "마커 매칭 추측이 확립된 지식으로 올라갔다"
+    # 그러니 브리핑의 '확립된 지식(know)' 에는 뜨지 않는다.
+    know_uris = {k["uri"] for k in coding.brief("app")["know"]}
+    assert pref["uri"] not in know_uris
+
+
 def test_provenance_stays_out_of_memory_text(coding):
     coding.commit("app", "앞으로 주석은 항상 한글로 써줘", "네, 한글로 씁니다.")
     for mem in coding.memories("app"):
