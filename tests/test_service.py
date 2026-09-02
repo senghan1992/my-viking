@@ -369,3 +369,53 @@ def test_alias_bound_by_hand_resolves_across_url_forms(jarvis):
         r = jarvis.resolve_project(repo=form)
         assert r["project"] == "my-backend-svc"
         assert r["resolved_by"] == "repo"
+
+
+def test_record_layer_retention(coding):
+    """메모리처럼 기록 층(트레이스·회계·캐시)도 스스로 정리돼야 한다."""
+    j = coding
+    p = j.prepare("app", "질문", use_cache=False)
+    j.commit("app", "질문", "답변", trace_id=p.trace_id)
+    for i in range(6):
+        j.sessions.cache_put("app", f"다른 질문 {i}", "답")
+
+    # 전부 옛날 것으로 되돌려 놓고 스윕
+    j.store.db.execute("UPDATE traces SET started = '2020-01-01T00:00:00'")
+    j.store.db.execute("UPDATE usage SET ts = '2020-01-01T00:00:00'")
+    j.store.db.commit()
+    j.config.retention.cache_per_project = 3
+
+    res = j.prune_records()
+    assert res["traces"] >= 1 and res["usage"] >= 1 and res["cache"] >= 1
+    assert j.traces("app") == []
+    # 트레이스에 매달린 것들도 함께 사라진다
+    assert j.store.db.query("SELECT 1 FROM observations") == []
+    assert j.store.db.query("SELECT 1 FROM context_used") == []
+    remaining = j.store.db.one("SELECT COUNT(*) c FROM cache WHERE scope='app'")["c"]
+    assert remaining == 3
+
+    # 0 은 '영구 보관' — 아무것도 지우지 않는다
+    j.config.retention.traces_days = 0
+    j.config.retention.usage_days = 0
+    j.config.retention.cache_per_project = 0
+    assert j.prune_records() == {"traces": 0, "usage": 0, "cache": 0}
+
+
+def test_concurrent_mutations_stay_consistent(coding):
+    """요청 스레드들이 한 커넥션을 공유해도 트랜잭션이 섞이지 않아야 한다."""
+    import concurrent.futures
+
+    j = coding
+
+    def work(i):
+        p = j.prepare("app", f"질문 {i}", use_cache=False)
+        j.commit("app", f"질문 {i}", f"답 {i}", trace_id=p.trace_id, distill=False)
+        return p.trace_id
+
+    with concurrent.futures.ThreadPoolExecutor(8) as ex:
+        ids = list(ex.map(work, range(24)))
+
+    assert len(set(ids)) == 24
+    rows = j.traces("app", limit=100)
+    assert len(rows) == 24
+    assert all(r["output"] for r in rows)  # 모든 커밋이 제 트레이스에 붙었다

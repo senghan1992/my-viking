@@ -16,6 +16,7 @@ to remember *from* it. Everything else in this package serves those two.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -118,6 +119,25 @@ class Prepared:
         }
 
 
+def _locked(fn):
+    """Serialise a compound mutation on the shared connection.
+
+    HTTP request handlers run in a threadpool over one ``Jarvis``. SQLite
+    serialises single statements, but a mutation here is several statements
+    plus file writes; without this, one thread's commit() publishes another's
+    half-finished transaction. Reentrant, so mutators can call each other, and
+    reads take no lock at all. Writers finish in milliseconds — serialising
+    them costs nothing a personal server can feel.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self.store.db.lock:
+            return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
 class Jarvis:
     def __init__(self, config: Config | None = None, home: str | None = None):
         self.config = config or Config.load(home)
@@ -133,6 +153,7 @@ class Jarvis:
     # ==================================================================
     # projects & profiles
     # ==================================================================
+    @_locked
     def init_project(
         self,
         project: str,
@@ -180,10 +201,12 @@ class Jarvis:
     def profile(self, project: str) -> MemoryProfile:
         return self.store.profile(project)
 
+    @_locked
     def set_profile(self, project: str, profile: MemoryProfile) -> MemoryProfile:
         self.store.save_profile(project, profile)
         return profile
 
+    @_locked
     def apply_template(self, project: str, template: str) -> MemoryProfile:
         """Swap a project's category schema, keeping its description and budget."""
         current = self.store.profile(project)
@@ -197,12 +220,14 @@ class Jarvis:
     def templates(self) -> list[dict[str, Any]]:
         return template_summary()
 
+    @_locked
     def delete_project(self, project: str) -> bool:
         return self.store.delete_project(project)
 
     # ==================================================================
     # prompts
     # ==================================================================
+    @_locked
     def save_prompt(
         self,
         project: str,
@@ -230,15 +255,18 @@ class Jarvis:
     def prompt_versions(self, project: str, name: str) -> list[dict[str, Any]]:
         return self.prompts.versions(project, name)
 
+    @_locked
     def rollback_prompt(self, project: str, name: str, version: str) -> Node | None:
         return self.prompts.rollback(project, name, version)
 
+    @_locked
     def delete_prompt(self, project: str, name: str) -> bool:
         return self.prompts.delete(project, name)
 
     # ==================================================================
     # memory (manual)
     # ==================================================================
+    @_locked
     def remember(
         self,
         project: str,
@@ -270,6 +298,7 @@ class Jarvis:
         uri, _action, _conflict = self.learner.absorb(project, cand, profile)
         return uri  # type: ignore[return-value]
 
+    @_locked
     def forget(self, uri: str, archive: bool = True) -> bool:
         if archive:
             return self.store.archive_node(uri, reason="manual") is not None
@@ -583,6 +612,7 @@ class Jarvis:
         out["projects"].sort(key=lambda d: -d["needs_review"])
         return out
 
+    @_locked
     def maintain(self, days_unused: int = 0) -> dict[str, Any]:
         """Run the housekeeping the learning loop needs: distill, decay, cap.
 
@@ -595,7 +625,23 @@ class Jarvis:
         for name in self.store.projects():
             report = self.learner.distill(name, limit=50)
             results.append(report.to_dict())
-        return {"projects": results}
+        return {"projects": results, "retention": self.prune_records()}
+
+    @_locked
+    def prune_records(self) -> dict[str, int]:
+        """Apply retention to the record layer (traces, accounting, cache).
+
+        Memories decay and cap themselves; this is the same discipline for
+        observability data, which otherwise grows for as long as the server
+        stays up — and the cache's near-miss scan pays for every stale row on
+        every prompt.
+        """
+        r = self.config.retention
+        return {
+            "traces": self.tracer.prune(r.traces_days),
+            "usage": self.store.db.prune_usage(r.usage_days),
+            "cache": self.sessions.cache_prune(r.cache_per_project),
+        }
 
     # ------------------------------------------------------------------
     # curation — the part you do *after* the work, not during it
@@ -694,6 +740,7 @@ class Jarvis:
             out["total"] += len(queue)
         return out
 
+    @_locked
     def confirm_memory(self, uri: str, confidence: float | None = None) -> dict[str, Any]:
         """Mark a memory human-verified. It stops asking and gains confidence."""
         u = Uri.parse(uri)
@@ -711,6 +758,7 @@ class Jarvis:
         self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
         return {"uri": uri, "reviewed": True, "confidence": node.confidence}
 
+    @_locked
     def edit_memory(
         self,
         uri: str,
@@ -805,6 +853,7 @@ class Jarvis:
             "path": str(self.store.path_for(u)),
         }
 
+    @_locked
     def add_resource(
         self,
         project: str,
@@ -829,6 +878,7 @@ class Jarvis:
     # ==================================================================
     # the ask/commit loop
     # ==================================================================
+    @_locked
     def prepare(
         self,
         project: str,
@@ -1129,6 +1179,7 @@ class Jarvis:
             )
         return out
 
+    @_locked
     def commit(
         self,
         project: str,
@@ -1285,6 +1336,7 @@ class Jarvis:
     # ==================================================================
     # quality loop
     # ==================================================================
+    @_locked
     def score(
         self,
         trace_id: str,
@@ -1410,6 +1462,7 @@ class Jarvis:
     # ==================================================================
     # project resolution (same repo -> same project, from any machine)
     # ==================================================================
+    @_locked
     def bind_alias(self, alias: str, project: str, kind: str = "repo") -> None:
         # Stored normalised, because lookups are: `resolve_project` normalises
         # the incoming remote/path before searching, so a raw ssh-form alias
@@ -1464,9 +1517,11 @@ class Jarvis:
             "candidates": self.store.projects(),
         }
 
+    @_locked
     def distill(self, project: str, limit: int = 20) -> DistillReport:
         return self.learner.distill(project, limit=limit)
 
+    @_locked
     def feedback(
         self, project: str, uri: str, helpful: bool, note: str = ""
     ) -> Node | None:
@@ -1537,6 +1592,7 @@ class Jarvis:
     def report(self, project: str | None = None, days: int = 0) -> UsageReport:
         return usage_report(self.store.db, project, days)
 
+    @_locked
     def reindex(self, project: str | None = None) -> dict[str, int]:
         return self.store.reindex(project)
 
@@ -1544,6 +1600,7 @@ class Jarvis:
     def cache_list(self, project: str, limit: int = 30) -> list[dict[str, Any]]:
         return self.sessions.cache_list(project, limit)
 
+    @_locked
     def cache_clear(self, project: str) -> int:
         return self.sessions.cache_clear(project)
 

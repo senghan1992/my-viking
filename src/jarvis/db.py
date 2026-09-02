@@ -105,6 +105,14 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # One connection is shared across the server's request threads. The
+        # sqlite3 module serialises individual statements (threadsafety 3),
+        # but not *sequences* of them — two threads interleaving execute()s
+        # before a commit() would publish each other's half-done work. Compound
+        # mutations take this lock (see the service layer); reads stay free.
+        import threading
+
+        self.lock = threading.RLock()
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
@@ -182,6 +190,17 @@ class Database:
 
     def dir_row(self, uri: str) -> sqlite3.Row | None:
         return self.one("SELECT * FROM dirs WHERE uri = ?", (uri,))
+
+    def prune_usage(self, days: int) -> int:
+        """Drop token-accounting rows past retention. Dashboards read at most
+        a few weeks of these; nothing else reads them at all."""
+        if days <= 0:
+            return 0
+        cur = self.conn.execute(
+            "DELETE FROM usage WHERE ts < datetime('now', ?)", (f"-{int(days)} days",)
+        )
+        self.conn.commit()
+        return cur.rowcount or 0
 
     def prune_empty_dirs(self, scope: str) -> None:
         self.conn.execute("DELETE FROM dirs WHERE scope=? AND children <= 0", (scope,))

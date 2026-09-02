@@ -62,7 +62,13 @@ class Store:
         worse results. Rebuilding is cheap (measured in seconds for thousands of
         nodes) and the files are the source of truth, so do it rather than warn.
         """
-        want = f"{self.config.embed.provider}:{self.config.embed.dim}:{FEATURE_VERSION}"
+        # The model matters as much as the provider: switching openai
+        # small→large keeps provider and dim identical while making every
+        # stored vector incomparable with new ones.
+        want = (
+            f"{self.config.embed.provider}:{self.config.embed.model}"
+            f":{self.config.embed.dim}:{FEATURE_VERSION}"
+        )
         row = self.db.one("SELECT v FROM meta WHERE k = 'embed_version'")
         have = row["v"] if row else ""
         if have == want:

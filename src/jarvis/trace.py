@@ -379,6 +379,36 @@ class Tracer:
             for r in rows
         ]
 
+    # ----- retention -----------------------------------------------------
+    def prune(self, days: int) -> int:
+        """Delete traces past retention, with everything hanging off them.
+
+        Safe to lose: a score's learning value was applied to memory
+        confidence the moment it arrived, and session handover only reads
+        recent work. What retention protects is the cost of keeping — every
+        listing query and every backup pays for rows nobody will read again.
+        """
+        if days <= 0:
+            return 0
+        ids = [
+            r["id"]
+            for r in self.db.query(
+                "SELECT id FROM traces WHERE started < datetime('now', ?)",
+                (f"-{int(days)} days",),
+            )
+        ]
+        for start in range(0, len(ids), 500):  # SQLite 변수 한도(999) 아래로
+            chunk = ids[start : start + 500]
+            marks = ",".join("?" for _ in chunk)
+            for table in ("observations", "scores", "context_used"):
+                self.db.execute(
+                    f"DELETE FROM {table} WHERE trace_id IN ({marks})", chunk
+                )
+            self.db.execute(f"DELETE FROM traces WHERE id IN ({marks})", chunk)
+        if ids:
+            self.db.commit()
+        return len(ids)
+
     # ----- context provenance -----------------------------------------
     def record_context(self, trace_id: str, scope: str, items: list[dict[str, Any]]) -> None:
         if not items:

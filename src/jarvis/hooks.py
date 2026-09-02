@@ -287,18 +287,85 @@ def run(
     state_dir: Path | str | None = None,
 ) -> dict[str, Any] | None:
     """Dispatch one hook event. Never raises: a hook that fails must not
-    break the coding session it is observing."""
+    break the coding session it is observing.
+
+    Fail-open has a failure mode of its own: a wrong URL or a revoked key
+    means weeks of silently missing records. So every failure leaves a local
+    breadcrumb and every success a timestamp — ``jv agent hooks --check``
+    reads both, turning "조용한 유실" into something a person can see.
+    """
     handler = _HANDLERS.get(event)
     if handler is None:
         return None
+    sdir = Path(state_dir) if state_dir else DEFAULT_STATE_DIR
     try:
-        return handler(
-            payload or {},
-            transport,
-            Path(state_dir) if state_dir else DEFAULT_STATE_DIR,
+        result = handler(payload or {}, transport, sdir)
+        _mark_ok(sdir, event)
+        return result
+    except Exception as exc:
+        _log_failure(sdir, event, exc)
+        return None
+
+
+_ERRORS_FILE = "errors.log"
+_LAST_OK_FILE = "last-ok"
+_MAX_ERROR_LINES = 50
+
+
+def _mark_ok(state_dir: Path, event: str) -> None:
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / _LAST_OK_FILE).write_text(
+            f"{_now_stamp()} {event}\n", encoding="utf-8"
         )
     except Exception:
-        return None
+        pass
+
+
+def _log_failure(state_dir: Path, event: str, exc: Exception) -> None:
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        path = state_dir / _ERRORS_FILE
+        lines: list[str] = []
+        if path.exists():
+            lines = path.read_text(encoding="utf-8").splitlines()[-(_MAX_ERROR_LINES - 1):]
+        lines.append(f"{_now_stamp()} {event} {type(exc).__name__}: {exc}")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _now_stamp() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def health_check(transport: Any, state_dir: Path | str | None = None) -> dict[str, Any]:
+    """Can the hooks reach the server, and have they been failing?
+
+    Returns what ``jv agent hooks --check`` prints: server reachability, the
+    last successful hook, and the recent failure breadcrumbs.
+    """
+    sdir = Path(state_dir) if state_dir else DEFAULT_STATE_DIR
+    out: dict[str, Any] = {"server_ok": False, "server": {}, "last_ok": "", "recent_failures": []}
+    try:
+        health = transport.request("GET", "/health")
+        out["server_ok"] = bool((health or {}).get("ok"))
+        out["server"] = health or {}
+    except Exception as exc:
+        out["server_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        out["last_ok"] = (sdir / _LAST_OK_FILE).read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    try:
+        out["recent_failures"] = (
+            (sdir / _ERRORS_FILE).read_text(encoding="utf-8").splitlines()[-10:]
+        )
+    except Exception:
+        pass
+    return out
 
 
 # --------------------------------------------------------------------------

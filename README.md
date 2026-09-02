@@ -112,6 +112,17 @@ jv backup list            # 드라이브에 있는 스냅샷
 jv backup restore --yes   # 최신 스냅샷으로 복원 (복원 후 컨테이너 재시작)
 ```
 
+업로드는 수백 MB 스토어도 서버 메모리에 통째로 올리지 않도록 **청크 단위
+resumable 업로드**로 나가고, 중간에 끊긴 청크는 그 청크만 다시 보냅니다.
+
+복원은 파괴적이라 되돌릴 장치를 자동으로 답니다: `restore` 는 덮어쓰기 직전의
+상태를 `pre-restore/` 에 한 부 남기고, 결과에 그 경로를 알려줍니다. 엉뚱한
+스냅샷을 복원했다면 그 파일로 되돌리면 됩니다:
+
+```bash
+jv backup restore --file /data/pre-restore/myviking-....tar.gz --yes  # 실행 취소
+```
+
 새 머신에서의 재해 복구는 세 줄입니다: `up.sh` 로 띄우고 → `jv backup connect`
 로 같은 드라이브에 연결하고 → `jv backup restore --yes`.
 
@@ -175,7 +186,13 @@ jv agent hooks --install --url https://viking.example.com --key jv_...
 | **SessionEnd** | 세션 상태 정리 |
 
 훅은 전부 fail-open 입니다: 서버가 죽어 있어도 코딩 세션은 깨지지 않고,
-그 턴의 기록만 빠집니다.
+그 턴의 기록만 빠집니다. 조용한 실패가 최악이므로, 실패는 흔적을 남기고
+점검 명령으로 확인할 수 있습니다 — 서버 연결, 마지막 성공 시각, 최근 실패:
+
+```bash
+jv agent hooks --check --url https://viking.example.com --key jv_...
+# 서버가 닿지 않으면 종료 코드 1 로 알려줍니다 (기록이 새고 있다는 신호)
+```
 
 에이전트 지시문은 두 가지로 줄어듭니다 — 훅이 판단할 수 없는 것들입니다:
 
@@ -312,6 +329,16 @@ API 키를 켜 두었다면 입력란에 넣으면 설정에 자동으로 포함
 세션 기록은 컨텍스트에 싣지 않습니다. 세션에서 가치 있는 것은 이미 메모리로
 증류되었으므로, 원문까지 넣으면 같은 내용을 두 번 싣고 폐기된 지시가 대화록에
 인용된 채 읽힙니다. 반복 질문은 답변 캐시가 따로 처리합니다.
+
+지식 계층과 별개로, **기록 계층**(트레이스·토큰 사용량·답변 캐시)도 무한히
+쌓이지 않습니다. 주기 유지보수가 오래된 것을 정리합니다 — 트레이스 180일,
+사용량 90일, 캐시는 프로젝트당 500개까지(가장 최근 쓰인 것 우선). `0` 으로
+두면 영구 보관합니다.
+
+```bash
+jv config --set retention.traces_days=365   # 예: 트레이스 1년 보관
+jv config --set retention.cache_per_project=0  # 캐시는 정리하지 않음
+```
 
 ## 화면 세 개
 
@@ -699,11 +726,21 @@ jv config --set llm.provider=anthropic \
 교체할 수 있고(`embed.provider`), 기본값은 오프라인 해시 임베딩입니다. 문자
 n-gram 이라 한국어를 토크나이저 없이 처리합니다.
 
+실제 임베딩 프로바이더를 붙이면 회상이 의미 기반이 됩니다(해시 폴백은
+키워드에 가깝습니다). **프로바이더를 바꿔도 수동 재색인은 필요 없습니다** —
+색인 서명에 프로바이더·모델·차원이 들어 있어, 바뀌면 다음 접근 때 스스로
+다시 임베딩합니다.
+
+지금 어느 수준으로 도는지는 대시보드 헤더의 품질 칩으로 한눈에 보입니다:
+LLM 과 실제 임베딩이 모두 붙어 있으면 **품질 최상**, 하나라도 폴백이면
+**품질 기본**(무엇을 켜면 좋아지는지 툴팁으로 안내). 같은 정보를
+`GET /health` 의 `quality` 블록에서도 확인할 수 있습니다.
+
 ## 개발
 
 ```bash
 uv pip install --python .venv -e ".[all,dev]"
-.venv/bin/python -m pytest -q        # 317 tests
+.venv/bin/python -m pytest -q        # 366 tests
 .venv/bin/ruff check src tests
 bash examples/quickstart.sh          # 전체 루프 시연
 ```

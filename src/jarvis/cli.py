@@ -818,7 +818,33 @@ def cmd_agent_config(args, j: Jarvis) -> int:
 
 def cmd_agent_hooks(args, j: Jarvis | None = None) -> int:
     """Print or install the Claude Code hooks that make capture automatic."""
+    import os
+
     from .connect import hook_settings
+
+    if args.check:
+        from .hooks import HttpTransport, health_check
+
+        url = os.environ.get("MYVIKING_URL", "") or args.url
+        key = args.key or os.environ.get("MYVIKING_KEY", "")
+        res = health_check(HttpTransport(url, key), state_dir=args.state_dir or None)
+        if args.json:
+            _out(res, True)
+            return 0 if res["server_ok"] else 1
+        if res["server_ok"]:
+            srv = res["server"]
+            print(f"서버       연결됨 ({url} · v{srv.get('version')} · 프로젝트 {srv.get('projects')}개)")
+        else:
+            print(f"서버       연결 실패 ({url}): {res.get('server_error', '?')}")
+            print("           훅은 fail-open 이라 코딩 세션은 정상이지만, 기록이 쌓이지 않는 상태입니다.")
+        print(f"마지막 성공 {res['last_ok'] or '기록 없음'}")
+        if res["recent_failures"]:
+            print(f"최근 실패  {len(res['recent_failures'])}건 (최신순 아래)")
+            for line in res["recent_failures"]:
+                print(f"  {line}")
+        else:
+            print("최근 실패  없음")
+        return 0 if res["server_ok"] else 1
 
     settings = hook_settings(args.url, args.key or "")
     if not args.install:
@@ -1177,11 +1203,15 @@ def cmd_backup_restore(args, j: Jarvis | None = None) -> int:
         )
         return 1
     try:
-        res = _backup_manager(args).restore(args.name or "")
+        mgr = _backup_manager(args)
+        res = mgr.restore_file(args.file) if args.file else mgr.restore(args.name or "")
     except (RuntimeError, ValueError) as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
     print(f"복원했습니다: {res['restored']}")
+    if res.get("pre_restore"):
+        print(f"복원 직전 상태를 보관했습니다: {res['pre_restore']}")
+        print(f"  잘못 복원했다면:  jv backup restore --file {res['pre_restore']} --yes")
     print("실행 중인 서버가 있다면 재시작해야 복원본을 읽습니다:")
     print("  docker compose restart myviking")
     return 0
@@ -1944,11 +1974,17 @@ def build_parser() -> argparse.ArgumentParser:
     s2.add_argument("--key", help="API 키 (인증을 켰다면 필요)")
     s2.add_argument("-p", "--project", help="지시문에 넣을 프로젝트 이름")
     s2.set_defaults(func=cmd_agent_config)
-    s2 = asub.add_parser("hooks", help="Claude Code 자동 캡처 훅 설정 생성/설치")
+    s2 = asub.add_parser("hooks", help="Claude Code 자동 캡처 훅 설정 생성/설치/점검")
     s2.add_argument("--url", default="http://127.0.0.1:8787", help="MyViking 서버 주소")
     s2.add_argument("--key", help="API 키 (인증을 켰다면 필요)")
     s2.add_argument("--install", action="store_true", help=".claude/settings.json 에 병합")
     s2.add_argument("--path", help="설치할 저장소 경로 (기본 현재 디렉터리)")
+    s2.add_argument(
+        "--check",
+        action="store_true",
+        help="훅이 서버에 닿는지 + 최근 훅 실패 여부 점검 (조용한 기록 유실 감지)",
+    )
+    s2.add_argument("--state-dir", default="", help="훅 상태 위치 (기본 ~/.myviking/hook-state)")
     s2.set_defaults(func=cmd_agent_hooks)
     s2 = asub.add_parser("list", help="연결된 에이전트 목록")
     s2.set_defaults(func=cmd_agents)
@@ -2028,8 +2064,9 @@ def build_parser() -> argparse.ArgumentParser:
     s2.set_defaults(func=cmd_backup_run)
     s2 = bsub.add_parser("list", help="원격에 있는 백업 목록")
     s2.set_defaults(func=cmd_backup_list)
-    s2 = bsub.add_parser("restore", help="원격 백업으로 복원 (기본: 최신)")
+    s2 = bsub.add_parser("restore", help="백업으로 복원 (기본: 원격의 최신)")
     s2.add_argument("name", nargs="?", help="복원할 백업 파일명 (생략하면 최신)")
+    s2.add_argument("--file", help="원격 대신 로컬 아카이브에서 복원 (pre-restore 되돌리기 포함)")
     s2.add_argument("--yes", action="store_true", help="현재 데이터를 덮어쓰는 데 동의")
     s2.set_defaults(func=cmd_backup_restore)
 

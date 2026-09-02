@@ -324,15 +324,42 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     # ----- meta -------------------------------------------------------
     @app.get("/health")
     def health() -> dict[str, Any]:
+        llm = jarvis.store.llm
+        embed = jarvis.config.embed
+        # A store on the offline fallbacks still works, but its distillation is
+        # crude and its recall is keyword-shaped, not semantic. Say so plainly
+        # so the dashboard can nudge toward the settings that make it good.
+        embed_real = embed.provider not in ("", "hashing")
+        notes = []
+        if not llm.available:
+            notes.append("LLM 미설정 — 증류/요약이 규칙 기반입니다 (JARVIS_LLM_PROVIDER+키 권장)")
+        if not embed_real:
+            notes.append("임베딩이 해싱 폴백 — 의미 기반 회상이 제한됩니다 (JARVIS_EMBED_PROVIDER 권장)")
         return {
             "ok": True,
             "version": __version__,
             "home": str(jarvis.config.home),
-            "llm": jarvis.store.llm.available,
-            "embed": jarvis.config.embed.provider,
+            "llm": llm.available,
+            "embed": embed.provider,
             "projects": len(jarvis.store.projects()),
             "auth_required": keys.any_active(),
             "mcp_endpoint": "/mcp",
+            "quality": {
+                # distillation: real model vs. rule-based fallback
+                "llm_provider": llm.cfg.provider,
+                "llm_model": llm.cfg.model,
+                "llm_ready": llm.available,
+                # recall: semantic embeddings vs. hashing fallback
+                "embed_provider": embed.provider,
+                "embed_model": embed.model,
+                "embed_dim": embed.dim,
+                "embed_semantic": embed_real,
+                # the index re-embeds itself when the provider/model changes, so
+                # switching providers needs no manual reindex.
+                "reindex_automatic": True,
+                "full_quality": llm.available and embed_real,
+                "notes": notes,
+            },
         }
 
     # ----- remote MCP (Streamable HTTP) --------------------------------

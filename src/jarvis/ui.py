@@ -148,6 +148,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   <button id="refresh" class="small">새로고침</button>
   <span class="grow"></span>
   <input id="key" type="password" placeholder="API 키 (필요한 경우)" size="16">
+  <span id="quality" class="chip" title=""></span>
   <span id="status" class="chip"></span>
 </header>
 
@@ -1009,12 +1010,29 @@ async function boot() {
   fillProjectSelects();
 }
 
+function renderQuality(q) {
+  const el = $("quality");
+  if (!q) { el.textContent = ""; el.className = "chip"; el.title = ""; return; }
+  if (q.full_quality) {
+    el.textContent = "품질 최상";
+    el.className = "chip ok";
+    el.title = `증류: ${q.llm_provider}/${q.llm_model} · 임베딩: ${q.embed_provider}/${q.embed_model || "-"} (${q.embed_dim}차원)`;
+    return;
+  }
+  el.textContent = "품질 기본";
+  el.className = "chip warn";
+  const lines = (q.notes || []).slice();
+  lines.push(q.reindex_automatic ? "프로바이더를 바꾸면 색인은 자동 재생성됩니다." : "");
+  el.title = lines.filter(Boolean).join("\n");
+}
+
 async function load() {
   $("error").innerHTML = "";
   try {
     const h = await api("/health");
     $("ver").textContent = "v" + h.version;
     $("status").textContent = h.auth_required ? "인증 필요" : "인증 없음";
+    renderQuality(h.quality);
     await boot();
     if (tab === "projects") { renderProjects(); await loadBackup(); }
     else if (tab === "knowledge") await loadKnowledge();

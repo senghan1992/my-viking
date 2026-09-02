@@ -32,7 +32,6 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
-import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,12 +47,18 @@ SNAPSHOT_PREFIX = "myviking-"
 GOOGLE_DEVICE_URL = "https://oauth2.googleapis.com/device/code"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_API = "https://www.googleapis.com/drive/v3"
-GOOGLE_UPLOAD = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
+GOOGLE_UPLOAD = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id"
 # drive.file sees only what this app created. A backup token that could read
 # someone's whole Drive would turn a convenience into a liability.
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 
-Http = Callable[..., tuple[int, bytes]]
+# Uploads go in slices of this size, so a multi-hundred-MB store never has to
+# fit in memory alongside the server. Google requires multiples of 256 KiB.
+UPLOAD_CHUNK = 8 * 1024 * 1024
+
+# (status, body, response-headers). Headers matter: the resumable-upload
+# session URI arrives in ``Location``.
+Http = Callable[..., tuple[int, bytes, dict[str, str]]]
 
 
 def _now_iso() -> str:
@@ -72,14 +77,16 @@ def _urllib_http(
     headers: dict[str, str] | None = None,
     data: bytes | None = None,
     timeout: float = 120.0,
-) -> tuple[int, bytes]:
+) -> tuple[int, bytes, dict[str, str]]:
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as res:
-            return int(res.getcode() or 0), res.read()
+            return int(res.getcode() or 0), res.read(), {
+                k.lower(): v for k, v in res.headers.items()
+            }
     except urllib.error.HTTPError as exc:
         # API errors carry their explanation in the body; surface it, don't raise.
-        return int(exc.code), exc.read()
+        return int(exc.code), exc.read(), {k.lower(): v for k, v in exc.headers.items()}
 
 
 # --------------------------------------------------------------------------
@@ -247,7 +254,7 @@ class GoogleDrive:
 
     # ----- device flow --------------------------------------------------
     def device_start(self) -> dict[str, Any]:
-        status, body = self.http(
+        status, body, _hdrs = self.http(
             "POST",
             GOOGLE_DEVICE_URL,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -279,7 +286,7 @@ class GoogleDrive:
         device_code = self.creds.get("_device_code", "")
         if not device_code:
             return {"status": "error", "error": "진행 중인 연결이 없습니다"}
-        status, body = self.http(
+        status, body, _hdrs = self.http(
             "POST",
             GOOGLE_TOKEN_URL,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -324,7 +331,7 @@ class GoogleDrive:
         refresh = self.creds.get("refresh_token", "")
         if not refresh:
             raise RuntimeError("Google Drive 가 연결되지 않았습니다 (refresh_token 없음)")
-        status, body = self.http(
+        status, body, _hdrs = self.http(
             "POST",
             GOOGLE_TOKEN_URL,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -355,15 +362,21 @@ class GoogleDrive:
             "Authorization": f"Bearer {self._token()}",
             "Content-Type": content_type,
         }
-        status, body = self.http(method, url, headers=headers, data=data)
+        status, body, hdrs = self.http(method, url, headers=headers, data=data)
         if status == 401:
             # One retry on a freshly forced token: access tokens expire midway
             # through long-running servers and that is routine, not an error.
             headers["Authorization"] = f"Bearer {self._token(force=True)}"
-            status, body = self.http(method, url, headers=headers, data=data)
+            status, body, hdrs = self.http(method, url, headers=headers, data=data)
         if status >= 400:
             raise RuntimeError(f"Drive API 오류 {status}: {body[:200].decode('utf-8', 'replace')}")
-        return _jsonb(body)
+        out = _jsonb(body)
+        # The resumable-upload handshake answers with an empty body and the
+        # session URI in Location; smuggle it through on a reserved key.
+        location = hdrs.get("location") or hdrs.get("Location", "")
+        if location:
+            out["_location"] = location
+        return out
 
     # ----- files ----------------------------------------------------------
     def ensure_folder(self, name: str) -> str:
@@ -393,25 +406,47 @@ class GoogleDrive:
         return folder_id
 
     def upload(self, file: Path, name: str) -> str:
+        """Resumable upload, one bounded chunk at a time.
+
+        A multipart body would hold the whole archive in memory next to the
+        server; resumable streams it in ``UPLOAD_CHUNK`` slices, and a chunk
+        interrupted mid-flight only costs that chunk.
+        """
         folder_id = self.creds.get("folder_id") or ""
         meta: dict[str, Any] = {"name": name}
         if folder_id:
             meta["parents"] = [folder_id]
-        boundary = f"jvb{uuid.uuid4().hex}"
-        body = (
-            f"--{boundary}\r\n"
-            "Content-Type: application/json; charset=UTF-8\r\n\r\n"
-            f"{json.dumps(meta)}\r\n"
-            f"--{boundary}\r\n"
-            "Content-Type: application/gzip\r\n\r\n"
-        ).encode() + file.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
-        made = self._api(
-            "POST",
-            GOOGLE_UPLOAD + "&fields=id",
-            data=body,
-            content_type=f"multipart/related; boundary={boundary}",
-        )
-        return str(made.get("id", ""))
+        made = self._api("POST", GOOGLE_UPLOAD, data=json.dumps(meta).encode())
+        session_uri = str(made.get("_location", ""))
+        if not session_uri:
+            raise RuntimeError("업로드 세션 URI 를 받지 못했습니다")
+
+        total = file.stat().st_size
+        sent = 0
+        with file.open("rb") as fh:
+            while sent < total:
+                chunk = fh.read(UPLOAD_CHUNK)
+                end = sent + len(chunk) - 1
+                headers = {
+                    "Authorization": f"Bearer {self._token()}",
+                    "Content-Range": f"bytes {sent}-{end}/{total}",
+                }
+                status, body, hdrs = self.http("PUT", session_uri, headers=headers, data=chunk)
+                if status == 401:
+                    headers["Authorization"] = f"Bearer {self._token(force=True)}"
+                    status, body, hdrs = self.http(
+                        "PUT", session_uri, headers=headers, data=chunk
+                    )
+                if status in (200, 201):
+                    return str(_jsonb(body).get("id", ""))
+                if status == 308:  # resume incomplete: the server says how far it got
+                    rng = hdrs.get("range", "")
+                    sent = int(rng.rsplit("-", 1)[-1]) + 1 if "-" in rng else end + 1
+                    continue
+                raise RuntimeError(
+                    f"업로드 실패 {status}: {body[:200].decode('utf-8', 'replace')}"
+                )
+        raise RuntimeError("업로드가 완료 응답 없이 끝났습니다")
 
     def list(self) -> list[dict[str, Any]]:
         folder_id = self.creds.get("folder_id") or ""
@@ -434,13 +469,13 @@ class GoogleDrive:
 
     def download(self, file_id: str, dest: Path) -> Path:
         headers = {"Authorization": f"Bearer {self._token()}"}
-        status, body = self.http(
+        status, body, _hdrs = self.http(
             "GET", f"{GOOGLE_API}/files/{urllib.parse.quote(file_id)}?alt=media",
             headers=headers,
         )
         if status == 401:
             headers["Authorization"] = f"Bearer {self._token(force=True)}"
-            status, body = self.http(
+            status, body, _hdrs = self.http(
                 "GET",
                 f"{GOOGLE_API}/files/{urllib.parse.quote(file_id)}?alt=media",
                 headers=headers,
@@ -610,8 +645,51 @@ class BackupManager:
             raise RuntimeError(f"'{name}' 백업을 찾지 못했습니다")
         with tempfile.TemporaryDirectory(dir=self.home) as td:
             archive = remote.download(chosen["id"], Path(td) / chosen["name"])
+            pre = self._keep_pre_restore()
             restore_snapshot(archive, self.home)
-        return {"restored": chosen["name"], "size": chosen.get("size", 0)}
+        return {
+            "restored": chosen["name"],
+            "size": chosen.get("size", 0),
+            "pre_restore": str(pre) if pre else "",
+        }
+
+    def restore_file(self, archive: Path | str) -> dict[str, Any]:
+        """Restore from a local archive — the undo path for a bad restore,
+        and the road in for archives copied by hand."""
+        path = Path(archive)
+        if not path.exists():
+            raise RuntimeError(f"파일이 없습니다: {path}")
+        size = path.stat().st_size
+        # The pre-restore snapshot lives beside undo archives and prunes the
+        # directory — which would delete the very file we are restoring from
+        # (undo restores *from* pre-restore/). Copy it aside first.
+        with tempfile.TemporaryDirectory(dir=self.home) as td:
+            staged = Path(td) / path.name
+            shutil.copyfile(path, staged)
+            pre = self._keep_pre_restore()
+            restore_snapshot(staged, self.home)
+        return {
+            "restored": path.name,
+            "size": size,
+            "pre_restore": str(pre) if pre else "",
+        }
+
+    def _keep_pre_restore(self) -> Path | None:
+        """Snapshot the current state before a restore overwrites it.
+
+        A restore aimed at the wrong archive would otherwise destroy everything
+        recorded since that archive, irreversibly. One local copy (only the
+        latest — this is an undo step, not a second backup system) makes the
+        mistake recoverable: ``jv backup restore --file <이 파일> --yes``.
+        """
+        pre_dir = self.home / "pre-restore"
+        try:
+            pre_dir.mkdir(parents=True, exist_ok=True)
+            for old in pre_dir.glob(f"{SNAPSHOT_PREFIX}*.tar.gz"):
+                old.unlink(missing_ok=True)
+            return make_snapshot(self.home, pre_dir)
+        except Exception:
+            return None  # 안전망이 본 작업(복원)을 막아서는 안 된다
 
     def status(self) -> dict[str, Any]:
         s = self.settings()

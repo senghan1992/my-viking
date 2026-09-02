@@ -254,6 +254,28 @@ class SessionLog:
             cache_id=int(row["id"]),
         )
 
+    def cache_prune(self, keep_per_project: int) -> int:
+        """Cap the answer cache per project, most recently useful first.
+
+        The near-miss lookup scans every cached row of its scope, so an
+        unbounded cache is a tax on *every* prompt, not just a storage cost.
+        """
+        if keep_per_project <= 0:
+            return 0
+        deleted = 0
+        scopes = [r["scope"] for r in self.db.query("SELECT DISTINCT scope FROM cache")]
+        for scope in scopes:
+            cur = self.db.execute(
+                "DELETE FROM cache WHERE scope=? AND id NOT IN ("
+                " SELECT id FROM cache WHERE scope=?"
+                " ORDER BY COALESCE(last_used, created) DESC LIMIT ?)",
+                (scope, scope, keep_per_project),
+            )
+            deleted += cur.rowcount or 0
+        if deleted:
+            self.db.commit()
+        return deleted
+
     def cache_clear(self, project: str) -> int:
         cur = self.db.execute("DELETE FROM cache WHERE scope=?", (project,))
         self.db.commit()

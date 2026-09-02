@@ -10,8 +10,6 @@ from jarvis import Config, Jarvis
 from jarvis.backup import (
     BackupManager,
     BackupSettings,
-    GoogleDrive,
-    LocalFolder,
     make_snapshot,
     restore_snapshot,
 )
@@ -162,14 +160,17 @@ def test_settings_file_is_private(home, manager):
 # Google Drive 클라이언트 (가짜 HTTP 로 전 구간)
 # --------------------------------------------------------------------------
 class FakeGoogle:
-    """디바이스 플로우·토큰 갱신·파일 API 를 흉내내는 HTTP 함수."""
+    """디바이스 플로우·토큰 갱신·resumable 업로드까지 흉내내는 HTTP 함수."""
+
+    UPLOAD_SESSION = "https://upload.fake/session-1"
 
     def __init__(self):
         self.approved = False
         self.files = {}  # id -> {name, size, parents}
         self.next_id = 0
         self.access = "tok-1"
-        self.expired_once = False
+        self.pending_meta = None
+        self.pending_bytes = b""
 
     def __call__(self, method, url, headers=None, data=None, timeout=None):
         if url.endswith("/device/code"):
@@ -177,34 +178,48 @@ class FakeGoogle:
                 "device_code": "dev-1", "user_code": "ABCD-EFGH",
                 "verification_url": "https://google.com/device",
                 "interval": 1, "expires_in": 600,
-            }).encode()
+            }).encode(), {}
         if url.endswith("/token"):
             form = urllib.parse.parse_qs((data or b"").decode())
             if form.get("grant_type") == ["urn:ietf:params:oauth:grant-type:device_code"]:
                 if not self.approved:
-                    return 428, json.dumps({"error": "authorization_pending"}).encode()
+                    return 428, json.dumps({"error": "authorization_pending"}).encode(), {}
                 return 200, json.dumps({
                     "access_token": self.access, "refresh_token": "refresh-1",
                     "expires_in": 3600,
-                }).encode()
-            return 200, json.dumps({"access_token": self.access, "expires_in": 3600}).encode()
+                }).encode(), {}
+            return 200, json.dumps({"access_token": self.access, "expires_in": 3600}).encode(), {}
 
         # Drive API — 토큰 검사 (만료 시나리오 지원)
         auth = (headers or {}).get("Authorization", "")
         if auth != f"Bearer {self.access}":
-            return 401, b"{}"
+            return 401, b"{}", {}
 
         if "/drive/v3/about" in url:
-            return 200, json.dumps({"user": {"emailAddress": "me@gmail.com"}}).encode()
+            return 200, json.dumps({"user": {"emailAddress": "me@gmail.com"}}).encode(), {}
 
-        if "upload/drive/v3/files" in url:
+        if "uploadType=resumable" in url:
+            # 세션 시작: 메타데이터를 받고 세션 URI 를 Location 으로 준다.
+            self.pending_meta = json.loads((data or b"{}").decode())
+            self.pending_bytes = b""
+            return 200, b"", {"location": self.UPLOAD_SESSION}
+        if url == self.UPLOAD_SESSION and method == "PUT":
+            rng = (headers or {}).get("Content-Range", "")  # bytes s-e/total
+            span, total = rng.split(" ")[1].split("/")
+            start, end = (int(x) for x in span.split("-"))
+            assert start == len(self.pending_bytes), "청크가 순서대로 오지 않았다"
+            self.pending_bytes += data or b""
+            if end + 1 < int(total):
+                return 308, b"", {"range": f"bytes=0-{end}"}
             self.next_id += 1
             fid = f"f{self.next_id}"
-            body = data or b""
-            meta = json.loads(body.split(b"\r\n\r\n")[1].split(b"\r\n--")[0])
-            self.files[fid] = {"name": meta["name"], "size": len(body),
-                               "parents": meta.get("parents", [])}
-            return 200, json.dumps({"id": fid}).encode()
+            self.files[fid] = {
+                "name": self.pending_meta["name"],
+                "size": len(self.pending_bytes),
+                "parents": self.pending_meta.get("parents", []),
+                "content": self.pending_bytes,
+            }
+            return 200, json.dumps({"id": fid}).encode(), {}
         if method == "GET" and "/drive/v3/files?" in url:
             q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("q", [""])[0]
             if "folder" in q:
@@ -213,26 +228,28 @@ class FakeGoogle:
                     for fid, f in self.files.items()
                     if f.get("folder") and f["name"] in q
                 ]
-                return 200, json.dumps({"files": found}).encode()
+                return 200, json.dumps({"files": found}).encode(), {}
             found = [
                 {"id": fid, "name": f["name"], "size": str(f["size"])}
                 for fid, f in self.files.items()
                 if f["name"].startswith("myviking-")
             ]
-            return 200, json.dumps({"files": found}).encode()
+            return 200, json.dumps({"files": found}).encode(), {}
         if method == "POST" and url.startswith("https://www.googleapis.com/drive/v3/files"):
             meta = json.loads((data or b"{}").decode())
             self.next_id += 1
             fid = f"f{self.next_id}"
             self.files[fid] = {"name": meta["name"], "size": 0, "folder": True}
-            return 200, json.dumps({"id": fid}).encode()
+            return 200, json.dumps({"id": fid}).encode(), {}
         if method == "DELETE":
             fid = url.rstrip("/").split("/")[-1]
             self.files.pop(fid, None)
-            return 204, b""
+            return 204, b"", {}
         if method == "GET" and "alt=media" in url:
-            return 200, b"content"
-        return 404, b"{}"
+            fid = url.split("/files/")[1].split("?")[0]
+            content = self.files.get(fid, {}).get("content", b"content")
+            return 200, content, {}
+        return 404, b"{}", {}
 
 
 def test_device_flow_lands_a_refresh_token(home):
@@ -317,7 +334,7 @@ def test_gdrive_poll_reports_denial(home):
 
     def denying(method, url, headers=None, data=None, timeout=None):
         if url.endswith("/token"):
-            return 403, json.dumps({"error": "access_denied"}).encode()
+            return 403, json.dumps({"error": "access_denied"}).encode(), {}
         return fake(method, url, headers=headers, data=data)
 
     m = BackupManager(home, http=denying)
@@ -364,3 +381,52 @@ def test_backup_endpoints_require_key_once_auth_is_on(home):
     assert client.get("/backup/status").status_code == 401
     ok = client.get("/backup/status", headers={"authorization": f"Bearer {made['key']}"})
     assert ok.status_code == 200
+
+
+# --------------------------------------------------------------------------
+# 탄탄함: resumable 업로드 / pre-restore 안전망
+# --------------------------------------------------------------------------
+def test_gdrive_resumable_upload_roundtrip(home, jarvis, monkeypatch):
+    """업로드는 청크로 나뉘어 가고(메모리 상한), 받은 그대로 복원까지 된다."""
+    import jarvis.backup as bk
+
+    monkeypatch.setattr(bk, "UPLOAD_CHUNK", 1024)  # 여러 청크를 강제
+    fake = FakeGoogle()
+    m = BackupManager(home, http=fake)
+    m.connect_start("cid", "sec")
+    fake.approved = True
+    m.connect_poll()
+
+    jarvis.init_project("app", template="coding")
+    jarvis.remember("app", "commands", "테스트", "pytest -q 로 돌린다")
+    res = m.run()
+
+    stored = [f for f in fake.files.values() if f["name"].startswith("myviking-")]
+    assert stored[0]["size"] == res["size"]  # 청크 재조립이 바이트 단위로 정확
+    assert stored[0]["size"] > 1024  # 실제로 여러 청크였다
+
+    jarvis.remember("app", "commands", "빌드", "make build")
+    m.restore()
+    fresh = Jarvis(config=Config(home=home))
+    titles = [x["title"] for x in fresh.memories("app")]
+    assert "테스트" in titles and "빌드" not in titles
+
+
+def test_restore_keeps_a_pre_restore_undo(manager, home, jarvis):
+    """복원은 파괴적이므로, 직전 상태 한 부를 자동으로 남겨 실행 취소를 연다."""
+    from pathlib import Path
+
+    jarvis.init_project("app", template="coding")
+    jarvis.remember("app", "commands", "테스트", "pytest -q")
+    manager.run()
+    jarvis.remember("app", "commands", "빌드", "make build")
+
+    res = manager.restore()
+    pre = res["pre_restore"]
+    assert pre and Path(pre).exists()
+    titles = [x["title"] for x in Jarvis(config=Config(home=home)).memories("app")]
+    assert "빌드" not in titles  # 복원으로 사라졌지만
+
+    manager.restore_file(pre)  # 실행 취소
+    titles = [x["title"] for x in Jarvis(config=Config(home=home)).memories("app")]
+    assert "빌드" in titles

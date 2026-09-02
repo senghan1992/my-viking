@@ -109,6 +109,26 @@ class LearnConfig:
 
 
 @dataclass
+class RetentionConfig:
+    """How long the *record* layer is kept.
+
+    Memories already decay and cap themselves; without this, the observability
+    side (traces, usage accounting, the answer cache) grows forever on an
+    always-on server — and the near-miss cache lookup scans every row of its
+    scope, so an unbounded cache slowly taxes every single prompt.
+    0 disables a rule (keep forever).
+    """
+
+    # Traces older than this go, along with their observations/scores/context.
+    # Their learning value has already been applied to memory confidence.
+    traces_days: int = 180
+    # Token accounting rows. Only dashboards read these.
+    usage_days: int = 90
+    # Answer cache entries kept per project, most recently used first.
+    cache_per_project: int = 500
+
+
+@dataclass
 class Config:
     home: Path = field(default_factory=jarvis_home)
     user_id: str = "me"
@@ -116,6 +136,7 @@ class Config:
     embed: EmbedConfig = field(default_factory=EmbedConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     learn: LearnConfig = field(default_factory=LearnConfig)
+    retention: RetentionConfig = field(default_factory=RetentionConfig)
 
     # ----- paths -------------------------------------------------------
     @property
@@ -148,6 +169,7 @@ class Config:
             "embed": EmbedConfig,
             "budget": BudgetConfig,
             "learn": LearnConfig,
+            "retention": RetentionConfig,
         }
         kwargs: dict[str, Any] = {}
         for key, klass in sections.items():

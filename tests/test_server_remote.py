@@ -53,6 +53,18 @@ def test_open_until_first_key_is_created(client):
     assert ok.status_code == 200
 
 
+def test_health_reports_quality_so_the_dashboard_can_nudge(client):
+    """기본 설정(LLM 없음·해싱 임베딩)은 '기본 품질'로 정직하게 드러나야 한다."""
+    q = client.get("/health").json()["quality"]
+    assert q["full_quality"] is False
+    assert q["llm_ready"] is False
+    assert q["embed_semantic"] is False  # hashing 폴백
+    assert q["reindex_automatic"] is True
+    # 사용자가 무엇을 켜야 좋아지는지 안내가 붙는다.
+    assert any("LLM" in n for n in q["notes"])
+    assert any("임베딩" in n for n in q["notes"])
+
+
 def test_health_and_dashboard_stay_reachable_without_a_key(client):
     client.post("/keys", json={"name": "k"})
     assert client.get("/health").status_code == 200

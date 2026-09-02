@@ -293,3 +293,27 @@ def test_connection_exposes_hooks_for_claude_code():
     assert "jarvis_remember" in conn.instructions_hooks
     # Other clients have no hook system; the fields stay empty.
     assert build("cursor", "http://localhost:8787", "app").hooks_setup == ""
+
+
+# --------------------------------------------------------------------------
+# fail-open 의 가시성: 실패는 breadcrumb 으로, 점검은 --check 로
+# --------------------------------------------------------------------------
+def test_hook_failures_leave_breadcrumbs(repo_dir, state_dir, transport):
+    from jarvis.hooks import health_check
+
+    broken = BrokenTransport()
+    run("session-start", {"session_id": "s", "cwd": str(repo_dir)}, broken, state_dir=state_dir)
+    run("user-prompt-submit", {"session_id": "s", "cwd": str(repo_dir), "prompt": "질문"},
+        broken, state_dir=state_dir)
+
+    res = health_check(broken, state_dir=state_dir)
+    assert res["server_ok"] is False and "server_error" in res
+    assert len(res["recent_failures"]) == 2
+    assert "session-start" in res["recent_failures"][0]
+
+    # 서버가 살아나서 훅이 성공하면 last_ok 가 남고 점검도 통과한다.
+    run("user-prompt-submit", {"session_id": "s", "cwd": str(repo_dir), "prompt": "질문"},
+        transport, state_dir=state_dir)
+    res2 = health_check(transport, state_dir=state_dir)
+    assert res2["server_ok"] is True
+    assert "user-prompt-submit" in res2["last_ok"]
