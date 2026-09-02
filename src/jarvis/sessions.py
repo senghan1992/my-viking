@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from .embed import cosine, pack_vector, unpack_vector
+from .embed import batch_cosine, pack_vector
 from .models import KIND_SESSION, Node, Uri, now_iso, slugify
 from .store import Store
 from .tokens import estimate_tokens, truncate_to_tokens
@@ -216,15 +216,13 @@ class SessionLog:
             return self._hit(row, "exact", 1.0)
 
         qvec = self.embedder.embed(question)
-        best: tuple[float, Any] | None = None
-        for row in self.db.query(
-            f"SELECT * FROM cache WHERE scope IN ({marks})", scopes
-        ):
-            sim = cosine(qvec, unpack_vector(row["vector"]))
-            if best is None or sim > best[0]:
-                best = (sim, row)
-        if best is not None and best[0] >= thr:
-            return self._hit(best[1], "near", best[0])
+        rows = self.db.query(f"SELECT * FROM cache WHERE scope IN ({marks})", scopes)
+        if not rows:
+            return None
+        sims = batch_cosine(qvec, [r["vector"] for r in rows])
+        best_i = max(range(len(rows)), key=lambda i: sims[i])
+        if sims[best_i] >= thr:
+            return self._hit(rows[best_i], "near", sims[best_i])
         return None
 
     def _hit(self, row: Any, kind: str, sim: float) -> CacheHit:

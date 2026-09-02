@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -106,7 +107,18 @@ class Uri:
         return SCHEME + head + (("/" + tail) if tail else "")
 
     @classmethod
+    @functools.lru_cache(maxsize=8192)
+    def _parse_cached(cls, uri: str) -> "Uri":
+        return cls._parse(uri)
+
+    @classmethod
     def parse(cls, uri: str) -> "Uri":
+        # Uri is frozen and parsing is pure, so results are safe to memoise.
+        # Retrieval parses the same URIs thousands of times per query.
+        return cls._parse_cached(str(uri).strip())
+
+    @classmethod
+    def _parse(cls, uri: str) -> "Uri":
         raw = str(uri).strip()
         if raw.startswith(SCHEME):
             raw = raw[len(SCHEME) :]
@@ -247,6 +259,22 @@ class Node:
             )
             if p
         )
+
+
+def body_of(text: str) -> str:
+    """Extract the Details section from a stored file without parsing YAML.
+
+    Retrieval reads bodies far more often than it reads metadata, and
+    ``yaml.safe_load`` on the frontmatter dominated the pack hot path. This
+    walks the two markers directly.
+    """
+    rest = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            rest = text[end + 4 :]
+    overview, body = _split_sections(rest)
+    return body or overview
 
 
 def _split_sections(text: str) -> tuple[str, str]:

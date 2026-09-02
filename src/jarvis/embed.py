@@ -14,6 +14,7 @@ improves and everything else keeps working unchanged.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import math
 import re
@@ -63,6 +64,39 @@ def cosine(a: Sequence[float], b: Sequence[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
     # Vectors are stored normalised, so the dot product is already cosine.
     return max(-1.0, min(1.0, dot))
+
+
+@functools.lru_cache(maxsize=1)
+def _numpy():
+    """NumPy is optional but changes retrieval latency by an order of magnitude.
+
+    Scoring N candidates is one matrix-vector product; in pure Python it is
+    N x dim multiplications in the interpreter. Both paths return the same
+    numbers, so this is purely a speed switch.
+    """
+    try:
+        import numpy  # type: ignore
+
+        return numpy
+    except Exception:
+        return None
+
+
+def batch_cosine(query: Sequence[float], blobs: Sequence[bytes | None]) -> list[float]:
+    """Cosine of ``query`` against many packed vectors, in one pass."""
+    if not query:
+        return [0.0] * len(blobs)
+    np = _numpy()
+    dim = len(query)
+    if np is None:
+        return [cosine(query, unpack_vector(b)) for b in blobs]
+
+    q = np.frombuffer(pack_vector(query), dtype="<f4")
+    rows = np.zeros((len(blobs), dim), dtype="<f4")
+    for i, blob in enumerate(blobs):
+        if blob and len(blob) == dim * 4:
+            rows[i] = np.frombuffer(blob, dtype="<f4")
+    return np.clip(rows @ q, -1.0, 1.0).tolist()
 
 
 class Embedder:

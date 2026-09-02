@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     category    TEXT DEFAULT '',
     title       TEXT DEFAULT '',
     abstract    TEXT DEFAULT '',
+    overview    TEXT DEFAULT '',
     tags        TEXT DEFAULT '[]',
     confidence  REAL DEFAULT 0.5,
     hits        INTEGER DEFAULT 0,
@@ -44,6 +45,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
 );
 
 -- Directory-level centroids power the coarse-to-fine retrieval walk.
+-- We store the *unnormalised sum* of descendant vectors plus a count, so a
+-- write updates only its own ancestors (O(depth)) instead of forcing a rescan
+-- of the whole project. The centroid is sum/children, normalised on read.
 CREATE TABLE IF NOT EXISTS dirs (
     uri       TEXT PRIMARY KEY,
     scope     TEXT NOT NULL,
@@ -99,7 +103,19 @@ class Database:
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created.
+
+        The index is rebuildable, but silently dropping someone's history to
+        pick up a new column would be a poor trade.
+        """
+        have = {r["name"] for r in self.query("PRAGMA table_info(nodes)")}
+        for column, ddl in (("overview", "TEXT DEFAULT ''"),):
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE nodes ADD COLUMN {column} {ddl}")
 
     def close(self) -> None:
         self.conn.close()
@@ -160,6 +176,12 @@ class Database:
             f"ON CONFLICT(uri) DO UPDATE SET {updates}",
             tuple(row[c] for c in cols),
         )
+
+    def dir_row(self, uri: str) -> sqlite3.Row | None:
+        return self.one("SELECT * FROM dirs WHERE uri = ?", (uri,))
+
+    def prune_empty_dirs(self, scope: str) -> None:
+        self.conn.execute("DELETE FROM dirs WHERE scope=? AND children <= 0", (scope,))
 
     # ----- usage -------------------------------------------------------
     def log_usage(

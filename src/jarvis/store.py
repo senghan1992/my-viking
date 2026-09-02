@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from .config import Config
 from .db import Database
@@ -24,6 +24,7 @@ from .models import (
     KIND_SESSION,
     Node,
     Uri,
+    body_of,
     now_iso,
     slugify,
 )
@@ -204,9 +205,8 @@ class Store:
         path = self.path_for(node.uri)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(node.to_markdown(), encoding="utf-8")
-        self._index_node(node, path)
-        if reinforce_dirs:
-            self.refresh_dirs(node.uri.scope)
+        old_vector, new_vector = self._index_node(node, path)
+        self._bump_ancestors(node, old_vector, new_vector, is_new=not old_vector)
         self.db.commit()
         return node
 
@@ -217,12 +217,42 @@ class Store:
             return None
         return Node.from_markdown(path.read_text(encoding="utf-8"), u)
 
+    def read_tier(self, uri: Uri | str, tier: int) -> str:
+        """Return one tier's text as cheaply as possible.
+
+        L0/L1 live in the index, so they cost a row lookup. Only L2 touches the
+        filesystem, and it skips YAML parsing entirely.
+        """
+        u = uri if isinstance(uri, Uri) else Uri.parse(uri)
+        row = self.db.one(
+            "SELECT abstract, overview, title, path FROM nodes WHERE uri = ?", (str(u),)
+        )
+        if row is None:
+            node = self.read_node(u)
+            return node.tier(tier) if node else ""
+        if tier <= 0:
+            return row["abstract"] or row["title"] or ""
+        if tier == 1:
+            return row["overview"] or row["abstract"] or row["title"] or ""
+        path = Path(row["path"]) if row["path"] else self.path_for(u)
+        if path.exists():
+            body = body_of(path.read_text(encoding="utf-8"))
+            if body:
+                return body
+        return row["overview"] or row["abstract"] or row["title"] or ""
+
     def delete_node(self, uri: Uri | str) -> bool:
         u = uri if isinstance(uri, Uri) else Uri.parse(uri)
         path = self.path_for(u)
         existed = path.exists()
+        row = self.db.one("SELECT vector, title FROM nodes WHERE uri = ?", (str(u),))
         if existed:
             path.unlink()
+        if row is not None:
+            stub = Node(uri=u, title=row["title"] or u.name)
+            self._bump_ancestors(
+                stub, unpack_vector(row["vector"]), [], is_new=False, removing=True
+            )
         self.db.delete_node(str(u))
         self.db.commit()
         return existed
@@ -265,11 +295,15 @@ class Store:
     # ------------------------------------------------------------------
     # indexing
     # ------------------------------------------------------------------
-    def _index_node(self, node: Node, path: Path) -> None:
+    def _index_node(self, node: Node, path: Path) -> tuple[list[float], list[float]]:
+        """Index one node. Returns ``(old_vector, new_vector)`` so the caller can
+        adjust ancestor centroids incrementally."""
         text = node.searchable_text()
         vector = self.embedder.embed(
             "\n".join([node.title, node.abstract, node.overview])[:8000] or text[:8000]
         )
+        prev = self.db.one("SELECT vector FROM nodes WHERE uri = ?", (str(node.uri),))
+        old_vector = unpack_vector(prev["vector"]) if prev else []
         parent = node.uri.parent
         self.db.upsert_node(
             {
@@ -279,6 +313,7 @@ class Store:
                 "category": node.category,
                 "title": node.title,
                 "abstract": node.abstract,
+                "overview": node.overview,
                 "tags": node.tags,
                 "confidence": float(node.confidence),
                 "hits": int(node.hits),
@@ -294,6 +329,63 @@ class Store:
             }
         )
         self.db.upsert_fts(str(node.uri), text)
+        return old_vector, vector
+
+    def _bump_ancestors(
+        self,
+        node: Node,
+        old_vector: list[float],
+        new_vector: list[float],
+        is_new: bool,
+        removing: bool = False,
+    ) -> None:
+        """Fold one node's vector change into each ancestor directory's sum."""
+        label = node.title or node.uri.name
+        for anc in node.uri.ancestors():
+            key = str(anc)
+            row = self.db.dir_row(key)
+            total = unpack_vector(row["vector"]) if row else []
+            children = int(row["children"]) if row else 0
+            dim = len(new_vector) or len(old_vector) or len(total)
+            if not total:
+                total = [0.0] * dim
+            if removing:
+                for i, v in enumerate(old_vector):
+                    total[i] -= v
+                children = max(0, children - 1)
+            else:
+                for i, v in enumerate(new_vector):
+                    total[i] += v
+                for i, v in enumerate(old_vector):
+                    total[i] -= v
+                if is_new:
+                    children += 1
+            names = self._dir_label(row, label, children, removing)
+            self.db.upsert_dir(
+                {
+                    "uri": key,
+                    "scope": anc.scope,
+                    "kind": anc.kind_dir,
+                    "children": children,
+                    "abstract": names,
+                    "updated": now_iso(),
+                    "vector": pack_vector(total),
+                }
+            )
+        self.db.prune_empty_dirs(node.uri.scope)
+
+    @staticmethod
+    def _dir_label(row: Any, label: str, children: int, removing: bool) -> str:
+        """Keep a short, human-readable sample of what a directory holds."""
+        existing = ""
+        if row and row["abstract"] and ": " in row["abstract"]:
+            existing = row["abstract"].split(": ", 1)[1]
+        names = [n for n in (x.strip() for x in existing.split(",")) if n]
+        if removing:
+            names = [n for n in names if n != label]
+        elif label not in names and len(names) < 8:
+            names.append(label)
+        return f"{children}개 항목: {', '.join(names)}"
 
     def reindex(self, project: str | None = None) -> dict[str, int]:
         """Rebuild the index from the markdown files."""
@@ -351,10 +443,8 @@ class Store:
 
         self.db.execute("DELETE FROM dirs WHERE scope=?", (scope,))
         for key, slot in agg.items():
+            # Stored unnormalised: incremental writes add to this sum.
             vec = slot["sum"] or []
-            if vec:
-                norm = sum(v * v for v in vec) ** 0.5 or 1.0
-                vec = [v / norm for v in vec]
             names = ", ".join(slot["titles"])
             self.db.upsert_dir(
                 {

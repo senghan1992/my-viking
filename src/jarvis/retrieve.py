@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from .config import BudgetConfig
-from .embed import cosine, unpack_vector
+from .embed import batch_cosine, pack_vector, unpack_vector
 from .models import KIND_MEMORY, KIND_PROMPT, KIND_RESOURCE, KIND_SESSION, Uri
 from .store import DIR_KINDS, GLOBAL_SCOPE, Store
 from .tokens import estimate_tokens
@@ -143,17 +143,23 @@ class Retriever:
             rows = self.db.query(
                 "SELECT uri, kind, children, vector FROM dirs WHERE scope=?", (scope,)
             )
+            keep = []
             for row in rows:
                 d = Uri.parse(row["uri"])
                 if kind_set and d.kind_dir:
                     dk = DIR_KINDS.get(d.kind_dir)
                     if dk and dk not in kind_set:
                         continue
-                score = cosine(qvec, unpack_vector(row["vector"]))
+                keep.append((row, d))
+            # dirs stores an unnormalised sum; normalise to get the centroid.
+            centroids = [
+                pack_vector(_normalize(unpack_vector(row["vector"])))
+                for row, _d in keep
+            ]
+            for (row, d), score in zip(keep, batch_cosine(qvec, centroids)):
                 # Prefer deeper directories at equal similarity: they are more
                 # specific, so drilling into them reads fewer irrelevant nodes.
-                score += 0.01 * len(d.parts)
-                dir_scores[row["uri"]] = score
+                dir_scores[row["uri"]] = score + 0.01 * len(d.parts)
 
         entered = sorted(dir_scores.items(), key=lambda kv: -kv[1])[:dir_fanout]
         for uri, score in entered:
@@ -170,31 +176,44 @@ class Retriever:
         seen: dict[str, Candidate] = {}
         now = datetime.now(timezone.utc)
 
+        # Fetch only what the coarse walk or the lexical index actually pointed
+        # at. Scanning every node in scope and discarding in Python makes query
+        # latency grow with the size of the whole project rather than with the
+        # size of the answer.
         marks = ", ".join("?" for _ in scopes)
+        params: list[Any] = list(scopes)
+        reach: list[str] = []
+        for d in entered_uris:
+            reach.append("uri LIKE ?")
+            params.append(d + "/%")
+        if fts:
+            reach.append(f"uri IN ({', '.join('?' for _ in fts)})")
+            params.extend(fts)
+        if not reach:
+            trace.append({"step": "rank", "considered": 0, "selected": 0, "lexical_hits": 0})
+            return [], trace
+        kind_clause = ""
+        if kind_set:
+            kind_clause = f" AND kind IN ({', '.join('?' for _ in kind_set)})"
+            params.extend(sorted(kind_set))
+
         rows = self.db.query(
             f"SELECT uri, kind, category, title, abstract, confidence, hits,"
             f" updated, tokens_l0, tokens_l1, tokens_l2, vector FROM nodes"
-            f" WHERE scope IN ({marks})",
-            scopes,
+            f" WHERE scope IN ({marks}) AND ({' OR '.join(reach)})"
+            f" AND instr(uri, '/_archive/') = 0{kind_clause}",
+            params,
         )
-        for row in rows:
+        vec_scores = batch_cosine(qvec, [r["vector"] for r in rows])
+        entered_parsed = [(Uri.parse(d), dir_scores.get(d, 0.0)) for d in entered_uris]
+        for row, vec_score in zip(rows, vec_scores):
             uri = Uri.parse(row["uri"])
-            if uri.parts and uri.parts[0] == "_archive":
-                continue
-            if kind_set and row["kind"] not in kind_set:
-                continue
 
             dir_score = 0.0
-            for d in entered_uris:
-                du = Uri.parse(d)
+            for du, dscore in entered_parsed:
                 if uri.is_under(du):
-                    dir_score = max(dir_score, dir_scores.get(d, 0.0))
-            in_lexical = row["uri"] in fts
-            if dir_score == 0.0 and not in_lexical:
-                # Neither the coarse walk nor the lexical index pointed here.
-                continue
+                    dir_score = max(dir_score, dscore)
 
-            vec_score = cosine(qvec, unpack_vector(row["vector"]))
             fts_score = fts.get(row["uri"], 0.0) / fts_max
             recency = _recency_bonus(row["updated"], now)
             priority = self._priority(project, row["kind"], row["category"])
@@ -333,13 +352,15 @@ class Retriever:
             chosen.items(), key=lambda kv: -by_uri[kv[0]].score
         ):
             cand = by_uri[uri]
-            node = self.store.read_node(cand.uri)
-            if node is None:
-                continue
-            text = node.tier(tier).strip()
+            text = self.store.read_tier(cand.uri, tier).strip()
             if not text:
                 continue
-            resolved.append((cand, tier, text, node.tier(2).strip() or text))
+            full = (
+                text
+                if tier >= 2
+                else (self.store.read_tier(cand.uri, 2).strip() or text)
+            )
+            resolved.append((cand, tier, text, full))
 
         # Estimating per-section overhead is close but not exact, so verify
         # against the rendered text and drop the weakest items until it fits.
@@ -401,6 +422,11 @@ class Retriever:
 
 # A heading plus a provenance comment costs roughly this much per section.
 _HEADING_OVERHEAD = 14
+
+
+def _normalize(vec: list[float]) -> list[float]:
+    norm = sum(v * v for v in vec) ** 0.5
+    return [v / norm for v in vec] if norm else vec
 
 
 def _short_ref(cand: Candidate) -> str:

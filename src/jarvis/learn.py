@@ -120,7 +120,8 @@ class Learner:
             report.archived.extend(archived)
         report.archived.extend(self.enforce_caps(project, profile))
 
-        self.store.refresh_dirs(project)
+        # Directory centroids are maintained incrementally on every write, so
+        # there is no full rescan here. `jv reindex` rebuilds them if needed.
         self.db.log_usage(
             now_iso(),
             project,
@@ -354,12 +355,35 @@ class Learner:
             return exact
 
         threshold = self.store.config.learn.merge_threshold
-        probe = self.store.embedder.embed(f"{cand.title}\n{cand.statement}")
+        probe_text = f"{cand.title}\n{cand.statement}"
+        probe = self.store.embedder.embed(probe_text)
+
+        # Narrow with the lexical index first. Comparing against every memory in
+        # the category makes each write cost O(category size), which turns bulk
+        # ingestion quadratic — and a merge candidate that shares no words with
+        # the incoming text is not the same lesson anyway.
+        lexical = [
+            uri
+            for uri, _score in self.db.fts_search(probe_text, [project], limit=60)
+        ]
+        if lexical:
+            marks = ", ".join("?" for _ in lexical)
+            rows = self.db.query(
+                f"SELECT uri, vector FROM nodes WHERE scope=? AND kind=? AND"
+                f" category=? AND uri IN ({marks})",
+                [project, KIND_MEMORY, cand.category, *lexical],
+            )
+        else:
+            # No lexical overlap at all: fall back to the newest few, so a
+            # rephrased duplicate can still merge.
+            rows = self.db.query(
+                "SELECT uri, vector FROM nodes WHERE scope=? AND kind=? AND"
+                " category=? ORDER BY updated DESC LIMIT 40",
+                (project, KIND_MEMORY, cand.category),
+            )
+
         best: tuple[float, str] | None = None
-        for row in self.db.query(
-            "SELECT uri, vector FROM nodes WHERE scope=? AND kind=? AND category=?",
-            (project, KIND_MEMORY, cand.category),
-        ):
+        for row in rows:
             sim = cosine(probe, unpack_vector(row["vector"]))
             if best is None or sim > best[0]:
                 best = (sim, row["uri"])

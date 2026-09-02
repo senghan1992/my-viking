@@ -210,7 +210,6 @@ class Jarvis:
             source="manual",
         )
         uri, _action, _conflict = self.learner.absorb(project, cand, profile)
-        self.store.refresh_dirs(project)
         return uri  # type: ignore[return-value]
 
     def forget(self, uri: str, archive: bool = True) -> bool:
