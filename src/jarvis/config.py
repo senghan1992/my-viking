@@ -122,6 +122,16 @@ class RetentionConfig:
     # Traces older than this go, along with their observations/scores/context.
     # Their learning value has already been applied to memory confidence.
     traces_days: int = 180
+    # Session transcripts older than this are dropped. They are the record
+    # layer, not the knowledge: their durable value is already folded into
+    # memories by distillation, and one exchange per prompt on an always-on
+    # server is otherwise the fastest-growing thing in the store.
+    sessions_days: int = 180
+    # Archived memories (decayed, capped, or superseded) kept recoverable this
+    # long, then purged. Archiving must stay reversible for a while — the note
+    # you deleted is often the one you want when a project comes back — but a
+    # quarter is long enough, and _archive/ otherwise only ever grows.
+    archive_days: int = 90
     # Token accounting rows. Only dashboards read these.
     usage_days: int = 90
     # Answer cache entries kept per project, most recently used first.

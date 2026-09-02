@@ -65,6 +65,44 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# A heartbeat fresher than this means a server process is holding the index
+# open right now. Comfortably longer than the heartbeat interval so an
+# in-flight tick never reads as "down".
+LIVE_WINDOW_SECONDS = 120.0
+
+
+def server_heartbeat_age(home: Path) -> float | None:
+    """Seconds since the running server last stamped its liveness, or None.
+
+    Read from the index directly (read-only, no Store) so it works from the
+    CLI without opening the store we may be about to replace. None means no
+    heartbeat was ever written or it cannot be read — treated as "not live"."""
+    db = Path(home) / "index.db"
+    if not db.exists():
+        return None
+    # A normal (read-write-capable) connection, deliberately: SQLite cannot open
+    # a WAL-mode database read-only — it needs to write the -shm index — and a
+    # live server always runs in WAL. Opening ro would raise, be swallowed as
+    # "not live", and the guard would never fire. We only ever SELECT here.
+    try:
+        conn = sqlite3.connect(str(db), timeout=2.0)
+        try:
+            row = conn.execute(
+                "SELECT v FROM meta WHERE k='server_heartbeat'"
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    if not row or not row[0]:
+        return None
+    try:
+        beat = datetime.fromisoformat(row[0])
+    except (ValueError, TypeError):
+        return None
+    return (datetime.now(timezone.utc) - beat).total_seconds()
+
+
 def folder_url(folder_id: str) -> str:
     """The folder's address in the Drive web UI — so a person can open the
     destination and see the archives with their own eyes. Trust needs a URL."""
@@ -213,7 +251,17 @@ class LocalFolder:
 
     def upload(self, file: Path, name: str) -> str:
         self.path.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(file, self.path / name)
+        # Copy to a sidecar then rename into place: os.replace is atomic on the
+        # same filesystem, so an interrupted copy (server killed mid-write) can
+        # never leave a half-written archive that ``list`` would offer for
+        # restore. The rotation that follows must not see a truncated ``.part``.
+        dest = self.path / name
+        tmp = self.path / f"{name}.part"
+        try:
+            shutil.copyfile(file, tmp)
+            os.replace(tmp, dest)
+        finally:
+            tmp.unlink(missing_ok=True)
         return name
 
     def list(self) -> list[dict[str, Any]]:
@@ -454,14 +502,24 @@ class GoogleDrive:
         if folder_id:
             terms.append(f"'{folder_id}' in parents")
         q = urllib.parse.quote(" and ".join(terms))
-        data = self._api(
-            "GET",
-            f"{GOOGLE_API}/files?q={q}&fields=files(id,name,size)&pageSize=100",
-        )
-        out = [
-            {"id": f["id"], "name": f["name"], "size": int(f.get("size") or 0)}
-            for f in data.get("files", [])
-        ]
+        # Page through every result: a page cap of 100 would silently hide the
+        # oldest archives once the folder passed that many, and rotation would
+        # then never delete them — the store's off-site footprint would grow
+        # without bound exactly when ``keep`` was meant to stop it.
+        out: list[dict[str, Any]] = []
+        page = ""
+        while True:
+            url = f"{GOOGLE_API}/files?q={q}&fields=nextPageToken,files(id,name,size)&pageSize=100"
+            if page:
+                url += f"&pageToken={urllib.parse.quote(page)}"
+            data = self._api("GET", url)
+            out.extend(
+                {"id": f["id"], "name": f["name"], "size": int(f.get("size") or 0)}
+                for f in data.get("files", [])
+            )
+            page = data.get("nextPageToken") or ""
+            if not page:
+                break
         return sorted(out, key=lambda d: d["name"], reverse=True)
 
     def delete(self, file_id: str) -> None:
@@ -595,20 +653,29 @@ class BackupManager:
                 size = snap.stat().st_size
                 remote.upload(snap, snap.name)
                 name = snap.name
-            deleted = self._rotate(remote, s.keep)
         except Exception as exc:
             s = self.settings()  # 실패도 기록: 조용히 안 도는 백업이 최악이다
             s.last_run = _now_iso()
             s.last_status = f"error: {type(exc).__name__}: {exc}"
             s.save(self.home)
             raise
+        # The archive is safely uploaded now. Rotation is separate housekeeping:
+        # if pruning old copies fails, the backup itself still succeeded, and
+        # recording it as an error would hide a good snapshot and re-run it
+        # needlessly. Keep the extra copies and note the rotation problem.
+        deleted: list[str] = []
+        rotate_error = ""
+        try:
+            deleted = self._rotate(remote, s.keep)
+        except Exception as exc:  # noqa: BLE001 — rotation must not fail a good backup
+            rotate_error = f"{type(exc).__name__}: {exc}"
         s = self.settings()
         s.last_run = _now_iso()
-        s.last_status = "ok"
+        s.last_status = "ok" if not rotate_error else f"ok (회전 실패: {rotate_error})"
         s.last_name = name
         s.last_size = size
         s.save(self.home)
-        return {"name": name, "size": size, "deleted": deleted}
+        return {"name": name, "size": size, "deleted": deleted, "rotate_error": rotate_error}
 
     def _rotate(self, remote: Any, keep: int) -> list[str]:
         if keep <= 0:
@@ -630,7 +697,28 @@ class BackupManager:
             remote.ensure_folder(s.folder)
         return remote.list()
 
-    def restore(self, name: str = "") -> dict[str, Any]:
+    def _refuse_if_server_live(self, force: bool) -> None:
+        """A restore replaces the very index a running server holds open.
+
+        Overwriting index.db under a live process leaves the server serving a
+        file that no longer exists on disk and re-checkpointing its WAL over the
+        fresh copy — silent corruption. So refuse while a heartbeat is fresh and
+        say how to proceed. ``force`` is the escape hatch for someone who has
+        genuinely stopped the server but whose heartbeat has not yet aged out.
+        """
+        if force:
+            return
+        age = server_heartbeat_age(self.home)
+        if age is not None and age < LIVE_WINDOW_SECONDS:
+            raise RuntimeError(
+                "서버가 실행 중입니다 — 복원은 열려 있는 인덱스를 덮어써 손상시킵니다.\n"
+                "  먼저 중지하세요:  docker compose down\n"
+                "  중지 뒤 일회성 복원:  docker compose run --rm myviking jv backup restore ...\n"
+                "  이미 중지했다면 --force-online 으로 무시할 수 있습니다."
+            )
+
+    def restore(self, name: str = "", force: bool = False) -> dict[str, Any]:
+        self._refuse_if_server_live(force)
         s = self.settings()
         remote = self._remote(s)
         if isinstance(remote, GoogleDrive):
@@ -653,9 +741,10 @@ class BackupManager:
             "pre_restore": str(pre) if pre else "",
         }
 
-    def restore_file(self, archive: Path | str) -> dict[str, Any]:
+    def restore_file(self, archive: Path | str, force: bool = False) -> dict[str, Any]:
         """Restore from a local archive — the undo path for a bad restore,
         and the road in for archives copied by hand."""
+        self._refuse_if_server_live(force)
         path = Path(archive)
         if not path.exists():
             raise RuntimeError(f"파일이 없습니다: {path}")

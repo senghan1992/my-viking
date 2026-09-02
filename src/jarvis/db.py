@@ -232,6 +232,19 @@ class Database:
     def prune_empty_dirs(self, scope: str) -> None:
         self.conn.execute("DELETE FROM dirs WHERE scope=? AND children <= 0", (scope,))
 
+    def checkpoint(self) -> None:
+        """Fold the write-ahead log back into the main file and truncate it.
+
+        In WAL mode deletes only ever append; without an explicit checkpoint the
+        ``-wal`` sidecar grows unbounded on an always-on server even as the
+        retention sweep frees rows, so the on-disk footprint never actually
+        shrinks. Run this after a sweep, not on the request path. Best-effort:
+        a checkpoint blocked by a live reader must not fail the sweep."""
+        try:
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.OperationalError:
+            pass
+
     # ----- usage -------------------------------------------------------
     def log_usage(
         self,

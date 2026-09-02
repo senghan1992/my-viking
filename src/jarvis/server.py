@@ -445,6 +445,8 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         maintenance = json.loads(raw) if raw else {"last_run": None, "status": "미실행"}
         if maintenance.get("status") == "error":
             notes.append(f"유지보수 스윕 실패 — {maintenance.get('error', '원인 미상')}")
+        # Liveness: the beat a restore checks before it dares overwrite the index.
+        heartbeat = jarvis.store.db.get_meta("server_heartbeat")
         try:
             backup = BackupManager(jarvis.config.home).status()
         except Exception:
@@ -460,6 +462,7 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
             "projects": len(jarvis.store.projects()),
             "auth_required": keys.any_active(),
             "mcp_endpoint": "/mcp",
+            "heartbeat": heartbeat,
             "maintenance": maintenance,
             "backup": {
                 "provider": backup.get("provider", "none"),
@@ -1069,6 +1072,33 @@ def start_maintenance(home: str | None, every_hours: float) -> None:
     threading.Thread(target=loop, name="jarvis-maintain", daemon=True).start()
 
 
+def start_heartbeat(home: str | None, every: float = 30.0) -> None:
+    """Stamp a liveness beat so a restore knows the server is holding the index.
+
+    Overwriting index.db under this process would corrupt it, so
+    ``jv backup restore`` refuses while this beat is fresh (see
+    backup.server_heartbeat_age). Its own connection; failures stay quiet — a
+    server that cannot write its heartbeat must still serve."""
+    if every <= 0:
+        return
+    import threading
+    import time
+    from datetime import datetime, timezone
+
+    def loop() -> None:
+        worker = Jarvis(home=home)
+        while True:
+            try:
+                worker.store.db.set_meta(
+                    "server_heartbeat", datetime.now(timezone.utc).isoformat()
+                )
+            except Exception:  # pragma: no cover - best effort
+                pass
+            time.sleep(every)
+
+    threading.Thread(target=loop, name="jarvis-heartbeat", daemon=True).start()
+
+
 def run(
     host: str = "127.0.0.1",
     port: int = 8787,
@@ -1078,6 +1108,7 @@ def run(
     import uvicorn
 
     app = create_app(home)
+    start_heartbeat(home)
     start_maintenance(home, maintain_every)
     # The backup cadence lives in backup.yaml (set via UI/CLI); this thread
     # only checks whether one is due, so a short interval costs nothing.

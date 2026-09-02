@@ -429,7 +429,68 @@ def test_record_layer_retention(coding):
     j.config.retention.traces_days = 0
     j.config.retention.usage_days = 0
     j.config.retention.cache_per_project = 0
-    assert j.prune_records() == {"traces": 0, "usage": 0, "cache": 0}
+    j.config.retention.sessions_days = 0
+    j.config.retention.archive_days = 0
+    assert j.prune_records() == {
+        "traces": 0,
+        "sessions": 0,
+        "archive": 0,
+        "usage": 0,
+        "cache": 0,
+    }
+
+
+def test_old_session_transcripts_are_pruned(coding):
+    """세션은 기록 층 — 오래되면 지운다. 지식은 이미 증류로 메모리에 접혔다."""
+    j = coding
+    node = j.sessions.record("app", "오래된 질문", "오래된 답")
+    fresh = j.sessions.record("app", "최근 질문", "최근 답")
+    # 한 세션만 옛날 것으로
+    j.store.db.execute(
+        "UPDATE nodes SET updated='2020-01-01T00:00:00' WHERE uri=?", (str(node.uri),)
+    )
+    j.store.db.commit()
+
+    j.config.retention.sessions_days = 30
+    res = j.prune_records()
+    assert res["sessions"] == 1
+    assert j.store.read_node(node.uri) is None
+    assert j.store.read_node(fresh.uri) is not None
+    # 파일도 사라졌다 (인덱스만이 아니라)
+    assert not j.store.path_for(node.uri).exists()
+
+
+def test_stale_archive_is_purged_recent_is_kept(coding):
+    """아카이브는 '되돌릴 수 있게' 남기지만 영원히는 아니다 — 보존기간 뒤 정리."""
+    j = coding
+    old = j.remember("app", "cases", "옛 사례", "지워질 것", confidence=0.5)
+    recent = j.remember("app", "cases", "새 사례", "남을 것", confidence=0.5)
+    old_arch = j.store.archive_node(old, reason="decay")
+    recent_arch = j.store.archive_node(recent, reason="decay")
+    # 오래전에 아카이브된 것처럼 updated 를 되돌린다 (archive_node 가 updated 를 찍는다)
+    j.store.db.execute(
+        "UPDATE nodes SET updated='2020-01-01T00:00:00' WHERE uri=?", (str(old_arch),)
+    )
+    j.store.db.commit()
+
+    j.config.retention.archive_days = 30
+    res = j.prune_records()
+    assert res["archive"] == 1
+    assert j.store.read_node(old_arch) is None
+    assert j.store.read_node(recent_arch) is not None
+
+
+def test_purge_never_touches_live_memories(coding):
+    """purge_archive 는 _archive/ 밖의 살아있는 메모리를 절대 지우지 않는다."""
+    j = coding
+    live = j.remember("app", "cases", "살아있는 사례", "내용", confidence=0.5)
+    j.store.db.execute(
+        "UPDATE nodes SET updated='2020-01-01T00:00:00' WHERE uri=?", (str(live),)
+    )
+    j.store.db.commit()
+    j.config.retention.archive_days = 30
+    j.prune_records()
+    assert j.store.read_node(live) is not None
 
 
 def test_concurrent_mutations_stay_consistent(coding):

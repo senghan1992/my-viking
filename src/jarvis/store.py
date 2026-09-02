@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -307,6 +308,57 @@ class Store:
         self.delete_node(u)
         self.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
         return target
+
+    def prune_sessions(self, days: int) -> int:
+        """Drop session transcripts past retention, across every project.
+
+        Sessions are the record layer: their durable value is already in the
+        memories distillation produced, and on an always-on server one node per
+        prompt is the fastest-growing thing here. Deleted outright (not
+        archived) — an archived transcript is just the same bulk moved sideways.
+        """
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))).replace(
+            microsecond=0
+        ).isoformat()
+        rows = self.db.query(
+            "SELECT uri FROM nodes WHERE kind=? AND updated != '' AND updated < ?",
+            (KIND_SESSION, cutoff),
+        )
+        removed = 0
+        for row in rows:
+            uri = Uri.parse(row["uri"])
+            # Never touch what got archived out of the sessions tree by other
+            # machinery; this rule is only for live transcripts.
+            if uri.parts[:1] == ("_archive",):
+                continue
+            if self.delete_node(uri):
+                removed += 1
+        return removed
+
+    def purge_archive(self, days: int) -> int:
+        """Delete archived nodes older than ``days``, across every project.
+
+        Archiving is reversible on purpose, but ``_archive/`` otherwise grows
+        forever. A node's ``updated`` is stamped at archive time (archive_node
+        rewrites it), so the index column dates the archival without reading a
+        single file.
+        """
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))).replace(
+            microsecond=0
+        ).isoformat()
+        rows = self.db.query("SELECT uri, updated FROM nodes WHERE updated < ?", (cutoff,))
+        removed = 0
+        for row in rows:
+            uri = Uri.parse(row["uri"])
+            if uri.parts[:1] != ("_archive",):
+                continue
+            if self.delete_node(uri):
+                removed += 1
+        return removed
 
     def touch_node(self, uri: Uri | str, reinforce: float = 0.0) -> None:
         """Record that a node was actually used, and optionally reinforce it."""

@@ -1231,7 +1231,12 @@ def cmd_backup_restore(args, j: Jarvis | None = None) -> int:
         return 1
     try:
         mgr = _backup_manager(args)
-        res = mgr.restore_file(args.file) if args.file else mgr.restore(args.name or "")
+        force = getattr(args, "force_online", False)
+        res = (
+            mgr.restore_file(args.file, force=force)
+            if args.file
+            else mgr.restore(args.name or "", force=force)
+        )
     except (RuntimeError, ValueError) as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
@@ -2103,6 +2108,11 @@ def build_parser() -> argparse.ArgumentParser:
     s2.add_argument("name", nargs="?", help="복원할 백업 파일명 (생략하면 최신)")
     s2.add_argument("--file", help="원격 대신 로컬 아카이브에서 복원 (pre-restore 되돌리기 포함)")
     s2.add_argument("--yes", action="store_true", help="현재 데이터를 덮어쓰는 데 동의")
+    s2.add_argument(
+        "--force-online",
+        action="store_true",
+        help="서버가 살아있어 보여도 강행 (이미 중지한 게 확실할 때만)",
+    )
     s2.set_defaults(func=cmd_backup_restore)
 
     # hook — called by the coding agent's hook system, not by people

@@ -422,6 +422,101 @@ def test_gdrive_resumable_upload_roundtrip(home, jarvis, monkeypatch):
     assert "테스트" in titles and "빌드" not in titles
 
 
+def test_local_upload_is_atomic_and_leaves_no_partial(manager, remote_dir, jarvis):
+    """중간에 끊겨도 반쪽짜리 아카이브가 목록에 뜨면 안 된다 → .part 후 rename."""
+    jarvis.init_project("app", template="coding")
+    manager.run()
+    files = list(remote_dir.glob("myviking-*.tar.gz"))
+    assert len(files) == 1
+    # 사이드카(.part) 가 남지 않는다 — list/회전이 잘린 파일을 보지 못한다.
+    assert not list(remote_dir.glob("*.part"))
+
+
+def test_rotation_failure_does_not_bury_a_good_backup(manager, jarvis, monkeypatch):
+    """업로드는 성공했는데 회전(오래된 것 삭제)이 실패했다고 백업 전체를 실패로
+    기록하면 안 된다 — 멀쩡한 스냅샷을 숨기고 헛되이 재시도하게 된다."""
+    jarvis.init_project("app", template="coding")
+
+    import jarvis.backup as bk
+    from jarvis.backup import LocalFolder
+
+    stamps = iter(["20260901T000000Z", "20260901T000001Z", "20260901T000002Z"])
+    real = bk.make_snapshot
+
+    def stamped(h, dest):
+        p = real(h, dest)
+        renamed = p.with_name(f"myviking-{next(stamps)}.tar.gz")
+        p.rename(renamed)
+        return renamed
+
+    monkeypatch.setattr(bk, "make_snapshot", stamped)
+
+    def boom(self, file_id):  # 회전 중 삭제가 깨진다
+        raise RuntimeError("삭제 실패")
+
+    manager.run()  # keep=2 를 채우기 위한 첫 업로드
+    manager.run()
+    monkeypatch.setattr(LocalFolder, "delete", boom)
+    res = manager.run()  # 세 번째 → keep=2 초과분 삭제가 delete 를 부르고 터진다
+
+    assert res["name"].startswith("myviking-")  # 업로드 자체는 성공
+    assert res["rotate_error"]
+    st = manager.status()
+    assert st["last_status"].startswith("ok")  # 실패가 아니라 성공 + 회전경고
+    assert "회전 실패" in st["last_status"]
+
+
+def test_drive_list_pages_through_every_result(home):
+    """100개를 넘어가면 회전이 오래된 백업을 영영 못 지운다 — 페이지네이션 필수."""
+    from jarvis.backup import GoogleDrive
+
+    pages = {
+        "": {"files": [{"id": "a", "name": "myviking-1.tar.gz", "size": "1"}],
+             "nextPageToken": "p2"},
+        "p2": {"files": [{"id": "b", "name": "myviking-2.tar.gz", "size": "1"}]},
+    }
+
+    def http(method, url, headers=None, data=None, timeout=None):
+        import urllib.parse as up
+        token = up.parse_qs(up.urlparse(url).query).get("pageToken", [""])[0]
+        return 200, json.dumps(pages[token]).encode(), {}
+
+    drive = GoogleDrive({"refresh_token": "r", "folder_id": "F"}, http=http)
+    drive._access = "x"
+    drive._access_until = 9e18
+    names = {f["name"] for f in drive.list()}
+    assert names == {"myviking-1.tar.gz", "myviking-2.tar.gz"}
+
+
+def test_restore_refuses_while_the_server_is_live(manager, home, jarvis):
+    """복원은 열려 있는 인덱스를 덮어써 손상시킨다 — 하트비트가 신선하면 거절한다."""
+    from datetime import datetime, timezone
+
+    jarvis.init_project("app", template="coding")
+    jarvis.remember("app", "commands", "테스트", "pytest -q")
+    manager.run()
+
+    # 살아있는 서버의 하트비트를 흉내낸다 (server.start_heartbeat 가 하는 일).
+    jarvis.store.db.set_meta("server_heartbeat", datetime.now(timezone.utc).isoformat())
+
+    with pytest.raises(RuntimeError, match="서버가 실행 중"):
+        manager.restore()
+
+    # --force-online 에 해당하는 우회로는 강행한다.
+    res = manager.restore(force=True)
+    assert res["restored"].startswith("myviking-")
+
+
+def test_restore_proceeds_when_heartbeat_is_stale(manager, home, jarvis):
+    """오래된 하트비트(서버 중지됨)면 복원이 정상 진행된다."""
+    jarvis.init_project("app", template="coding")
+    jarvis.remember("app", "commands", "테스트", "pytest -q")
+    manager.run()
+    jarvis.store.db.set_meta("server_heartbeat", "2020-01-01T00:00:00+00:00")
+    res = manager.restore()
+    assert res["restored"].startswith("myviking-")
+
+
 def test_restore_keeps_a_pre_restore_undo(manager, home, jarvis):
     """복원은 파괴적이므로, 직전 상태 한 부를 자동으로 남겨 실행 취소를 연다."""
     from pathlib import Path

@@ -646,11 +646,17 @@ class Jarvis:
         every prompt.
         """
         r = self.config.retention
-        return {
+        result = {
             "traces": self.tracer.prune(r.traces_days),
+            "sessions": self.store.prune_sessions(r.sessions_days),
+            "archive": self.store.purge_archive(r.archive_days),
             "usage": self.store.db.prune_usage(r.usage_days),
             "cache": self.sessions.cache_prune(r.cache_per_project),
         }
+        # Reclaim the space those deletes freed: in WAL mode the file only
+        # grows until the log is folded back in.
+        self.store.db.checkpoint()
+        return result
 
     # ------------------------------------------------------------------
     # curation — the part you do *after* the work, not during it
