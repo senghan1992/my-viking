@@ -212,19 +212,18 @@ def test_term_swapped_ignores_pure_elaboration():
     assert not _term_swapped("빌드", "빌드는 make 로 하고 산출물은 dist 에 들어가며 서명이 필요하다")
 
 
-def test_merged_contradiction_surfaces_in_review(coding):
-    """The end-to-end path: two opposite instructions land in one carrier and
-    the review queue asks which is right."""
+def test_merged_contradiction_is_recorded_with_both_statements(coding):
+    """Even when resolved automatically, the pair stays auditable."""
     coding.commit("app", "앞으로 커밋 메시지는 항상 한글로 써줘", "네, 한글로 씁니다.")
     coding.commit("app", "앞으로 커밋 메시지는 항상 영어로 써줘", "네, 영어로 씁니다.")
-    queue = coding.review_queue("app")
-    conflicts = [it for it in queue if "conflict" in it["reasons"]]
-    assert conflicts, "상충이 검토 큐에 오르지 않았습니다"
-    clash = conflicts[0]["conflict"]
+    conv = coding.memories("app", "conventions")
+    detail = coding.memory_detail(conv[0]["uri"])
+    clash = detail["conflict"]
     assert "한글" in clash["existing"] and "영어" in clash["incoming"]
     assert clash["kind"] == "substitution"
-    # A conflict must outrank a merely unconfirmed entry in the queue.
-    assert queue[0]["priority"] >= conflicts[0]["priority"]
+    assert clash["resolution"] == "superseded"
+    # The current headline follows the newer instruction.
+    assert "영어" in detail["abstract"]
 
 
 from jarvis.learn import _title_from  # noqa: E402
@@ -282,22 +281,56 @@ def test_unrelated_statements_are_not_conflicts(a, b):
     assert _clash_kind(a, b) == ""
 
 
-def test_contradiction_is_found_even_when_memories_stay_separate(coding):
-    """Two opposite rules can be textually far enough apart not to merge. Both
-    then get retrieved, so the conflict must be found independently of merging.
-    """
+def test_newer_instruction_supersedes_the_older_one(coding):
+    """The default policy resolves contradictions without a person: a later
+    instruction is normally the current one."""
     coding.commit("app", "앞으로 커밋은 항상 한글로", "네")
     coding.commit("app", "앞으로 커밋은 항상 영어로", "네")
 
     conv = coding.memories("app", "conventions")
-    assert len(conv) == 2, "이 문장쌍은 병합되지 않아야 합니다 (전제 확인)"
-    flagged = [
-        coding.memory_detail(m["uri"]) for m in conv
-    ]
-    assert all(d["conflict"] for d in flagged), "양쪽 모두 표시되어야 합니다"
+    assert len(conv) == 1, [m["title"] for m in conv]
+    survivor = coding.memory_detail(conv[0]["uri"])
+    assert "영어" in survivor["abstract"]
+    assert survivor["conflict"]["resolution"] == "superseded"
+
+    # Reversible: the old one is archived with a pointer, not deleted.
+    old = coding.store.read_node(
+        "jarvis://projects/app/_archive/memories/conventions/앞으로-커밋은-항상-한글로"
+    )
+    assert old is not None
+    assert old.extra["superseded_by"] == conv[0]["uri"]
+    assert "영어" in old.tier(2)
+
+    # Out of the *rules* the agent is given, so it never sees two live rules.
+    from jarvis.models import KIND_MEMORY
+
+    packed = coding.retriever.pack("커밋 메시지 언어 규칙", "app", kinds=[KIND_MEMORY])
+    assert "한글로" not in packed.text
+    # A transcript may still quote it, so that section says it is not a rule.
+    full = coding.retriever.pack("커밋 메시지 언어 규칙", "app")
+    if "한글로" in full.text:
+        assert "현재 규칙이 아님" in full.text
+
+
+def test_superseded_conflict_does_not_ask_for_review(coding):
+    coding.commit("app", "앞으로 커밋은 항상 한글로", "네")
+    coding.commit("app", "앞으로 커밋은 항상 영어로", "네")
+    assert coding.review_queue("app") == []
+
+
+def test_flag_policy_keeps_both_sides_for_a_person(coding):
+    """Opt back into human arbitration when that is what you want."""
+    coding.config.learn.conflict_policy = "flag"
+    coding.commit("app", "앞으로 커밋은 항상 한글로", "네")
+    coding.commit("app", "앞으로 커밋은 항상 영어로", "네")
+
+    conv = coding.memories("app", "conventions")
+    assert len(conv) == 2
+    flagged = [coding.memory_detail(m["uri"]) for m in conv]
+    assert all(d["conflict"] for d in flagged)
     # Each side points at the other so either can be corrected.
-    others = {d["conflict"]["other"] for d in flagged}
-    assert others == {m["uri"] for m in conv}
+    assert {d["conflict"]["other"] for d in flagged} == {m["uri"] for m in conv}
+    assert [it for it in coding.review_queue("app") if "conflict" in it["reasons"]]
 
 
 def test_no_false_conflicts_across_a_populated_category(coding):
@@ -314,3 +347,88 @@ def test_no_false_conflicts_across_a_populated_category(coding):
         if coding.memory_detail(m["uri"])["conflict"]
     ]
     assert conflicts == []
+
+
+def test_session_is_not_filed_twice(coding):
+    """A session that produced a categorised memory must not also leave a
+    duplicate under the fallback category."""
+    coding.commit("app", "앞으로 주석은 항상 한글로 써줘", "네, 한글로 씁니다.")
+    cats = {m["category"] for m in coding.memories("app")}
+    assert cats == {"conventions"}, cats
+
+
+def test_session_with_nothing_specific_still_lands_somewhere(coding):
+    """The fallback must still catch a session no rule claimed, or the loop
+    looks like it runs while nothing accumulates."""
+    coding.commit("app", "이 프로젝트 이름이 뭐였지?", "backend 입니다.")
+    assert {m["category"] for m in coding.memories("app")} == {"cases"}
+
+
+def test_supersession_chain_keeps_names_matching_content(coding):
+    """A carrier whose content was replaced must not keep the old statement as
+    its name, or the knowledge list shows a title that contradicts its body."""
+    for q in (
+        "앞으로 커밋 메시지는 항상 한글로 써줘",
+        "앞으로 커밋 메시지는 항상 영어로 써줘",
+        "앞으로 커밋 메시지는 항상 일본어로 써줘",
+    ):
+        coding.commit("app", q, "네, 그렇게 하겠습니다.")
+
+    live = coding.memories("app", "conventions")
+    assert len(live) == 1
+    detail = coding.memory_detail(live[0]["uri"])
+    assert "일본어" in detail["title"]
+    assert "일본어" in detail["abstract"]
+    assert "한글" not in detail["title"] and "영어" not in detail["title"]
+
+    # Only the current rule reaches the agent.
+    prepared = coding.prepare("app", "커밋 메시지 언어 규칙", use_cache=False)
+    assert "일본어" in prepared.context
+    assert "한글로" not in prepared.context and "영어로" not in prepared.context
+
+
+def test_superseded_wording_is_still_recoverable(coding):
+    """Nothing is destroyed by an automatic supersession. Depending on whether
+    the replacement merged into the carrier or replaced it, the old wording is
+    either in the file's history section or in the archive — but it is there."""
+    coding.commit("app", "앞으로 커밋 메시지는 항상 한글로 써줘", "네")
+    coding.commit("app", "앞으로 커밋 메시지는 항상 영어로 써줘", "네")
+
+    live = "".join(
+        p.read_text(encoding="utf-8")
+        for p in (coding.store.scope_dir("app") / "memories").rglob("*.md")
+    )
+    archive_dir = coding.store.scope_dir("app") / "_archive"
+    archived = "".join(
+        p.read_text(encoding="utf-8") for p in archive_dir.rglob("*.md")
+    ) if archive_dir.exists() else ""
+
+    assert "한글" in live + archived, "대체된 문구가 어디에도 남지 않았습니다"
+    assert "대체" in live + archived or "superseded" in live + archived
+
+
+def test_retitle_refuses_to_overwrite_an_occupied_name(coding):
+    """The rename guard, exercised directly: two different memories must never
+    collapse into one file because a supersession wanted that name."""
+    occupied = coding.remember("app", "conventions", "이미 있는 이름", "다른 지식의 내용")
+    other = coding.remember("app", "conventions", "바뀔 이름", "바뀌기 전 내용")
+
+    node = coding.store.read_node(other)
+    result = coding.learner._retitle(node, "이미 있는 이름")
+
+    # Stayed put rather than clobbering the occupant.
+    assert result == other
+    assert coding.store.read_node(occupied) is not None
+    assert coding.memory_detail(str(occupied))["abstract"] == "다른 지식의 내용"
+    assert len(coding.memories("app", "conventions")) == 2
+
+
+def test_retitle_moves_the_file_when_the_name_is_free(coding):
+    uri = coding.remember("app", "conventions", "옛 이름", "내용")
+    node = coding.store.read_node(uri)
+    moved = coding.learner._retitle(node, "새 이름")
+    assert str(moved).endswith("conventions/새-이름")
+    assert coding.store.read_node(uri) is None
+    detail = coding.memory_detail(str(moved))
+    assert detail["title"] == "새 이름"
+    assert detail["abstract"] == "내용"

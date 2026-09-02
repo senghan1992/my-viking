@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .auth import KeyStore
+from .connect import CLIENTS, build as build_connection, instruction_file
 from .mcp_core import Handler, tools
 from .service import Jarvis
 from .ui import DASHBOARD_HTML
@@ -487,15 +488,53 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
             agent=body.agent,
         )
 
+    # ----- connection info (what a person actually comes here for) ------
+    @app.get("/projects/{project}/connection")
+    def connection(
+        project: str,
+        request: Request,
+        client: str = "claude-code",
+        key: str = "",
+        base_url: str = "",
+    ) -> dict[str, Any]:
+        """Everything needed to point a coding agent at this project.
+
+        ``base_url`` matters: the server sees the address it was bound to, not
+        the one an agent on another machine has to dial. The dashboard passes
+        the address you are browsing, which is right far more often than
+        anything the process could infer about itself.
+        """
+        _guard(request, project)
+        if not jarvis.store.project_exists(project):
+            raise HTTPException(404, f"없는 프로젝트: {project}")
+        url = (base_url or str(request.base_url)).rstrip("/")
+        try:
+            conn = build_connection(client, url, project, key)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        data = conn.to_dict()
+        data["instruction_file"] = instruction_file(client)
+        data["auth_required"] = keys.any_active()
+        data["clients"] = list(CLIENTS)
+        data["aliases"] = jarvis.aliases(project)
+        return data
+
     # ----- curation ----------------------------------------------------
     @app.get("/projects/{project}/review")
-    def review(project: str, request: Request, limit: int = 50) -> list[dict[str, Any]]:
+    def review(
+        project: str,
+        request: Request,
+        limit: int = 50,
+        include_unconfirmed: bool = False,
+    ) -> list[dict[str, Any]]:
         _guard(request, project)
-        return jarvis.review_queue(project, limit)
+        return jarvis.review_queue(project, limit, include_unconfirmed)
 
     @app.get("/review/summary")
-    def review_summary(project: str = "") -> dict[str, Any]:
-        return jarvis.review_summary(project)
+    def review_summary(
+        project: str = "", include_unconfirmed: bool = False
+    ) -> dict[str, Any]:
+        return jarvis.review_summary(project, include_unconfirmed)
 
     @app.get("/memories/detail")
     def memory_detail(uri: str) -> dict[str, Any]:

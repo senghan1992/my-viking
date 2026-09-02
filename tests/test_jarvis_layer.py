@@ -134,6 +134,7 @@ def test_only_a_few_cross_project_hits_are_offered(jarvis):
 def test_brief_separates_knowledge_warnings_and_open_questions(coding):
     coding.remember("app", "commands", "테스트", "pytest -q 로 돌린다")
     coding.remember("app", "pitfalls", "재시도 금지", "0000 이 아니면 재시도하지 않는다")
+    coding.config.learn.conflict_policy = "flag"
     coding.commit("app", "앞으로 커밋은 항상 한글로", "네")
     coding.commit("app", "앞으로 커밋은 항상 영어로", "네")
 
@@ -181,6 +182,7 @@ def test_maintain_distills_sessions_left_undistilled(jarvis):
 
 def test_brief_never_lists_a_disputed_rule_as_established(coding):
     """Both sides of a contradiction under "확립된 지식" is worse than silence."""
+    coding.config.learn.conflict_policy = "flag"
     coding.remember("app", "commands", "테스트", "pytest -q 로 돌린다")
     coding.commit("app", "앞으로 커밋은 항상 한글로", "네")
     coding.commit("app", "앞으로 커밋은 항상 영어로", "네")

@@ -517,13 +517,17 @@ def _join_sections(sections: dict[str, list[str]]) -> str:
 
 
 WARN_GROUP = "⚠ 주의 — 이 프로젝트에서 이미 밟은 함정"
+# Transcripts are a record of what was said at the time. A superseded
+# instruction can still be quoted in one, so the heading has to say plainly
+# that this is history rather than a standing rule.
+SESSION_GROUP = "과거 대화 기록 (당시 내용이며 현재 규칙이 아님)"
 
 _GROUP_ORDER = {
     WARN_GROUP: -1,
     "프로젝트 메모리": 0,
     "전역 선호": 1,
     "프롬프트": 2,
-    "과거 세션": 3,
+    SESSION_GROUP: 3,
     "참고 자료": 4,
 }
 
@@ -538,7 +542,7 @@ def _group_label(kind: str, category: str, warn_cats: set[str] | None = None) ->
     if kind == KIND_PROMPT:
         return "프롬프트"
     if kind == KIND_SESSION:
-        return "과거 세션"
+        return SESSION_GROUP
     return "참고 자료"
 
 

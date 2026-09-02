@@ -22,6 +22,7 @@ from typing import Any
 from . import __version__
 from .budget import format_report
 from .config import Config
+from .connect import CLIENTS
 from .profiles import templates
 from .service import Jarvis
 from .tokens import estimate_tokens
@@ -784,68 +785,24 @@ def _slug_from_repo(repo: str) -> str:
     return _project_from_alias(repo) or "project"
 
 
-AGENT_TEMPLATES = {
-    "claude-code": (
-        "claude mcp add --transport http myviking {url}/mcp"
-        "{auth}",
-        "이 명령을 붙이려는 머신에서 실행하세요.",
-    ),
-    "cursor": (
-        '// ~/.cursor/mcp.json\n'
-        '{{\n'
-        '  "mcpServers": {{\n'
-        '    "myviking": {{\n'
-        '      "url": "{url}/mcp"{headers}\n'
-        '    }}\n'
-        '  }}\n'
-        '}}',
-        "Cursor 설정 파일에 넣으세요.",
-    ),
-    "codex": (
-        "# ~/.codex/config.toml\n"
-        "[mcp_servers.myviking]\n"
-        'url = "{url}/mcp"{toml_headers}',
-        "Codex 설정 파일에 넣으세요.",
-    ),
-}
-
-
 def cmd_agent_config(args, j: Jarvis) -> int:
-    url = args.url.rstrip("/")
-    key = args.key or ""
-    client = args.client
-    template, note = AGENT_TEMPLATES[client]
-    text = template.format(
-        url=url,
-        auth=f' --header "Authorization: Bearer {key}"' if key else "",
-        headers=f',\n      "headers": {{ "Authorization": "Bearer {key}" }}' if key else "",
-        toml_headers=f'\nheaders = {{ Authorization = "Bearer {key}" }}' if key else "",
-    )
+    from .connect import build, instruction_file
+
+    try:
+        conn = build(args.client, args.url, args.project or "", args.key or "")
+    except ValueError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
     if args.json:
-        _out({"client": client, "config": text, "url": url + "/mcp"}, True)
+        _out(conn.to_dict(), True)
         return 0
-    print(f"# {client} — {note}\n")
-    print(text)
-    print()
-    print(_agent_instructions(args.project))
+    print(f"# 1) MCP 연결 — {conn.where}\n")
+    print(conn.setup)
+    print(f"\n# 2) 에이전트 지시문 — {instruction_file(args.client)} 에 추가\n")
+    print(conn.instructions)
+    if not conn.has_key:
+        print("\n(API 키 없이 생성했습니다. 서버가 인증을 요구하면 --key 를 주세요.)")
     return 0
-
-
-def _agent_instructions(project: str) -> str:
-    """The prompt-side half of the setup. Wiring the tools up is not enough:
-    the agent has to be told when to use them."""
-    p = project or "<프로젝트>"
-    return (
-        "# 그리고 에이전트 지시문(CLAUDE.md / .cursorrules 등)에 추가하세요:\n\n"
-        f"이 저장소에서 작업할 때는 MyViking 을 컨텍스트 원천으로 사용한다.\n"
-        f"1. 작업을 시작하기 전에 jarvis_context 를 호출한다 "
-        f'(project="{p}" 또는 repo=git remote URL).\n'
-        "   반환된 컨텍스트는 이미 확인된 사실이므로 다시 조사하지 않는다.\n"
-        "   reused=true 로 오면 이전 답변이므로 유효성만 확인하고 재사용한다.\n"
-        "2. 새로 확정된 규칙·명령·함정은 jarvis_remember 로 남긴다.\n"
-        "3. 작업을 마치면 jarvis_commit 에 trace_id 와 함께 결과를 기록한다.\n"
-        "4. 사용자가 만족했거나 수정을 요구했으면 jarvis_score 로 알린다."
-    )
 
 
 # ----- observability ------------------------------------------------------
@@ -1025,12 +982,14 @@ REASON_LABEL = {
 def cmd_review(args, j: Jarvis) -> int:
     """What did my agents write down, and is it right?"""
     if args.summary or not args.project:
-        summary = j.review_summary(args.project or "")
+        summary = j.review_summary(args.project or "", args.all)
         if args.json:
             _out(summary, True)
             return 0
         if not summary["total"]:
-            print("확인할 것이 없습니다.")
+            print("확인할 것이 없습니다. 지식 저장소는 스스로 정리되고 있습니다.")
+            if not args.all:
+                print("(에이전트가 기록한 것을 모두 훑어보려면 --all)")
             return 0
         print(f"확인이 필요한 항목 {summary['total']}건\n")
         for reason, count in sorted(
@@ -1048,12 +1007,14 @@ def cmd_review(args, j: Jarvis) -> int:
         print("\n자세히: jv review -p <프로젝트>")
         return 0
 
-    queue = j.review_queue(args.project, limit=args.limit)
+    queue = j.review_queue(args.project, limit=args.limit, include_unconfirmed=args.all)
     if args.json:
         _out(queue, True)
         return 0
     if not queue:
         print(f"'{args.project}' 에 확인할 것이 없습니다.")
+        if not args.all:
+            print("(에이전트가 기록한 것을 모두 훑어보려면 --all)")
         return 0
 
     print(f"'{args.project}' 확인 필요 {len(queue)}건 — 위쪽이 더 시급합니다\n")
@@ -1545,9 +1506,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("agent", help="코딩 에이전트 연동 설정 출력")
     asub = sp.add_subparsers(dest="sub", required=True)
     s2 = asub.add_parser("config", help="클라이언트별 MCP 설정과 지시문 생성")
-    s2.add_argument(
-        "--client", default="claude-code", choices=sorted(AGENT_TEMPLATES)
-    )
+    s2.add_argument("--client", default="claude-code", choices=list(CLIENTS))
     s2.add_argument("--url", default="http://127.0.0.1:8787", help="서버 주소")
     s2.add_argument("--key", help="API 키 (인증을 켰다면 필요)")
     s2.add_argument("-p", "--project", help="지시문에 넣을 프로젝트 이름")
@@ -1585,6 +1544,11 @@ def build_parser() -> argparse.ArgumentParser:
     proj(sp, required=False)
     sp.add_argument("--limit", type=int, default=30)
     sp.add_argument("--summary", action="store_true", help="건수만 요약")
+    sp.add_argument(
+        "--all",
+        action="store_true",
+        help="에이전트가 기록했으나 아직 사람이 보지 않은 것까지 포함",
+    )
     sp.set_defaults(func=cmd_review)
 
     sp = sub.add_parser("traces", help="최근 작업 기록")

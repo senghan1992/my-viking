@@ -81,6 +81,13 @@ class LearnConfig:
     # Two candidate memories above this similarity are merged, not duplicated.
     merge_threshold: float = 0.82
     max_per_category: int = 40
+    # What to do when two memories contradict each other.
+    #   "newest" — the later statement supersedes; the older is archived with a
+    #              pointer, so the store stays self-maintaining and the change
+    #              is reversible. A later instruction usually *is* the current
+    #              one, which is why this is the default.
+    #   "flag"   — keep both and surface the pair for a person to decide.
+    conflict_policy: str = "newest"
 
 
 @dataclass

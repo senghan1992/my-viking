@@ -112,9 +112,9 @@ def test_manual_memories_need_no_review(coding):
     assert queue == [], "직접 쓴 메모리가 검토 큐에 올랐습니다"
 
 
-def test_distilled_memories_wait_for_confirmation(coding):
+def test_distilled_memories_are_marked_as_agent_written(coding):
     coding.commit("app", "빌드는 어떻게?", "make build 를 실행하세요.")
-    queue = coding.review_queue("app")
+    queue = coding.review_queue("app", include_unconfirmed=True)
     assert queue
     assert all("unconfirmed" in it["reasons"] for it in queue)
     assert all(it["origin"] == "distilled" for it in queue)
@@ -122,15 +122,23 @@ def test_distilled_memories_wait_for_confirmation(coding):
 
 def test_confirm_removes_from_queue_and_raises_confidence(coding):
     coding.commit("app", "빌드는 어떻게?", "make build")
-    item = coding.review_queue("app")[0]
+    item = coding.review_queue("app", include_unconfirmed=True)[0]
     res = coding.confirm_memory(item["uri"])
     assert res["confidence"] >= 0.85
-    assert item["uri"] not in [i["uri"] for i in coding.review_queue("app")]
+    assert item["uri"] not in [
+        i["uri"] for i in coding.review_queue("app", include_unconfirmed=True)
+    ]
 
 
 def test_edit_counts_as_review_and_can_move_category(coding):
-    coding.commit("app", "앞으로 주석은 항상 한글로", "네")
-    item = [i for i in coding.review_queue("app") if i["category"] == "cases"][0]
+    # A session with no rule shape lands under the fallback category, which is
+    # exactly the case you later want to reclassify by hand.
+    coding.commit("app", "주석은 무슨 언어로 쓰고 있지?", "지금은 한글로 쓰고 있습니다.")
+    item = [
+        i
+        for i in coding.review_queue("app", include_unconfirmed=True)
+        if i["category"] == "cases"
+    ][0]
     res = coding.edit_memory(
         item["uri"],
         title="주석 언어",
@@ -144,7 +152,9 @@ def test_edit_counts_as_review_and_can_move_category(coding):
     detail = coding.memory_detail(res["uri"])
     assert detail["reviewed"] is True
     assert detail["abstract"] == "주석은 한글로 쓴다"
-    assert res["uri"] not in [i["uri"] for i in coding.review_queue("app")]
+    assert res["uri"] not in [
+        i["uri"] for i in coding.review_queue("app", include_unconfirmed=True)
+    ]
 
 
 def test_edit_rejects_a_category_the_profile_lacks(coding):
@@ -184,14 +194,14 @@ def test_review_summary_counts_across_projects(jarvis):
     jarvis.init_project("b", template="coding")
     jarvis.commit("a", "질문1", "답1")
     jarvis.commit("b", "질문2", "답2")
-    summary = jarvis.review_summary()
+    summary = jarvis.review_summary(include_unconfirmed=True)
     assert summary["total"] == summary["projects"]["a"]["items"] + summary["projects"]["b"]["items"]
     assert summary["by_reason"]["unconfirmed"] >= 2
 
 
 def test_memory_detail_exposes_provenance_and_file_path(coding):
     coding.commit("app", "웹훅 검증은 어디서?", "webhooks/verify.py 에서 HMAC 검증")
-    item = coding.review_queue("app")[0]
+    item = coding.review_queue("app", include_unconfirmed=True)[0]
     d = coding.memory_detail(item["uri"])
     assert d["origin"] == "distilled"
     assert d["sources"], "출처 세션이 기록되지 않았습니다"
@@ -202,9 +212,11 @@ def test_memory_detail_exposes_provenance_and_file_path(coding):
 
 def test_archived_memory_leaves_the_queue(coding):
     coding.commit("app", "질문", "답변")
-    item = coding.review_queue("app")[0]
+    item = coding.review_queue("app", include_unconfirmed=True)[0]
     coding.forget(item["uri"], archive=True)
-    assert item["uri"] not in [i["uri"] for i in coding.review_queue("app")]
+    assert item["uri"] not in [
+        i["uri"] for i in coding.review_queue("app", include_unconfirmed=True)
+    ]
 
 
 def test_accumulated_memory_keeps_a_clean_one_line_summary(coding):
@@ -221,10 +233,39 @@ def test_accumulated_memory_keeps_a_clean_one_line_summary(coding):
         assert d["tokens"]["l2"] >= d["tokens"]["l0"]
 
 
-def test_conflict_keeps_the_original_headline_for_the_human_to_decide(coding):
+def test_conflict_headline_follows_the_newer_claim(coding):
     coding.commit("app", "앞으로 커밋 메시지는 항상 한글로 써줘", "네")
     coding.commit("app", "앞으로 커밋 메시지는 항상 영어로 써줘", "네")
-    item = [i for i in coding.review_queue("app") if "conflict" in i["reasons"]][0]
-    # The incoming claim must not silently become the headline.
-    assert "한글" in item["abstract"]
-    assert "영어" in coding.memory_detail(item["uri"])["body"]
+    mem = coding.memories("app", "conventions")[0]
+    detail = coding.memory_detail(mem["uri"])
+    assert "영어" in detail["abstract"]
+    # The superseded wording stays in the record.
+    assert "한글" in detail["body"] or "한글" in detail["conflict"]["existing"]
+
+
+def test_unconfirmed_is_not_a_review_item_by_default(coding):
+    """A knowledge base written by agents is not a backlog of chores."""
+    coding.commit("app", "빌드는 어떻게?", "make build 를 실행")
+    assert coding.review_queue("app") == []
+    # Still available for anyone who does want to audit.
+    assert coding.review_queue("app", include_unconfirmed=True)
+
+
+def test_session_transcripts_stay_out_of_the_prompt(coding):
+    """Whatever a session was worth has been distilled into memory; including
+    the transcript too pays for the same content twice — and can quote a rule
+    that has since been replaced."""
+    coding.commit("app", "웹훅 서명은 어디서 검증하지?", "webhooks/verify.py 에서 HMAC 으로 검증")
+    prepared = coding.prepare("app", "웹훅 서명 검증 위치", use_cache=False)
+    assert prepared.packed.items, "메모리는 검색되어야 합니다"
+    assert all(i.kind != "session" for i in prepared.packed.items)
+    # They remain searchable and surface as pointers instead.
+    found = coding.find("웹훅 서명", "app", kinds=["session"])
+    assert found["results"]
+
+
+def test_repeated_question_still_short_circuits_without_session_context(coding):
+    coding.commit("app", "테스트 어떻게 돌려?", "pytest -q", tokens_in=800)
+    prepared = coding.prepare("app", "테스트 어떻게 돌려?")
+    assert prepared.cache_hit is not None
+    assert prepared.cache_hit.answer == "pytest -q"

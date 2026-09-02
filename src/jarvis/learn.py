@@ -64,6 +64,7 @@ class DistillReport:
     created: list[str] = field(default_factory=list)
     merged: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
+    superseded: list[str] = field(default_factory=list)
     archived: list[str] = field(default_factory=list)
     decayed: int = 0
     used_llm: bool = False
@@ -76,6 +77,7 @@ class DistillReport:
             "created": self.created,
             "merged": self.merged,
             "conflicts": self.conflicts,
+            "superseded": self.superseded,
             "archived": self.archived,
             "decayed": self.decayed,
             "used_llm": self.used_llm,
@@ -112,7 +114,13 @@ class Learner:
                 else:
                     report.merged.append(str(uri))
                 if conflict:
-                    report.conflicts.append(str(uri))
+                    node = self.store.read_node(uri)
+                    resolved = bool(
+                        node
+                        and (node.extra.get("conflict") or {}).get("resolution")
+                        == "superseded"
+                    )
+                    (report.superseded if resolved else report.conflicts).append(str(uri))
             self.sessions.mark_distilled(session, written)
 
         if decay:
@@ -260,9 +268,16 @@ class Learner:
                 )
 
         # Everything else lands as a case: the raw exchange, compressed.
+        # Only when nothing else claimed the session, though. The fallback
+        # exists so a session is never lost, not to file a second copy of a
+        # rule that already has a home — and a duplicate copy also survives
+        # the supersession of the rule it duplicates, leaving stale guidance
+        # in retrieval.
         case_cat = _first_present(
             names, ("cases", "incidents", "findings", "phrasing", "facts")
         ) or profile.fallback_category()
+        if out:
+            case_cat = ""
         if case_cat and answer.strip():
             out.append(
                 MemoryCandidate(
@@ -300,7 +315,14 @@ class Learner:
             if node is not None:
                 clash_kind = _clash_kind(node.abstract, cand.statement)
                 conflict = clash_kind != ""
-                node.body = _append_detail(node.body, cand, conflict)
+                clash_existing = node.abstract
+                supersede_here = (
+                    conflict
+                    and self.store.config.learn.conflict_policy == "newest"
+                )
+                node.body = _append_detail(
+                    node.body, cand, conflict, superseded=supersede_here
+                )
                 node.confidence = min(1.0, node.confidence + 0.12)
                 node.sources = _add_source(node.sources, cand.source)
                 node.tags = sorted(set(node.tags) | set(cand.tags))
@@ -311,7 +333,29 @@ class Learner:
                         "existing": node.abstract,
                         "incoming": cand.statement,
                         "other": "",  # accumulated in this same file
+                        "resolution": (
+                            "superseded"
+                            if self.store.config.learn.conflict_policy == "newest"
+                            else "open"
+                        ),
                     }
+                    if supersede_here:
+                        # Headline follows the newer claim, and so does the
+                        # overview. The old wording stays only in the body's
+                        # history section, explicitly marked dead — otherwise
+                        # both rules keep getting retrieved and the agent has no
+                        # way to tell which one is current.
+                        node.abstract = truncate_to_tokens(cand.statement, 100)
+                        node.overview = truncate_to_tokens(
+                            cand.statement
+                            + (("\n\n" + cand.detail) if cand.detail else ""),
+                            2000,
+                        )
+                        node.extra["reviewed"] = True
+                        node.extra["superseded_statements"] = [
+                            *node.extra.get("superseded_statements", []),
+                            clash_existing,
+                        ][-10:]
                 if cand.source != "manual":
                     # New machine-written content landed here, so a previous
                     # human sign-off no longer covers the whole file.
@@ -323,11 +367,22 @@ class Learner:
                 # dated log lines, which is not a headline.
                 if not conflict:
                     node.abstract = truncate_to_tokens(cand.statement, 100)
-                # L1 does summarise the whole record: that is its job.
-                _abstract, overview = summarize(node.body, node.title, self.llm)
-                node.overview = overview or node.overview
-                self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
-                return node.uri, "merged", conflict
+
+                if not supersede_here:
+                    # L1 summarises the accumulated record: that is its job.
+                    _abstract, overview = summarize(node.body, node.title, self.llm)
+                    node.overview = overview or node.overview
+                    self.store.write_node(
+                        node, regenerate_tiers=False, reinforce_dirs=False
+                    )
+                    return node.uri, "merged", conflict
+
+                # Supersession replaces the carrier's content, so its name has
+                # to follow. Leaving the old statement as the title makes the
+                # knowledge list read "한글로" next to a body saying "영어로",
+                # and the filename stops describing what is in the file. There
+                # is nothing left to accumulate under the old name.
+                return self._retitle(node, cand.title or cand.statement), "merged", conflict
 
         uri = Uri(project, ("memories", cand.category, slugify(cand.title, "memory")))
         if self.store.read_node(uri) is not None and not cat.cumulative:
@@ -372,6 +427,7 @@ class Learner:
                 "reviewed_at": now_iso() if manual else "",
             },
         )
+        supersede = self.store.config.learn.conflict_policy == "newest"
         if clash is not None:
             other_uri, kind, other_statement = clash
             node.extra["conflict"] = {
@@ -380,15 +436,26 @@ class Learner:
                 "existing": other_statement,
                 "incoming": cand.statement,
                 "other": str(other_uri),
+                "resolution": "superseded" if supersede else "open",
             }
-            node.extra["reviewed"] = False
+            if supersede:
+                # The newer statement wins and the older is archived, so the
+                # store resolves itself instead of waiting on a person. It is a
+                # move, not a delete: the archived file records what replaced it.
+                node.extra["supersedes"] = [str(other_uri)]
+                node.extra["reviewed"] = True
+            else:
+                node.extra["reviewed"] = False
         self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
         if clash is not None:
             other_uri, kind, other_statement = clash
-            # Both sides get flagged: either one may be the one to correct.
-            self._flag_conflict(
-                other_uri, kind, other_statement, cand.statement, uri
-            )
+            if supersede:
+                self._mark_superseded(other_uri, uri, cand.statement)
+            else:
+                # Both sides flagged: either one may be the one to correct.
+                self._flag_conflict(
+                    other_uri, kind, other_statement, cand.statement, uri
+                )
             return uri, "created", True
         return uri, "created", False
 
@@ -443,6 +510,39 @@ class Learner:
         }
         node.extra["reviewed"] = False
         self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
+
+    def _retitle(self, node: Node, new_title: str) -> Uri:
+        """Move a carrier so its filename matches its current content."""
+        old_uri = node.uri
+        title = _title_from(new_title) or node.title
+        target = Uri(
+            old_uri.scope, ("memories", node.category, slugify(title, "memory"))
+        )
+        node.title = title
+        if target == old_uri or self.store.read_node(target) is not None:
+            # Target name is taken (or unchanged): keep the current location
+            # rather than clobbering a different memory.
+            self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
+            return old_uri
+        node.uri = target
+        node.extra["renamed_from"] = str(old_uri)
+        self.store.delete_node(old_uri)
+        self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
+        return target
+
+    def _mark_superseded(self, old_uri: Uri, new_uri: Uri, replacement: str) -> None:
+        """Archive the outdated side of a contradiction, recording what replaced it."""
+        node = self.store.read_node(old_uri)
+        if node is not None:
+            node.extra["superseded_by"] = str(new_uri)
+            node.extra["superseded_at"] = now_iso()
+            node.body = (
+                node.body.rstrip()
+                + f"\n\n## Superseded\n- {now_iso()}: 다음 내용으로 대체됨 — "
+                + f"{replacement}\n  ({new_uri})"
+            ).strip()
+            self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
+        self.store.archive_node(old_uri, reason=f"superseded by {new_uri}")
 
     def _find_similar(
         self, project: str, cand: MemoryCandidate, cat: MemoryCategory
@@ -627,8 +727,29 @@ def _add_source(sources: list[str], new: str) -> list[str]:
     return out[-20:]  # keep provenance bounded
 
 
-def _append_detail(body: str, cand: MemoryCandidate, needs_review: bool) -> str:
+def _append_detail(
+    body: str,
+    cand: MemoryCandidate,
+    needs_review: bool,
+    superseded: bool = False,
+) -> str:
+    """Add this observation to the carrier's log.
+
+    When the new statement supersedes the old one, the *old* text is what moves
+    into history — and it is labelled dead, not merely "different". A note that
+    only says two things disagree leaves both readable as current.
+    """
     stamp = now_iso()
+    if superseded:
+        old_lead = body.strip().splitlines()[0] if body.strip() else ""
+        header = "## 대체된 이전 내용 (더 이상 유효하지 않음)"
+        entry = f"- {stamp}: {old_lead}" if old_lead else f"- {stamp}: (이전 내용)"
+        new_body = cand.statement
+        if cand.detail:
+            new_body += f"\n\n{cand.detail}"
+        kept = _history_of(body)
+        return f"{new_body}\n\n{header}\n{entry}" + (f"\n{kept}" if kept else "")
+
     marker = " ⚠ 기존 내용과 다름 — 확인 필요" if needs_review else ""
     entry = f"- {stamp}{marker}: {cand.statement}"
     if cand.detail:
@@ -636,6 +757,15 @@ def _append_detail(body: str, cand: MemoryCandidate, needs_review: bool) -> str:
     if "## Observations" in body:
         return body.rstrip() + "\n" + entry
     return (body.rstrip() + "\n\n## Observations\n" + entry).strip()
+
+
+def _history_of(body: str) -> str:
+    """Existing history bullets, so supersessions accumulate rather than reset."""
+    marker = "## 대체된 이전 내용 (더 이상 유효하지 않음)"
+    idx = body.find(marker)
+    if idx == -1:
+        return ""
+    return body[idx + len(marker) :].strip()
 
 
 def _indent(text: str) -> str:

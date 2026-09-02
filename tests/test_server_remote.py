@@ -267,6 +267,22 @@ def test_score_on_unknown_trace_is_404(client):
 # --------------------------------------------------------------------------
 # curation over HTTP — what the dashboard's 검토 / 데이터베이스 tabs call
 # --------------------------------------------------------------------------
+def _review(client, project="app"):
+    return client.get(
+        f"/projects/{project}/review", params={"include_unconfirmed": True}
+    ).json()
+
+
+def _first_review(client, project="app"):
+    return _review(client, project)[0]["uri"]
+
+
+def _summary_total(client, project="app"):
+    return client.get(
+        "/review/summary", params={"project": project, "include_unconfirmed": True}
+    ).json()["total"]
+
+
 def _seed(client):
     client.post("/projects", json={"project": "app", "template": "coding"})
     client.post(
@@ -281,32 +297,53 @@ def _seed(client):
     for q, a in [
         ("앞으로 커밋 메시지는 항상 한글로 써줘", "네, 한글로 씁니다."),
         ("앞으로 커밋 메시지는 항상 영어로 써줘", "네, 영어로 씁니다."),
+        # No rule shape, so this one lands under the fallback category.
+        ("웹훅 서명은 어디서 검증하지?", "webhooks/verify.py 에서 HMAC 으로 검증합니다."),
     ]:
         client.post("/commit", json={"project": "app", "question": q, "answer": a})
 
 
-def test_review_endpoints_surface_the_conflict(client):
+def test_contradiction_resolves_itself_without_a_person(client):
+    """Default policy: the newer instruction supersedes, and nothing lands in a
+    queue waiting to be triaged."""
     _seed(client)
     summary = client.get("/review/summary", params={"project": "app"}).json()
-    assert summary["total"] > 0
-    assert "conflict" in summary["by_reason"]
+    assert summary["total"] == 0, summary
 
-    queue = client.get("/projects/app/review").json()
-    assert queue[0]["priority"] >= queue[-1]["priority"]  # sorted by urgency
-    top = queue[0]
-    assert "conflict" in top["reasons"]
-    assert top["conflict"]["existing"] and top["conflict"]["incoming"]
+    conv = [
+        m
+        for m in client.get("/projects/app/memories").json()
+        if m["category"] == "conventions"
+    ]
+    assert len(conv) == 1
+    detail = client.get("/memories/detail", params={"uri": conv[0]["uri"]}).json()
+    assert "영어" in detail["abstract"]
+    assert detail["conflict"]["resolution"] == "superseded"
+
+
+def test_review_queue_is_ordered_by_urgency_when_audited(client):
+    _seed(client)
+    queue = client.get(
+        "/projects/app/review", params={"include_unconfirmed": True}
+    ).json()
+    assert queue
+    assert queue[0]["priority"] >= queue[-1]["priority"]
 
 
 def test_manual_memory_is_not_in_the_review_queue(client):
     _seed(client)
-    uris = [i["uri"] for i in client.get("/projects/app/review").json()]
+    uris = [
+        i["uri"]
+        for i in client.get(
+            "/projects/app/review", params={"include_unconfirmed": True}
+        ).json()
+    ]
     assert not any("commands/테스트-실행" in u for u in uris)
 
 
 def test_memory_detail_gives_the_editor_everything_it_needs(client):
     _seed(client)
-    uri = client.get("/projects/app/review").json()[0]["uri"]
+    uri = _first_review(client)
     d = client.get("/memories/detail", params={"uri": uri}).json()
     for key in ("title", "category", "abstract", "body", "confidence", "origin",
                 "reviewed", "sources", "tokens", "impact", "reasons", "path"):
@@ -315,19 +352,18 @@ def test_memory_detail_gives_the_editor_everything_it_needs(client):
 
 def test_confirm_clears_the_item(client):
     _seed(client)
-    uri = client.get("/projects/app/review").json()[0]["uri"]
-    before = client.get("/review/summary", params={"project": "app"}).json()["total"]
+    uri = _first_review(client)
+    before = _summary_total(client)
     res = client.post("/memories/confirm", json={"uri": uri}).json()
     assert res["reviewed"] is True
-    after = client.get("/review/summary", params={"project": "app"}).json()["total"]
+    after = _summary_total(client)
     assert after == before - 1
 
 
 def test_edit_moves_the_file_and_marks_reviewed(client):
     _seed(client)
     uri = [
-        i["uri"] for i in client.get("/projects/app/review").json()
-        if i["category"] == "cases"
+        i["uri"] for i in _review(client) if i["category"] == "cases"
     ][0]
     res = client.patch(
         "/memories",
@@ -348,7 +384,7 @@ def test_edit_moves_the_file_and_marks_reviewed(client):
 
 def test_edit_rejects_an_unknown_category(client):
     _seed(client)
-    uri = client.get("/projects/app/review").json()[0]["uri"]
+    uri = _first_review(client)
     res = client.patch("/memories", json={"uri": uri, "category": "없는것"})
     assert res.status_code == 400
 
@@ -362,9 +398,9 @@ def test_edit_and_confirm_on_missing_memory_are_404(client):
 
 def test_archive_from_the_ui_removes_it_from_retrieval(client):
     _seed(client)
-    uri = client.get("/projects/app/review").json()[0]["uri"]
+    uri = _first_review(client)
     client.delete("/memories", params={"uri": uri, "archive": True})
-    assert uri not in [i["uri"] for i in client.get("/projects/app/review").json()]
+    assert uri not in [i["uri"] for i in _review(client)]
     ctx = client.post("/prepare", json={"project": "app", "question": "커밋 메시지 규칙"}).json()
     assert uri not in [i["uri"] for i in (ctx.get("packed") or {}).get("items", [])]
 
@@ -378,9 +414,106 @@ def test_review_is_scoped_by_key(client):
     assert client.get("/projects/b/review", headers=hdr).status_code == 403
 
 
-def test_dashboard_declares_all_four_tabs(client):
+def test_dashboard_lands_on_project_setup(client):
+    """The only job a person has here is: make a project, take the connection
+    info. That has to be the first thing on screen."""
     page = client.get("/").text
-    for label in ("검토", "데이터베이스", "작업 기록", "프롬프트"):
+    for label in ("프로젝트", "지식", "활동"):
         assert label in page
-    # The review tab must be the landing tab: it is what you open this for.
-    assert 'data-tab="review" class="on"' in page
+    assert 'data-tab="projects" class="on"' in page
+    # The project-creation form and the connection dialog must both be present.
+    assert 'id="np-create"' in page
+    assert 'id="conn-body"' in page
+
+
+# --------------------------------------------------------------------------
+# connection info — the one thing a person comes to the dashboard for
+# --------------------------------------------------------------------------
+def test_connection_gives_setup_and_instructions(client):
+    client.post("/projects", json={"project": "backend", "template": "coding"})
+    c = client.get(
+        "/projects/backend/connection",
+        params={"client": "claude-code", "base_url": "https://viking.example.com"},
+    ).json()
+
+    assert c["mcp_url"] == "https://viking.example.com/mcp"
+    assert "claude mcp add --transport http" in c["setup"]
+    assert c["instruction_file"] == "CLAUDE.md"
+    # Wiring alone does nothing; the instruction half must be there too.
+    for tool in ("jarvis_context", "jarvis_remember", "jarvis_commit", "jarvis_score"):
+        assert tool in c["instructions"], tool
+    assert 'project="backend"' in c["instructions"]
+    assert c["has_key"] is False
+
+
+def test_connection_embeds_the_key_when_given(client):
+    client.post("/projects", json={"project": "backend"})
+    c = client.get(
+        "/projects/backend/connection",
+        params={"client": "claude-code", "key": "jv_TEST", "base_url": "http://h:1"},
+    ).json()
+    assert "Authorization: Bearer jv_TEST" in c["setup"]
+    assert c["has_key"] is True
+
+
+def test_connection_covers_every_supported_client(client):
+    from jarvis.connect import CLIENTS
+
+    client.post("/projects", json={"project": "backend"})
+    for name in CLIENTS:
+        c = client.get(
+            "/projects/backend/connection",
+            params={"client": name, "base_url": "http://h:1"},
+        ).json()
+        assert c["mcp_url"] == "http://h:1/mcp", name
+        assert c["setup"].strip(), name
+        assert c["setup_kind"] in ("shell", "json", "toml"), name
+
+
+def test_connection_uses_the_browsed_address_not_the_bind_address(client):
+    """An agent on another machine cannot dial the address the server bound to."""
+    client.post("/projects", json={"project": "backend"})
+    c = client.get(
+        "/projects/backend/connection",
+        params={"base_url": "https://viking.example.com:8443"},
+    ).json()
+    assert c["mcp_url"] == "https://viking.example.com:8443/mcp"
+
+
+def test_connection_rejects_unknown_client_and_project(client):
+    client.post("/projects", json={"project": "backend"})
+    assert client.get(
+        "/projects/backend/connection", params={"client": "nope"}
+    ).status_code == 400
+    assert client.get("/projects/ghost/connection").status_code == 404
+
+
+def test_connection_reports_bound_repos(client):
+    client.post("/projects", json={"project": "backend"})
+    client.post("/aliases", json={"alias": "git@github.com:me/backend.git", "project": "backend"})
+    c = client.get("/projects/backend/connection").json()
+    assert [a["alias"] for a in c["aliases"]] == ["git@github.com:me/backend.git"]
+
+
+def test_project_cards_report_what_the_ui_shows(client):
+    client.post("/projects", json={"project": "backend", "template": "coding"})
+    client.post(
+        "/memories",
+        json={"project": "backend", "category": "commands", "title": "t", "statement": "s"},
+    )
+    body = client.post("/prepare", json={"project": "backend", "question": "q"}).json()
+    client.post(
+        "/commit",
+        json={
+            "project": "backend",
+            "question": "q",
+            "answer": "a",
+            "trace_id": body["trace_id"],
+        },
+    )
+    card = client.get("/projects").json()[0]
+    for key in ("memories", "tasks", "last_active", "aliases", "warn_categories"):
+        assert key in card, key
+    assert card["memories"] >= 1
+    assert card["tasks"] >= 1
+    assert card["last_active"]

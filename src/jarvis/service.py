@@ -22,7 +22,7 @@ from typing import Any, Iterable
 from .budget import UsageReport, usage_report
 from .config import BudgetConfig, Config
 from .learn import DistillReport, Learner, MemoryCandidate
-from .models import KIND_MEMORY, KIND_SESSION, Node, Uri, now_iso, slugify
+from .models import KIND_MEMORY, KIND_PROMPT, KIND_SESSION, Node, Uri, now_iso, slugify
 from .profiles import MemoryProfile, builtin, template_summary
 from .prompts import PromptLibrary, RenderResult
 from .retrieve import PackedContext, Retriever
@@ -133,16 +133,32 @@ class Jarvis:
         for name in self.store.projects():
             s = stats.get(name, {})
             prof = self.store.profile(name)
+            by_kind = s.get("by_kind", {})
+            last = self.store.db.one(
+                "SELECT MAX(started) AS ts, COUNT(*) AS n FROM traces WHERE scope=?",
+                (name,),
+            )
             out.append(
                 {
                     "project": name,
                     "template": prof.template,
                     "description": prof.description,
                     "categories": prof.category_names(),
+                    "warn_categories": sorted(prof.warn_categories()),
                     "nodes": s.get("total_nodes", 0),
+                    # Split out because "how much does it know" and "how much
+                    # has it been used" are the two things a project card is
+                    # actually asked to answer.
+                    "memories": by_kind.get(KIND_MEMORY, {}).get("count", 0),
+                    "sessions": by_kind.get(KIND_SESSION, {}).get("count", 0),
+                    "prompts": by_kind.get(KIND_PROMPT, {}).get("count", 0),
                     "cache_entries": s.get("cache_entries", 0),
+                    "tasks": (last["n"] if last else 0) or 0,
+                    "last_active": (last["ts"] if last else "") or "",
+                    "aliases": [a["alias"] for a in self.aliases(name)],
                 }
             )
+        out.sort(key=lambda d: (d["last_active"] or "", d["project"]), reverse=True)
         return out
 
     def profile(self, project: str) -> MemoryProfile:
@@ -435,13 +451,19 @@ class Jarvis:
     # ------------------------------------------------------------------
     # curation — the part you do *after* the work, not during it
     # ------------------------------------------------------------------
-    def review_queue(self, project: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Memories that want a human decision, most consequential first.
+    def review_queue(
+        self, project: str, limit: int = 50, include_unconfirmed: bool = False
+    ) -> list[dict[str, Any]]:
+        """Memories automation could not settle by itself, worst first.
 
-        You are not watching while your agents work, so the useful question is
-        not "what is happening" but "what did my agents write down, and is it
-        right?" Each entry carries the reason it surfaced so the decision is a
-        few seconds of reading rather than an investigation.
+        The store is meant to maintain itself: usage reinforces, disuse decays,
+        outcomes adjust confidence, and contradictions supersede. So by default
+        this lists only what those rules cannot decide — an open contradiction,
+        or knowledge that keeps showing up in bad outcomes.
+
+        "An agent wrote this and no human has read it" is the normal state of a
+        working knowledge base, not a defect, so it is excluded unless you ask
+        for it with ``include_unconfirmed``.
         """
         rows = self.store.db.query(
             "SELECT uri, title, category, abstract, confidence, hits, updated"
@@ -457,7 +479,9 @@ class Jarvis:
             if node is None:
                 continue
             impact = self.tracer.scores_for_uri(row["uri"])
-            reasons = self._review_reasons(node, impact)
+            reasons = self._review_reasons(
+                node, impact, include_unconfirmed=include_unconfirmed
+            )
             if not reasons:
                 continue
             out.append(
@@ -482,28 +506,36 @@ class Jarvis:
         out.sort(key=lambda d: (-d["priority"], -d["uses"], d["updated"]))
         return out[:limit]
 
-    def _review_reasons(self, node: Node, impact: dict[str, Any]) -> list[str]:
+    def _review_reasons(
+        self, node: Node, impact: dict[str, Any], include_unconfirmed: bool = False
+    ) -> list[str]:
         reasons: list[str] = []
-        if node.extra.get("conflict"):
+        clash = node.extra.get("conflict") or {}
+        # A superseded contradiction is settled; only an open one needs a person.
+        if clash and clash.get("resolution") != "superseded":
             reasons.append("conflict")
         if impact["avg_score"] is not None and impact["avg_score"] < 0.4:
             reasons.append("harmful")
-        if not node.extra.get("reviewed"):
-            reasons.append("unconfirmed")
         if impact["uses"] >= 3 and impact["scored"] == 0:
             # Leaned on repeatedly, never judged. Popular is not the same as
             # correct, and this is where a wrong belief quietly compounds.
             reasons.append("unproven")
+        if include_unconfirmed and not node.extra.get("reviewed"):
+            reasons.append("unconfirmed")
         if node.confidence <= self.config.learn.archive_below + 0.05:
             reasons.append("fading")
         return reasons
 
-    def review_summary(self, project: str = "") -> dict[str, Any]:
+    def review_summary(
+        self, project: str = "", include_unconfirmed: bool = False
+    ) -> dict[str, Any]:
         """Counts per reason, for a digest you can read in five seconds."""
         projects = [project] if project else self.store.projects()
         out: dict[str, Any] = {"projects": {}, "total": 0, "by_reason": {}}
         for name in projects:
-            queue = self.review_queue(name, limit=500)
+            queue = self.review_queue(
+                name, limit=500, include_unconfirmed=include_unconfirmed
+            )
             counts: dict[str, int] = {}
             for item in queue:
                 for reason in item["reasons"]:
@@ -717,7 +749,14 @@ class Jarvis:
         retrieval_query = question if not prompt_render else f"{question}\n{prompt_render.text}"
         # Prompt templates are rendered into the request, not pasted as context;
         # retrieving them here would pay for the same text twice.
-        pack_kinds = list(kinds) if kinds else [KIND_MEMORY, KIND_SESSION, "resource"]
+        #
+        # Session transcripts are left out for the same reason: whatever was
+        # worth keeping from a session has already been distilled into memory,
+        # so including both put the same content in the prompt twice — and a
+        # transcript quoting a since-superseded instruction made two conflicting
+        # rules readable at once. Repeated questions are still answered from the
+        # cache, and relevant sessions still surface under ``references``.
+        pack_kinds = list(kinds) if kinds else [KIND_MEMORY, "resource"]
         obs = self.tracer.start_observation(
             trace_id, "retrieval", "pack", input_text=retrieval_query
         )
