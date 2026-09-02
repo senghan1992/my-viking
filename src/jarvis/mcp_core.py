@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .models import Uri
 from .service import Jarvis
 
 def _tools() -> list[dict[str, Any]]:
@@ -249,17 +250,58 @@ def _tools() -> list[dict[str, Any]]:
 
 
 class Handler:
-    def __init__(self, jarvis: Jarvis):
+    def __init__(self, jarvis: Jarvis, key: Any = None):
         self.j = jarvis
+        # The API key for this request (or None for stdio/open server). A key
+        # scoped to some projects must not read or write the others — MCP is the
+        # main surface, so the check lives here rather than only on REST routes.
+        self.key = key
+
+    # ----- scope enforcement ------------------------------------------
+    def _allowed(self, project: str) -> bool:
+        return self.key is None or not project or self.key.allows(project)
+
+    def _check_scope(self, project: str) -> None:
+        if not self._allowed(project):
+            raise PermissionError(f"이 키는 '{project}' 에 접근할 수 없습니다")
+
+    def _guard_uri(self, uri: str) -> None:
+        try:
+            scope = Uri.parse(uri).scope
+        except Exception:
+            return
+        self._check_scope(scope)
+
+    def _guard_trace(self, trace_id: str) -> None:
+        row = self.j.store.db.one("SELECT scope FROM traces WHERE id=?", (trace_id,))
+        if row:
+            self._check_scope(row["scope"])
+
+    def _scoped(self) -> bool:
+        return self.key is not None and not self.key.allows("*")
+
+    def _deny_cross_project(self, op: str) -> None:
+        # Aggregations that span every project leak other scopes' data; a key
+        # that isn't all-access must not see them.
+        if self._scoped():
+            raise PermissionError(
+                f"'{op}' 는 전체 프로젝트를 가로지르므로 스코프가 제한된 키로는 볼 수 없습니다"
+            )
 
     # ----- tool implementations ---------------------------------------
     def _project(self, args: dict[str, Any], create: bool = True) -> str:
         """Resolve the project from a name, a git remote, or a path."""
+        name = str(args.get("project") or "")
+        # A scoped key never invents new projects by repo/path guessing, and may
+        # create one only if it is explicitly named and allowed. Otherwise it
+        # could reach outside its scope simply by pointing at a fresh checkout.
+        self._check_scope(name)
+        may_create = create and (not self._scoped() or (bool(name) and self._allowed(name)))
         resolved = self.j.resolve_project(
-            project=str(args.get("project") or ""),
+            project=name,
             repo=str(args.get("repo") or ""),
             path=str(args.get("path") or ""),
-            create=create,
+            create=may_create,
             # MCP is a coding-agent surface; a project it creates gets the
             # coding categories so pitfalls/decisions have somewhere to land.
             template=str(args.get("template") or "coding"),
@@ -269,6 +311,7 @@ class Handler:
                 "프로젝트를 특정할 수 없습니다. project 를 지정하거나 repo(git remote)를 "
                 f"넘기세요. 등록된 프로젝트: {', '.join(resolved.get('candidates') or []) or '(없음)'}"
             )
+        self._check_scope(resolved["project"])
         return resolved["project"]
 
     def jarvis_context(self, args: dict[str, Any]) -> Any:
@@ -367,6 +410,7 @@ class Handler:
         }
 
     def jarvis_score(self, args: dict[str, Any]) -> Any:
+        self._guard_trace(str(args.get("trace_id") or ""))
         return self.j.score(
             args["trace_id"],
             name=str(args.get("name") or "helpfulness"),
@@ -403,18 +447,30 @@ class Handler:
     def jarvis_browse(self, args: dict[str, Any]) -> Any:
         op = args["op"]
         if op == "ls":
+            self._guard_uri(args["uri"])
             return self.j.ls(args["uri"])
         if op == "tree":
+            self._guard_uri(args["uri"])
             return self.j.tree(args["uri"], depth=int(args.get("depth", 3)))
         if op == "find":
+            self._check_scope(str(args.get("project") or ""))
             return self.j.find(
                 args.get("query", ""), args["project"], limit=int(args.get("limit", 15))
             )
         if op == "grep":
+            if args.get("uri"):
+                self._guard_uri(str(args["uri"]))
+            elif self._scoped():
+                # No uri means grep sweeps every project — a scoped key would
+                # read outside its scope. Require it to point inside its scope.
+                raise PermissionError(
+                    "스코프가 제한된 키는 grep 에 자기 프로젝트 uri 를 지정해야 합니다"
+                )
             return self.j.grep(
                 args.get("query", ""), args.get("uri"), limit=int(args.get("limit", 30))
             )
         if op == "read":
+            self._guard_uri(args["uri"])
             data = self.j.read(args["uri"], tier=int(args.get("tier", 2)))
             if data is None:
                 raise ValueError(f"없는 URI: {args['uri']}")
@@ -423,6 +479,7 @@ class Handler:
 
     def jarvis_prompt(self, args: dict[str, Any]) -> Any:
         op, project = args["op"], args["project"]
+        self._check_scope(str(project or ""))
         if op == "list":
             return self.j.list_prompts(project)
         if op == "show":
@@ -446,26 +503,35 @@ class Handler:
     def jarvis_profile(self, args: dict[str, Any]) -> Any:
         op = args.get("op", "profile")
         if op == "projects":
-            return self.j.projects()
+            rows = self.j.projects()
+            if self._scoped():
+                rows = [p for p in rows if self._allowed(p["project"])]
+            return rows
         if op == "templates":
             return self.j.templates()
         if op == "agents":
+            self._deny_cross_project("agents")
             return self.j.agents()
         if op == "brief":
             return self.j.brief(self._project(args, create=False))
         if op == "digest":
+            self._deny_cross_project("digest")
             return self.j.digest()
         if op == "review":
             return self.j.review_queue(self._project(args, create=False), limit=30)
         if op == "metrics":
+            self._check_scope(str(args.get("project") or ""))
             return self.j.metrics(str(args.get("project") or ""))
         if op == "traces":
+            self._check_scope(str(args.get("project") or ""))
             return self.j.traces(str(args.get("project") or ""), limit=20)
         if op == "impact":
             return self.j.memory_impact(self._project(args, create=False))
         if op == "report":
+            self._check_scope(str(args.get("project") or ""))
             return self.j.report(args.get("project")).to_dict()
         if op == "init":
+            self._check_scope(str(args.get("project") or ""))
             profile = self.j.init_project(
                 args["project"],
                 template=args.get("template", "default"),

@@ -240,7 +240,6 @@ PUBLIC_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/favicon.ico"}
 def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     jarvis = Jarvis(home=home)
     keys = KeyStore(jarvis.store.db)
-    mcp = Handler(jarvis)
     app = FastAPI(
         title="MyViking",
         description="프로젝트별 자가학습 컨텍스트 데이터베이스 · 에이전트 컨텍스트 서버",
@@ -384,6 +383,48 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         if row is not None:
             _guard(request, row["scope"])
 
+    def _scoped_key(request: Request):
+        """The caller's key if it is confined to some projects, else None
+        (all-access key, or an open server before any key exists)."""
+        info = getattr(request.state, "key", None)
+        return info if (info is not None and not info.allows("*")) else None
+
+    def _confine(request: Request, project: str) -> None:
+        """Cross-project reads (metrics/traces/agents/... with no project) span
+        every scope. A scoped key must name a project it's allowed to see; an
+        all-access key (or open server) may still read the whole picture."""
+        if _scoped_key(request) is not None and not project:
+            raise HTTPException(
+                403, "스코프가 제한된 키는 project 를 지정해야 합니다 (전체 집계 불가)"
+            )
+        _guard(request, project)
+
+    def _require_admin(request: Request) -> None:
+        """Key management is an all-access operation. A scoped key must not list,
+        mint, or revoke keys — that would let it escalate straight past its scope.
+        The server stays open only until the first key exists (bootstrap)."""
+        if _scoped_key(request) is not None:
+            raise HTTPException(403, "키 관리는 전체 접근 키만 가능합니다")
+
+    def _resolve_guarded(request: Request, body) -> dict[str, Any]:
+        """Resolve a project for a route that may create one, honouring scope:
+        a scoped key never invents a project by repo/path guessing and may
+        create one only when it is explicitly named and inside its scope."""
+        info = _scoped_key(request)
+        name = body.project or ""
+        if info is not None and name:
+            _guard(request, name)
+        want_create = getattr(body, "create", True)
+        may_create = want_create and (
+            info is None or (bool(name) and info.allows(name))
+        )
+        resolved = jarvis.resolve_project(
+            name, body.repo, body.path, create=may_create, template=body.template
+        )
+        if resolved["project"]:
+            _guard(request, resolved["project"])
+        return resolved
+
     # ----- meta -------------------------------------------------------
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -462,9 +503,12 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
                 status_code=400,
             )
         batch = payload if isinstance(payload, list) else [payload]
+        # Bind the caller's key so tool dispatch enforces their scope; the
+        # shared `mcp` is unscoped and would let a scoped key read everything.
+        scoped_mcp = Handler(jarvis, key=getattr(request.state, "key", None))
         out = []
         for msg in batch:
-            reply = _handle_rpc(mcp, msg)
+            reply = _handle_rpc(scoped_mcp, msg)
             if reply is not None:
                 out.append(reply)
         if not out:
@@ -499,8 +543,12 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
 
     # ----- projects ---------------------------------------------------
     @app.get("/projects")
-    def list_projects() -> list[dict[str, Any]]:
-        return jarvis.projects()
+    def list_projects(request: Request) -> list[dict[str, Any]]:
+        rows = jarvis.projects()
+        info = _scoped_key(request)
+        if info is not None:
+            rows = [p for p in rows if info.allows(p["project"])]
+        return rows
 
     @app.post("/projects")
     def init_project(body: InitBody) -> dict[str, Any]:
@@ -609,16 +657,13 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     # ----- the loop ---------------------------------------------------
     @app.post("/prepare")
     def prepare(body: PrepareBody, request: Request) -> dict[str, Any]:
-        resolved = jarvis.resolve_project(
-            body.project, body.repo, body.path, create=True, template=body.template
-        )
+        resolved = _resolve_guarded(request, body)
         if not resolved["project"]:
             raise HTTPException(
                 400,
                 "프로젝트를 특정할 수 없습니다. project 또는 repo 를 지정하세요. "
                 f"등록됨: {', '.join(resolved.get('candidates') or [])}",
             )
-        _guard(request, resolved["project"])
         try:
             prepared = jarvis.prepare(
                 resolved["project"],
@@ -700,8 +745,9 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
 
     @app.get("/review/summary")
     def review_summary(
-        project: str = "", include_unconfirmed: bool = False
+        request: Request, project: str = "", include_unconfirmed: bool = False
     ) -> dict[str, Any]:
+        _confine(request, project)
         return jarvis.review_summary(project, include_unconfirmed)
 
     @app.get("/memories/detail")
@@ -757,12 +803,14 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
 
     @app.get("/traces")
     def list_traces(
+        request: Request,
         project: str = "",
         limit: int = 50,
         cursor: str = "",
         name: str = "",
         min_latency: int = 0,
     ) -> list[dict[str, Any]]:
+        _confine(request, project)
         return jarvis.traces(project, limit, cursor, name, min_latency)
 
     @app.get("/traces/{trace_id}")
@@ -774,11 +822,15 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return data
 
     @app.get("/metrics")
-    def get_metrics(project: str = "", days: int = 7) -> dict[str, Any]:
+    def get_metrics(request: Request, project: str = "", days: int = 7) -> dict[str, Any]:
+        _confine(request, project)
         return jarvis.metrics(project, days)
 
     @app.get("/timeseries")
-    def get_timeseries(project: str = "", days: int = 14) -> list[dict[str, Any]]:
+    def get_timeseries(
+        request: Request, project: str = "", days: int = 14
+    ) -> list[dict[str, Any]]:
+        _confine(request, project)
         return jarvis.timeseries(project, days)
 
     @app.get("/projects/{project}/impact")
@@ -793,37 +845,46 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return jarvis.brief(project, limit)
 
     @app.get("/worksessions")
-    def work_sessions(project: str = "", limit: int = 20) -> list[dict[str, Any]]:
+    def work_sessions(
+        request: Request, project: str = "", limit: int = 20
+    ) -> list[dict[str, Any]]:
         """Traces grouped into the sittings they belonged to."""
+        _confine(request, project)
         return jarvis.work_sessions(project, limit)
 
     @app.get("/agents")
-    def list_agents() -> list[dict[str, Any]]:
+    def list_agents(request: Request) -> list[dict[str, Any]]:
+        # Cross-project by nature: only an all-access key sees every agent.
+        _confine(request, "")
         return jarvis.agents()
 
     # ----- project resolution -----------------------------------------
     @app.post("/resolve")
-    def resolve(body: ResolveBody) -> dict[str, Any]:
-        return jarvis.resolve_project(
-            body.project, body.repo, body.path, body.create, template=body.template
-        )
+    def resolve(body: ResolveBody, request: Request) -> dict[str, Any]:
+        # Honour scope: a scoped key can neither probe for other projects nor
+        # conjure one outside its scope by pointing at a fresh repo/path.
+        return _resolve_guarded(request, body)
 
     @app.post("/aliases")
-    def add_alias(body: AliasBody) -> dict[str, Any]:
+    def add_alias(body: AliasBody, request: Request) -> dict[str, Any]:
+        _guard(request, body.project)
         jarvis.bind_alias(body.alias, body.project, body.kind)
         return {"alias": body.alias, "project": body.project}
 
     @app.get("/aliases")
-    def list_aliases(project: str = "") -> list[dict[str, Any]]:
+    def list_aliases(request: Request, project: str = "") -> list[dict[str, Any]]:
+        _confine(request, project)
         return jarvis.aliases(project)
 
     # ----- keys --------------------------------------------------------
     @app.get("/keys")
-    def list_keys() -> list[dict[str, Any]]:
+    def list_keys(request: Request) -> list[dict[str, Any]]:
+        _require_admin(request)
         return keys.list()
 
     @app.post("/keys")
-    def create_key(body: KeyBody) -> dict[str, Any]:
+    def create_key(body: KeyBody, request: Request) -> dict[str, Any]:
+        _require_admin(request)
         kid, raw = keys.create(body.name, body.projects)
         return {
             "id": kid,
@@ -833,7 +894,8 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         }
 
     @app.delete("/keys/{key_id}")
-    def revoke_key(key_id: str) -> dict[str, Any]:
+    def revoke_key(key_id: str, request: Request) -> dict[str, Any]:
+        _require_admin(request)
         return {"revoked": keys.revoke(key_id)}
 
     @app.post("/projects/{project}/distill")
@@ -861,6 +923,9 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     ) -> list[dict[str, Any]]:
         if uri:
             _guard_uri(request, uri)
+        elif _scoped_key(request) is not None:
+            # No uri means grep sweeps every project — confine a scoped key.
+            raise HTTPException(403, "스코프가 제한된 키는 grep 에 uri 를 지정해야 합니다")
         return jarvis.grep(term, uri, limit)
 
     @app.get("/read")
@@ -873,11 +938,15 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
 
     # ----- accounting -------------------------------------------------
     @app.get("/report")
-    def report(project: str | None = None, days: int = 0) -> dict[str, Any]:
+    def report(
+        request: Request, project: str | None = None, days: int = 0
+    ) -> dict[str, Any]:
+        _confine(request, project or "")
         return jarvis.report(project, days).to_dict()
 
     @app.get("/stats")
-    def stats(project: str | None = None) -> dict[str, Any]:
+    def stats(request: Request, project: str | None = None) -> dict[str, Any]:
+        _confine(request, project or "")
         return jarvis.stats(project)
 
     @app.get("/projects/{project}/cache")

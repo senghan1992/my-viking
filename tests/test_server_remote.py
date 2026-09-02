@@ -148,6 +148,57 @@ def test_scope_is_enforced_across_every_route_shape(client):
     assert client.get("/projects/a/memories", headers=hdr).status_code == 200
 
 
+def test_scoped_key_cannot_manage_keys(client):
+    """키 발급/열람/폐기는 전체 접근 권한이다 — 스코프 키가 이걸 하면 자기 범위를
+    넘어 새 전체 키를 찍어내 곧장 권한상승할 수 있다."""
+    client.post("/projects", json={"project": "a"})
+    key = client.post("/keys", json={"name": "only-a", "projects": ["a"]}).json()["key"]
+    hdr = {"authorization": f"Bearer {key}"}
+
+    assert client.get("/keys", headers=hdr).status_code == 403
+    esc = client.post("/keys", json={"name": "godmode"}, headers=hdr)
+    assert esc.status_code == 403
+    assert client.delete("/keys/whatever", headers=hdr).status_code == 403
+
+
+def test_scoped_key_cannot_create_a_project_outside_its_scope(client):
+    """스코프 키가 새 체크아웃(repo/path)을 가리키는 것만으로 자기 범위 밖
+    프로젝트를 만들어 발판을 얻어선 안 된다."""
+    client.post("/projects", json={"project": "a"})
+    key = client.post("/keys", json={"name": "only-a", "projects": ["a"]}).json()["key"]
+    hdr = {"authorization": f"Bearer {key}"}
+
+    # repo 추측으로 유령 프로젝트를 만들지 못한다.
+    res = client.post(
+        "/prepare",
+        json={"repo": "github.com/me/brandnew", "question": "q"},
+        headers=hdr,
+    )
+    assert res.status_code in (400, 403)
+    listed = [p["project"] for p in client.get("/projects", headers=hdr).json()]
+    assert "brandnew" not in listed
+    # 이름을 대도 범위 밖이면 403.
+    assert client.post(
+        "/prepare", json={"project": "b", "question": "q"}, headers=hdr
+    ).status_code == 403
+
+
+def test_scoped_key_cannot_read_cross_project_aggregates(client):
+    """project 를 비우면 metrics·traces·agents 등은 전 프로젝트를 가로지른다 —
+    스코프 키는 반드시 자기 프로젝트를 지정해야 하고, 비우면 거절된다."""
+    client.post("/projects", json={"project": "a"})
+    client.post("/projects", json={"project": "b"})
+    key = client.post("/keys", json={"name": "only-a", "projects": ["a"]}).json()["key"]
+    hdr = {"authorization": f"Bearer {key}"}
+
+    for path in ("/traces", "/metrics", "/worksessions", "/agents", "/report", "/stats"):
+        assert client.get(path, headers=hdr).status_code == 403, path
+    # grep 도 uri 없이는 전 저장소를 훑으므로 막힌다.
+    assert client.get("/grep", params={"term": "x"}, headers=hdr).status_code == 403
+    # 자기 프로젝트를 지정하면 통과한다.
+    assert client.get("/traces", params={"project": "a"}, headers=hdr).status_code == 200
+
+
 def test_backoff_is_per_real_client_behind_a_trusted_proxy(home, monkeypatch):
     """리버스 프록시 뒤에선 모든 요청이 프록시 IP 로 온다. 신뢰 설정을 켜면
     X-Forwarded-For 로 진짜 클라이언트를 구분해, 한 공격자가 전체를 잠그지 못한다."""
@@ -264,6 +315,66 @@ def test_mcp_http_requires_key_when_auth_is_on(client):
 
 def test_mcp_get_is_not_a_stream(client):
     assert client.get("/mcp").status_code == 405
+
+
+def _tool_error(client, name, args, key):
+    """도구 호출의 (isError, 텍스트) 를 돌려준다. 오류일 땐 본문이 JSON 이 아니므로
+    call() 대신 원문을 본다."""
+    body = rpc(client, "tools/call", {"name": name, "arguments": args}, key=key).json()
+    result = body["result"]
+    return result["isError"], result["content"][0]["text"]
+
+
+def test_mcp_confines_a_scoped_key_to_its_projects(client):
+    """MCP 는 주요 인터페이스다 — REST 만 막고 여기가 뚫리면 스코프는 무의미하다.
+    스코프 키는 도구 호출로도 남의 프로젝트를 읽거나 만들 수 없어야 한다."""
+    client.post("/projects", json={"project": "a", "template": "coding"})
+    client.post("/projects", json={"project": "b", "template": "coding"})
+    key = client.post("/keys", json={"name": "only-a", "projects": ["a"]}).json()["key"]
+
+    # 자기 프로젝트는 도구로 정상 접근된다.
+    _, err = call(client, "jarvis_brief", {"project": "a"}, key=key)
+    assert err is False
+
+    # 남의 프로젝트는 이름을 대든 브리핑을 걸든 거절된다 (isError + 사유).
+    for name, args in [
+        ("jarvis_brief", {"project": "b"}),
+        ("jarvis_history", {"project": "b"}),
+        ("jarvis_context", {"project": "b", "question": "q"}),
+        ("jarvis_profile", {"op": "metrics", "project": "b"}),
+        ("jarvis_profile", {"op": "traces", "project": "b"}),
+    ]:
+        is_err, text = _tool_error(client, name, args, key)
+        assert is_err is True, (name, args)
+        assert "접근할 수 없습니다" in text, (name, args, text)
+
+    # 전 프로젝트 집계(agents·digest)와 uri 없는 grep 은 스코프 키에게 막힌다.
+    for name, args in [
+        ("jarvis_profile", {"op": "agents"}),
+        ("jarvis_profile", {"op": "digest"}),
+        ("jarvis_browse", {"op": "grep", "query": "x"}),
+    ]:
+        is_err, _ = _tool_error(client, name, args, key)
+        assert is_err is True, (name, args)
+
+    # projects 목록은 스코프 키에게 자기 것만 보인다.
+    rows, err = call(client, "jarvis_profile", {"op": "projects"}, key=key)
+    assert err is False
+    assert [p["project"] for p in rows] == ["a"]
+
+
+def test_mcp_scoped_key_cannot_invent_a_project(client):
+    """도구로도 repo 추측만으로 범위 밖 프로젝트를 만들어선 안 된다."""
+    client.post("/projects", json={"project": "a"})
+    key = client.post("/keys", json={"name": "only-a", "projects": ["a"]}).json()["key"]
+    is_err, _ = _tool_error(
+        client, "jarvis_context",
+        {"repo": "github.com/me/ghost", "question": "q"}, key,
+    )
+    assert is_err is True
+    hdr = {"authorization": f"Bearer {key}"}
+    listed = [p["project"] for p in client.get("/projects", headers=hdr).json()]
+    assert "ghost" not in listed
 
 
 # --------------------------------------------------------------------------
