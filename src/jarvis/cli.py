@@ -944,16 +944,38 @@ def _remote(args):
         raise SystemExit(
             "서버 주소가 없습니다. --url 을 주거나 MYVIKING_URL 을 설정하세요."
         )
+    # A key over plaintext HTTP to anything but loopback rides the wire in the
+    # clear — any hop can read it and it grants project (or full) access. Warn
+    # loudly; the agent reads this and the user can switch to https.
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    if key and url.lower().startswith("http://") and host not in (
+        "localhost", "127.0.0.1", "::1",
+    ):
+        print(
+            f"주의: {url} 는 평문 HTTP 입니다. API 키가 네트워크에 그대로 노출됩니다"
+            " — https 를 쓰세요.",
+            file=sys.stderr,
+        )
     return remote.client_for(url, key)
 
 
-def _remote_project(client, args, create: bool = False) -> str:
+def _remote_repo(args) -> str:
+    """The durable, cross-machine key for the checkout: its git remote. Never
+    the local path — that means nothing on the server's machine."""
     import os
 
+    from .hooks import _git_remote
+
+    return getattr(args, "repo", "") or _git_remote(os.getcwd())
+
+
+def _remote_project(client, args, create: bool = False) -> str:
     return client.resolve_or_fail(
         project=args.project or "",
-        repo=getattr(args, "repo", "") or "",
-        path=os.getcwd(),
+        repo=_remote_repo(args),
+        path="",
         create=create,
     )
 
@@ -963,7 +985,30 @@ def cmd_remote_brief(args, j: Jarvis | None = None) -> int:
 
     try:
         client = _remote(args)
-        project = _remote_project(client, args)
+        repo = _remote_repo(args)
+        # Create on first touch like ctx/commit do — a brand-new checkout should
+        # get an orientation ("nothing yet, here's how to bind it"), not a hard
+        # error that reads like the server is broken.
+        res = client.resolve(project=args.project or "", repo=repo, create=True)
+        project = res.get("project") or ""
+        if not project:
+            known = ", ".join(res.get("candidates") or []) or "(없음)"
+            print(
+                "오류: 프로젝트를 특정할 수 없습니다. -p <이름> 또는 --repo 를"
+                f" 지정하세요. 등록됨: {known}",
+                file=sys.stderr,
+            )
+            return 1
+        if res.get("created"):
+            print(f"[MyViking] '{project}' 를 새로 만들었습니다. 아직 축적된 것이 없습니다.")
+            if repo:
+                print(f"  git remote {repo} 로 고정했습니다.")
+            else:
+                print(
+                    f"  이 저장소를 서버에 고정하려면:  jv remote link -p {project}"
+                    " --repo <git remote URL>"
+                )
+            print()
         brief = client.brief(project)
     except Exception as exc:
         print(f"오류: {exc}", file=sys.stderr)
@@ -1098,6 +1143,36 @@ def cmd_remote_link(args, j: Jarvis | None = None) -> int:
 
 
 cmd_remote_link.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_remote_health(args, j: Jarvis | None = None) -> int:
+    """Reach the server and check the key — separates a down server from a bad
+    key from a working setup, before an agent tries the loop."""
+    try:
+        client = _remote(args)
+        h = client.health()
+    except Exception as exc:
+        print(f"서버에 닿지 못했습니다: {exc}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        _out(h, True)
+        return 0
+    print(f"서버       연결됨 (v{h.get('version', '?')} · 프로젝트 {h.get('projects', 0)}개)")
+    print(f"인증       {'켜짐' if h.get('auth_required') else '꺼짐 (키 없이 열림)'}")
+    hb = h.get("heartbeat")
+    if hb is not None:
+        print(f"하트비트   {hb}")
+    key = args.key or os.environ.get("MYVIKING_KEY", "")
+    if h.get("auth_required") and not key:
+        print(
+            "주의     인증이 켜져 있는데 키가 없습니다. --key 또는 MYVIKING_KEY 를"
+            " 설정하지 않으면 모든 호출이 401 로 막힙니다.",
+            file=sys.stderr,
+        )
+    return 0
+
+
+cmd_remote_health.no_jarvis = True  # type: ignore[attr-defined]
 
 
 # ----- backup ---------------------------------------------------------------
@@ -2105,6 +2180,12 @@ def build_parser() -> argparse.ArgumentParser:
     s2.add_argument("--key", default="", help="API 키 (기본 $MYVIKING_KEY)")
     s2.add_argument("--repo", default="", help="git remote URL 직접 지정")
     s2.set_defaults(func=cmd_remote_link)
+    s2 = rsub.add_parser(
+        "health", help="서버에 닿는지 · 인증 상태 점검 (루프 전 진단)"
+    )
+    s2.add_argument("--url", default="", help="서버 주소 (기본 $MYVIKING_URL)")
+    s2.add_argument("--key", default="", help="API 키 (기본 $MYVIKING_KEY)")
+    s2.set_defaults(func=cmd_remote_health)
 
     # backup — the copy that survives losing the volume
     sp = sub.add_parser("backup", help="서버 밖 백업 (Google Drive / 디렉터리)")

@@ -93,6 +93,43 @@ def test_brief_reads_established_knowledge(rc, http):
     assert any(w["title"] == "PG 재시도 금지" for w in brief["warnings"])
 
 
+def test_link_binds_the_repo_not_a_machine_local_path(rc, http):
+    """서버는 에이전트 머신의 로컬 경로를 알 수 없다. link 는 git remote 만
+    심어야 하고, 로컬 절대경로를 서버 별칭으로 남기면 다른 머신에서 죽는다."""
+    res = rc.link("backend", repo="git@github.com:me/backend.git", path="/home/alice/work/backend")
+    assert res["bound"] == ["repo git@github.com:me/backend.git"]
+
+    # 로컬 경로로는 서버에서 아무것도 해석되지 않는다 (별칭으로 안 심겼다).
+    got = rc.resolve(path="/home/alice/work/backend")
+    assert not got["project"]
+    # 하지만 git remote 로는 (형태가 달라도) 잡힌다.
+    assert rc.resolve_or_fail(repo="https://github.com/me/backend") == "backend"
+
+
+def test_link_refuses_without_a_repo(rc):
+    """git remote 도 --repo 도 없으면, 서버에 심을 안정적 키가 없다 — 조용히
+    로컬 경로를 심는 대신 무엇이 필요한지 알리고 멈춘다."""
+    with pytest.raises(RuntimeError) as err:
+        rc.link("backend", repo="", path="")
+    assert "--repo" in str(err.value)
+
+
+def test_resolve_does_not_bind_the_local_path_on_autocreate(rc, http):
+    """ctx/commit 이 처음 프로젝트를 만들 때도 로컬 경로를 서버 별칭으로 남기지
+    않는다 — repo 만 안정적 키다."""
+    made = rc.resolve(repo="git@github.com:me/fresh.git", path="/tmp/whatever/fresh", create=True)
+    assert made["project"] == "fresh" and made["created"] is True
+    # 로컬 경로로는 안 잡히고, repo 로만 잡힌다.
+    assert not rc.resolve(path="/tmp/whatever/fresh")["project"]
+    assert rc.resolve_or_fail(repo="https://github.com/me/fresh") == "fresh"
+
+
+def test_health_reports_the_server(rc):
+    h = rc.health()
+    assert h["auth_required"] in (True, False)
+    assert "version" in h
+
+
 def test_resolve_failure_names_the_candidates(rc, http):
     _seed(http)
     with pytest.raises(RuntimeError) as err:
@@ -153,6 +190,57 @@ def test_remote_cli_loop(http, monkeypatch, capsys):
 
     assert main(["remote", "score", trace_id, "1.0", "--url", "x"]) == 0
     assert "반영했습니다" in capsys.readouterr().out
+
+
+def test_remote_brief_creates_and_announces_on_first_touch(http, monkeypatch, capsys):
+    """새 체크아웃에서 brief 가 딱딱한 오류(서버가 고장난 듯 읽힌다) 대신
+    프로젝트를 만들고 '아직 없다 + 이렇게 고정하라'를 안내한다 (ctx/commit 과 일관)."""
+    import jarvis.remote as remote_mod
+    from jarvis.cli import main
+
+    monkeypatch.setattr(
+        remote_mod, "client_for",
+        lambda url, key="", timeout=30.0: RemoteClient(ClientTransport(http)),
+    )
+    assert main(["remote", "brief", "-p", "greenfield", "--url", "x"]) == 0
+    out = capsys.readouterr().out
+    assert "greenfield" in out
+    assert "새로 만들었습니다" in out
+    # 만들어졌으니 서버에도 실제로 존재한다.
+    assert any(p["project"] == "greenfield" for p in http.get("/projects").json())
+
+
+def test_remote_health_cli(http, monkeypatch, capsys):
+    import jarvis.remote as remote_mod
+    from jarvis.cli import main
+
+    monkeypatch.setattr(
+        remote_mod, "client_for",
+        lambda url, key="", timeout=30.0: RemoteClient(ClientTransport(http)),
+    )
+    assert main(["remote", "health", "--url", "x"]) == 0
+    assert "서버" in capsys.readouterr().out
+
+
+def test_remote_warns_on_cleartext_key_over_http(http, monkeypatch, capsys):
+    """평문 HTTP 로 원격에 키를 보내면 그대로 노출된다 — 에이전트가 읽는 stderr 로 경고."""
+    import jarvis.remote as remote_mod
+    from jarvis.cli import main
+
+    monkeypatch.setattr(
+        remote_mod, "client_for",
+        lambda url, key="", timeout=30.0: RemoteClient(ClientTransport(http)),
+    )
+    _seed(http)
+    main(["remote", "brief", "-p", "backend", "--url", "http://viking.example.com:8787",
+          "--key", "jv_secret"])
+    err = capsys.readouterr().err
+    assert "평문 HTTP" in err
+
+    # 루프백은 경고하지 않는다 (포트포워딩·로컬은 흔하고 안전하다).
+    main(["remote", "brief", "-p", "backend", "--url", "http://127.0.0.1:8787",
+          "--key", "jv_secret"])
+    assert "평문 HTTP" not in capsys.readouterr().err
 
 
 def test_remote_cli_fails_loud_without_a_server(capsys, monkeypatch):

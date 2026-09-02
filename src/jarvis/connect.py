@@ -167,6 +167,8 @@ INSTRUCTIONS_SHELL = """이 저장소에서 작업할 때는 MyViking 을 셸 �
 0. 세션을 시작할 때 먼저 실행한다:
        jv remote brief
    최근 작업·주의사항·미해결이 나온다. 저장소를 처음부터 훑지 말고 여기서 시작한다.
+   (연결이 의심되면 `jv remote health` 로 서버·인증 상태를 먼저 확인한다.
+    이 저장소를 서버 프로젝트에 고정하려면 `jv remote link -p <이름> --repo <git remote>`.)
 
 1. 개별 작업을 시작하기 전에 실행한다:
        jv remote ctx "지금 하려는 작업 한 줄"

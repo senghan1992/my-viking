@@ -54,13 +54,19 @@ class RemoteClient:
             repo = _git_remote(path)
         # This bridge is what coding agents call, so a project it creates should
         # start with the coding categories rather than the bare default set.
+        #
+        # The server is (in the remote setup) a different machine, so this
+        # checkout's local filesystem path is not a durable key there: binding
+        # it as a server-side alias resolves to nothing elsewhere and collides
+        # by basename across machines. The git remote is the cross-machine
+        # identity — derive it from the path locally, then send only the repo.
         return self.t.request(
             "POST",
             "/resolve",
             {
                 "project": project,
                 "repo": repo,
-                "path": path,
+                "path": "",
                 "create": create,
                 "template": template,
             },
@@ -75,16 +81,20 @@ class RemoteClient:
         is the correct verb for the home-server + port-forward setup."""
         if not repo and path:
             repo = _git_remote(path)
+        # Bind the git remote only — never this machine's local path (see
+        # resolve). Without a remote there is no durable cross-machine key, so
+        # refuse rather than silently bind a path the server can't honour.
+        if not repo:
+            raise RuntimeError(
+                "git remote 를 찾지 못했습니다. --repo <URL> 로 지정하세요 — "
+                "서버는 이 머신의 로컬 경로를 알 수 없습니다."
+            )
         # Create it if missing so the alias always lands on a real project.
-        self.resolve(project=project, create=True, template=template)
-        bound = []
-        for alias, kind in ((repo, "repo"), (path, "path")):
-            if alias:
-                self.t.request(
-                    "POST", "/aliases", {"alias": alias, "project": project, "kind": kind}
-                )
-                bound.append(f"{kind} {alias}")
-        return {"project": project, "bound": bound}
+        self.resolve(project=project, repo=repo, create=True, template=template)
+        self.t.request(
+            "POST", "/aliases", {"alias": repo, "project": project, "kind": "repo"}
+        )
+        return {"project": project, "bound": [f"repo {repo}"]}
 
     def resolve_or_fail(
         self, project: str = "", repo: str = "", path: str = "", create: bool = False
@@ -98,6 +108,12 @@ class RemoteClient:
                 f" 지정하세요. 등록된 프로젝트: {known}"
             )
         return found
+
+    def health(self) -> dict[str, Any]:
+        """Is the server reachable, and is this key accepted? The one call an
+        agent can run before anything else to tell a down server from a bad key
+        from a working setup."""
+        return self.t.request("GET", "/health")
 
     # ----- the loop ------------------------------------------------------
     def brief(self, project: str, limit: int = 8) -> dict[str, Any]:
@@ -118,13 +134,15 @@ class RemoteClient:
     ) -> dict[str, Any]:
         if not repo and path:
             repo = _git_remote(path)
+        # Send only the git remote as the durable key; the local path is not a
+        # cross-machine identity server-side (see resolve).
         return self.t.request(
             "POST",
             "/prepare",
             {
                 "project": project,
                 "repo": repo,
-                "path": path,
+                "path": "",
                 "question": question,
                 "agent": agent or default_agent(),
                 "session_id": session_id,
