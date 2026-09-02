@@ -261,6 +261,24 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     auth_failures: dict[str, list[float]] = {}
     AUTH_WINDOW, AUTH_MAX_FAILS = 60.0, 10
 
+    # Behind the bundled TLS reverse proxy every request arrives from the proxy's
+    # own IP, so a single attacker would trip the per-IP backoff for *everyone*
+    # and hide behind one address. Honour X-Forwarded-For to get the real client
+    # — but only when explicitly told we sit behind a trusted proxy, since the
+    # header is trivially spoofed when we are directly exposed.
+    import os as _os
+
+    TRUST_PROXY = _os.environ.get("MYVIKING_TRUST_PROXY", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+    def _client_ip(request: Request) -> str:
+        if TRUST_PROXY:
+            fwd = request.headers.get("x-forwarded-for", "")
+            if fwd:
+                return fwd.split(",")[0].strip()
+        return request.client.host if request.client else "?"
+
     def _auth_blocked(ip: str) -> bool:
         import time as _time
 
@@ -300,7 +318,7 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         if not keys.any_active():
             return await call_next(request)
 
-        ip = request.client.host if request.client else "?"
+        ip = _client_ip(request)
         if _auth_blocked(ip):
             return JSONResponse(
                 {"detail": "인증 실패가 너무 잦습니다. 잠시 후 다시 시도하세요."},

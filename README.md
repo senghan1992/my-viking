@@ -54,9 +54,11 @@ API 키(`jv_...`)를 저장해 두세요 — 다음 단계에서 씁니다. (서
 잊어도 전부 자동입니다.
 
 ```bash
-pip install my-viking                    # 얇은 CLI 하나 (의존성: PyYAML)
-                                         # PyPI 에 없으면 클론한 폴더에서: pip install .
-cd ~/work/my-project                     # 붙일 저장소로 이동
+# 아직 PyPI 배포 전이라, 클론한 폴더에서 설치합니다 (얇은 CLI 하나 · 의존성 PyYAML):
+git clone <이 저장소> my-viking && cd my-viking && pip install .
+#   (PyPI 에 올라간 뒤에는 어디서든  pip install my-viking  한 줄)
+
+cd ~/work/my-project                     # 이제 붙일 저장소로 이동해서 (여기서 실행)
 jv agent hooks --install --url http://<서버주소>:8787
 #   밖에 열었다면:  ... --url https://viking.example.com --key jv_...
 ```
@@ -189,6 +191,11 @@ jv backup restore --file /data/pre-restore/myviking-....tar.gz --yes  # 실행 �
 새 머신에서의 재해 복구는 세 줄입니다: `up.sh` 로 띄우고 → `jv backup connect`
 로 같은 드라이브에 연결하고 → `jv backup restore --yes`.
 
+> 재해 복구에 필요한 OAuth 클라이언트 ID·시크릿은 서버 볼륨 안(`backup.yaml`,
+> 권한 600)에만 있습니다. 볼륨째 잃으면 그 값도 함께 사라지므로, **클라이언트
+> ID·시크릿은 서버 밖(비밀번호 관리자 등)에 따로 보관**하세요. 이 두 값만 있으면
+> 새 머신에서 같은 드라이브에 다시 연결해 복원할 수 있습니다.
+
 구글 드라이브 대신 마운트한 디렉터리(NAS 등)에 남기려면
 `jv backup config --provider local --path /backups` 로 바꾸고 compose 에 그
 경로를 볼륨으로 추가하면 됩니다.
@@ -209,6 +216,10 @@ jv backup restore --file /data/pre-restore/myviking-....tar.gz --yes  # 실행 �
    ```
    Caddy 가 인증서를 자동 발급/갱신하고, 에이전트는
    `https://viking.duckdns.org/mcp` 로 붙습니다. 8787 은 포워딩하지 마세요.
+   프록시 뒤에서는 모든 요청이 프록시 IP 로 보이므로, 틀린 키 차단이 진짜
+   클라이언트별로 동작하도록 `MYVIKING_TRUST_PROXY=1` 을 켜세요(그러면
+   `X-Forwarded-For` 의 실제 IP 를 씁니다). 프록시 없이 직접 노출할 땐 켜지
+   마세요 — 헤더를 위조당할 수 있습니다.
 4. **키는 용도별로** — `jv key create 회사노트북 --project backend` 처럼
    프로젝트 스코프를 걸어 두면, 키 하나가 새어도 그 프로젝트 밖은 못 봅니다.
    `jv key list` 로 마지막 사용 시각을 보고, 안 쓰는 키는 `jv key revoke`.
@@ -217,10 +228,21 @@ jv backup restore --file /data/pre-restore/myviking-....tar.gz --yes  # 실행 �
 
 ### 저장소를 프로젝트에 연결
 
+보통은 훅이 git remote 로 자동 연결하므로 이 단계가 필요 없습니다. 이름을
+직접 정하거나 remote 가 없는 저장소를 묶고 싶을 때만 씁니다.
+
 ```bash
+# 에이전트를 돌리는 머신(≠ 서버)에서 — 서버에 별칭을 심습니다:
 cd ~/work/backend
-jv link -t coding            # git remote 와 경로를 프로젝트에 묶습니다
+jv remote link backend       # git remote·경로를 서버의 'backend' 에 묶습니다
+
+# 서버 자신에서 직접 할 때만 로컬 명령:
+#   jv link -p backend -t coding
 ```
+
+> ⚠ `jv link` 는 **로컬** 저장소에만 씁니다 — 원격 서버를 쓰는데 다른 머신에서
+> `jv link` 를 실행하면 서버엔 아무것도 안 남아 조용히 무의미합니다. 그 경우엔
+> 반드시 `jv remote link` 를 쓰세요.
 
 이제 어느 머신에서든 그 remote 를 가진 체크아웃은 같은 프로젝트로 해석됩니다.
 `git@github.com:me/backend.git` 과 `https://github.com/me/backend` 는 같은 것으로
@@ -284,11 +306,13 @@ jarvis_commit(끝) → jarvis_score(평가) 의 전체 루프를 에이전트에
 열려 있습니다:
 
 ```bash
-pip install my-viking            # 에이전트 머신에 코어만 (의존성: PyYAML 하나)
+# 에이전트 머신에 코어만 (의존성 PyYAML 하나). 배포 전이므로 클론 후 설치:
+git clone <이 저장소> my-viking && cd my-viking && pip install .
 export MYVIKING_URL=https://viking.example.com
 export MYVIKING_KEY=jv_...
 
 jv remote brief                  # 세션 시작: 최근 작업·주의·미해결
+jv remote link 내프로젝트         # 이 체크아웃을 서버의 프로젝트에 연결 (선택)
 jv remote ctx "결제 실패 처리?"    # 작업 전: 축적된 컨텍스트 + trace_id
 jv remote remember pitfalls "PG 재시도 금지" "재시도하면 이중 결제"
 jv remote commit "질문" "답변 요약" --trace tr_...
@@ -681,7 +705,7 @@ jv history -p backend -v     # 세션 단위 기록
 
 ## MCP 도구 9개
 
-도구가 스무 개면 에이전트가 선택에 주의를 씁니다. 이 7개가 루프를 덮습니다.
+도구가 스무 개면 에이전트가 선택에 주의를 씁니다. 이 9개가 루프를 덮습니다.
 
 | 도구 | 용도 |
 |---|---|

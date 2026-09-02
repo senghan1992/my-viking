@@ -156,6 +156,16 @@ def test_settings_file_is_private(home, manager):
     assert stat.S_IMODE(mode) == 0o600
 
 
+def test_index_db_is_not_world_readable(home, jarvis):
+    """인덱스에는 메모리·해시된 키·트레이스가 다 들어간다 — 공유 서버에서
+    아무나 읽으면 안 된다."""
+    import stat
+
+    db = home / "index.db"
+    assert db.exists()
+    assert stat.S_IMODE(db.stat().st_mode) == 0o600
+
+
 # --------------------------------------------------------------------------
 # Google Drive 클라이언트 (가짜 HTTP 로 전 구간)
 # --------------------------------------------------------------------------

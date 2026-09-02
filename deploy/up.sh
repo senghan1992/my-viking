@@ -18,14 +18,18 @@ fi
 COMPOSE=(docker compose)
 docker compose version > /dev/null 2>&1 || COMPOSE=(docker-compose)
 
-BIND="127.0.0.1:${PORT}:8787"
-[[ -n "$PUBLIC" ]] && BIND="${PORT}:8787"
+# 인증은 "첫 키가 만들어지는 순간" 켜진다. 그래서 외부 노출(--public)일 때는
+# 반드시 키를 먼저 발급하고 나서 열어야 한다. 곧바로 0.0.0.0 에 바인딩하면
+# 키가 생기기 전까지 인증 없이 열려 있는 창이 생긴다 — 여기서 그 순서를 지킨다.
+LOCAL_BIND="127.0.0.1:${PORT}:8787"
+PUBLIC_BIND="${PORT}:8787"
 
 echo "▸ 이미지 빌드"
-MYVIKING_PORTS="$BIND" "${COMPOSE[@]}" build
+MYVIKING_PORTS="$LOCAL_BIND" "${COMPOSE[@]}" build
 
-echo "▸ 기동 (${BIND})"
-MYVIKING_PORTS="$BIND" "${COMPOSE[@]}" up -d
+# 무엇을 하든 일단 루프백에서만 기동한다 (노출 전 안전한 상태).
+echo "▸ 기동 (${LOCAL_BIND})"
+MYVIKING_PORTS="$LOCAL_BIND" "${COMPOSE[@]}" up -d
 
 echo "▸ 상태 확인"
 for _ in $(seq 60); do
@@ -42,11 +46,15 @@ URL="http://127.0.0.1:${PORT}"
 KEY=""
 if [[ -n "$PUBLIC" ]]; then
   echo
-  echo "▸ 외부 노출이므로 API 키를 발급합니다"
+  echo "▸ 외부 노출이므로, 열기 전에 API 키를 먼저 발급합니다"
   KEY=$("${COMPOSE[@]}" exec -T myviking jv --json key create default \
         | python3 -c 'import sys,json; print(json.load(sys.stdin)["key"])')
   echo "  키: $KEY"
   echo "  (다시 볼 수 없습니다. 지금 저장하세요.)"
+
+  # 이제 인증이 켜졌으니 공개 인터페이스로 다시 띄운다 (컨테이너 재바인딩).
+  echo "▸ 외부 노출로 재기동 (${PUBLIC_BIND})"
+  MYVIKING_PORTS="$PUBLIC_BIND" "${COMPOSE[@]}" up -d
 fi
 
 echo

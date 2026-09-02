@@ -129,6 +129,24 @@ def test_scope_is_enforced_across_every_route_shape(client):
     assert client.get("/projects/a/memories", headers=hdr).status_code == 200
 
 
+def test_backoff_is_per_real_client_behind_a_trusted_proxy(home, monkeypatch):
+    """리버스 프록시 뒤에선 모든 요청이 프록시 IP 로 온다. 신뢰 설정을 켜면
+    X-Forwarded-For 로 진짜 클라이언트를 구분해, 한 공격자가 전체를 잠그지 못한다."""
+    monkeypatch.setenv("MYVIKING_TRUST_PROXY", "1")
+    client = TestClient(create_app(home=str(home)))
+    client.post("/keys", json={"name": "k"})  # 인증 켜기
+
+    bad = {"authorization": "Bearer wrong"}
+    attacker = dict(bad, **{"x-forwarded-for": "10.0.0.9"})
+    for _ in range(10):
+        client.get("/projects", headers=attacker)
+    # 공격자 IP 는 잠긴다.
+    assert client.get("/projects", headers=attacker).status_code == 429
+    # 하지만 다른 실제 IP 는 여전히 (잠김이 아니라) 그냥 인증 실패다.
+    other = dict(bad, **{"x-forwarded-for": "10.0.0.42"})
+    assert client.get("/projects", headers=other).status_code == 401
+
+
 def test_plaintext_key_is_never_returned_again(client):
     made = client.post("/keys", json={"name": "k"}).json()
     listed = client.get("/keys", headers={"authorization": f"Bearer {made['key']}"}).json()

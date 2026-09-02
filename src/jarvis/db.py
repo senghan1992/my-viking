@@ -116,6 +116,20 @@ class Database:
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
+        self._restrict_permissions()
+
+    def _restrict_permissions(self) -> None:
+        """The index holds everything private: memories, hashed keys, traces. It
+        must not be world-readable on a shared box. Best-effort (chmod is a no-op
+        or unsupported on some filesystems); the WAL/SHM siblings hold the same
+        content, so they get the same treatment once the first write creates them."""
+        for suffix in ("", "-wal", "-shm"):
+            p = self.path.with_name(self.path.name + suffix)
+            try:
+                if p.exists():
+                    p.chmod(0o600)
+            except OSError:
+                pass
 
     def _migrate(self) -> None:
         """Add columns introduced after a database was first created.

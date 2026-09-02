@@ -33,14 +33,27 @@ HOOK_EVENTS = (
 )
 
 
+def _jv_command() -> str:
+    """The `jv` invocation to bake into hooks. A coding agent's hooks run in a
+    non-login shell (often GUI-launched) whose PATH may not include the pipx /
+    `pip install --user` bin dir, so a bare `jv` silently fails to start and
+    capture quietly never happens. Resolve the absolute path when we can see it
+    at config time; fall back to `jv` when we cannot (e.g. generated somewhere
+    other than where the agent runs)."""
+    import shutil
+
+    return shutil.which("jv") or "jv"
+
+
 def hook_settings(url: str, key: str = "", timeout: int = 15) -> dict[str, Any]:
     """The ``hooks`` block for Claude Code's ``.claude/settings.json``."""
+    jv = _jv_command()
 
     def command(event: str) -> str:
         env = f"MYVIKING_URL={url.rstrip('/')}"
         if key:
             env += f" MYVIKING_KEY={key}"
-        return f"{env} jv hook {event}"
+        return f"{env} {jv} hook {event}"
 
     return {
         "hooks": {
