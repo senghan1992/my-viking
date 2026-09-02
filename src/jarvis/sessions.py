@@ -82,14 +82,18 @@ class SessionLog:
         tags: list[str] | None = None,
         outcome: str = "",
         cache: bool = True,
+        files: list[str] | None = None,
     ) -> Node:
         """Store one exchange and (optionally) make it cacheable."""
+        files = [f for f in (files or []) if f]
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         stub = slugify(question[:48], "session")
         short = question_hash(question)[:8]
         uri = Uri(project, ("sessions", day, f"{stub}-{short}"))
 
         transcript = f"## Q\n{question.strip()}\n\n## A\n{answer.strip()}"
+        if files:
+            transcript += "\n\n## 변경한 파일\n" + "\n".join(f"- {f}" for f in files)
         node = Node(
             uri=uri,
             kind=KIND_SESSION,
@@ -109,6 +113,7 @@ class SessionLog:
                 "tokens_out": int(tokens_out),
                 "prompt_uri": prompt_uri,
                 "outcome": outcome,
+                "files": files,
                 "distilled": False,
             },
         )

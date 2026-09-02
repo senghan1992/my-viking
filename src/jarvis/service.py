@@ -522,6 +522,7 @@ class Jarvis:
                     "started": sess["started"],
                     "traces": sess["traces"],
                     "avg_score": sess["avg_score"],
+                    "files": sess.get("files") or [],
                     "work": [
                         {
                             "question": (w["question"] or "")[:180],
@@ -1206,13 +1207,18 @@ class Jarvis:
         trace_id: str = "",
         latency_ms: int = 0,
         agent: str = "",
+        files: list[str] | None = None,
     ) -> dict[str, Any]:
         """Record an exchange and (by default) fold it into memory.
 
         Pass the ``trace_id`` from ``prepare`` so the generation lands on the
         same trace as the retrieval that fed it — otherwise you can see that a
         request was slow but not which half was slow.
+
+        ``files`` are the paths this exchange wrote to, so a returning session
+        learns which files last time's work touched, not just the topic.
         """
+        files = [f for f in (files or []) if f][:50]
         if trace_id:
             self.tracer.event(
                 trace_id,
@@ -1239,6 +1245,8 @@ class Jarvis:
                 ),
             )
             self.store.db.commit()
+            if files:
+                self.tracer.annotate(trace_id, {"files": files})
 
         node = self.sessions.record(
             project,
@@ -1250,6 +1258,7 @@ class Jarvis:
             prompt_uri=prompt_uri,
             tags=tags,
             outcome=outcome,
+            files=files,
         )
         result: dict[str, Any] = {"session": str(node.uri), "trace_id": trace_id}
         should = self.config.learn.auto_distill if distill is None else distill

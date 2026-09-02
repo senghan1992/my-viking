@@ -659,6 +659,31 @@ class Tracer:
                 (row["session_id"],),
             )
             scored = [t["avg_score"] for t in traces if t["avg_score"] is not None]
+            work = []
+            session_files: list[str] = []
+            for t in traces:
+                md = _loads(t["metadata"])
+                tfiles = [f for f in (md.get("files") or []) if f]
+                for f in tfiles:
+                    if f not in session_files:
+                        session_files.append(f)
+                work.append(
+                    {
+                        "trace_id": t["id"],
+                        "question": t["input"],
+                        "answer": t["output"],
+                        "at": t["started"],
+                        "reused": bool(t["cache_hit"]),
+                        # How it landed, judged by what got asked next.
+                        "outcome": (md.get("implicit_outcome") or {}).get("kind", ""),
+                        "files": tfiles,
+                        "score": (
+                            round(t["avg_score"], 3)
+                            if t["avg_score"] is not None
+                            else None
+                        ),
+                    }
+                )
             out.append(
                 {
                     "session_id": row["session_id"],
@@ -670,26 +695,8 @@ class Tracer:
                     "reused": row["reused"] or 0,
                     "total_ms": row["total_ms"] or 0,
                     "avg_score": round(sum(scored) / len(scored), 3) if scored else None,
-                    "work": [
-                        {
-                            "trace_id": t["id"],
-                            "question": t["input"],
-                            "answer": t["output"],
-                            "at": t["started"],
-                            "reused": bool(t["cache_hit"]),
-                            # How it landed, judged by what got asked next.
-                            "outcome": (
-                                (_loads(t["metadata"]).get("implicit_outcome") or {})
-                                .get("kind", "")
-                            ),
-                            "score": (
-                                round(t["avg_score"], 3)
-                                if t["avg_score"] is not None
-                                else None
-                            ),
-                        }
-                        for t in traces
-                    ],
+                    "files": session_files,
+                    "work": work,
                 }
             )
         return out

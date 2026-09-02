@@ -106,6 +106,7 @@ class CommitBody(BaseModel):
     trace_id: str = ""
     latency_ms: int = 0
     agent: str = ""
+    files: list[str] = Field(default_factory=list)
 
 
 class EditMemoryBody(BaseModel):
@@ -652,6 +653,7 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
             trace_id=body.trace_id,
             latency_ms=body.latency_ms,
             agent=body.agent,
+            files=body.files,
         )
 
     # ----- connection info (what a person actually comes here for) ------

@@ -286,6 +286,7 @@ def stop(
             "model": model,
             "trace_id": trace_id,
             "agent": _agent_name(),
+            "files": _touched_files(Path(transcript)),
         },
     )
     state["committed"] = digest
@@ -415,6 +416,62 @@ def _text_of(content: Any) -> str:
     return ""
 
 
+_EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Update"}
+_MAX_FILES = 20
+
+
+def _touched_files(path: Path) -> list[str]:
+    """Files the assistant wrote to while answering the last question.
+
+    Reads the same tool calls the editor already ran, so "what was worked on"
+    is recorded as concretely as "what was asked" — a returning session then
+    knows which files last time's work touched, not just the topic.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(e, dict):
+            entries.append(e)
+
+    q_index = -1
+    for i, e in enumerate(entries):
+        if e.get("type") != "user" or e.get("isMeta"):
+            continue
+        text = _text_of((e.get("message") or {}).get("content"))
+        if text and not text.startswith("<"):
+            q_index = i
+
+    files: list[str] = []
+    for e in entries[q_index + 1 :]:
+        if e.get("type") != "assistant":
+            continue
+        content = (e.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if block.get("name") not in _EDIT_TOOLS:
+                continue
+            inp = block.get("input") or {}
+            fp = inp.get("file_path") or inp.get("notebook_path") or ""
+            if fp and fp not in files:
+                files.append(fp)
+                if len(files) >= _MAX_FILES:
+                    return files
+    return files
+
+
 def _last_exchange(path: Path) -> tuple[str, str, str]:
     """The last user prompt and the assistant text that answered it.
 
@@ -471,6 +528,12 @@ def _clip(text: Any, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def _basename(path: str) -> str:
+    """Show ``auth.py`` not the whole absolute path — the orientation line is
+    a reminder, not a link."""
+    return str(path).replace("\\", "/").rsplit("/", 1)[-1] or str(path)
+
+
 def _orientation(project: str, brief: dict[str, Any], tail: str = "") -> str:
     """The session-start read: recent work first, because "what was I doing"
     is the question a returning session actually has. ``tail`` swaps the
@@ -490,6 +553,11 @@ def _orientation(project: str, brief: dict[str, Any], tail: str = "") -> str:
             qs = " / ".join(_clip(x.get("question"), 60) for x in (w.get("work") or [])[:3])
             when = str(w.get("started") or "")[:10]
             lines.append(f"- {when} ({w.get('agent') or '?'}): {qs}")
+            wfiles = w.get("files") or []
+            if wfiles:
+                shown = ", ".join(_basename(f) for f in wfiles[:5])
+                more = f" 외 {len(wfiles) - 5}개" if len(wfiles) > 5 else ""
+                lines.append(f"  · 파일: {shown}{more}")
 
     learned = brief.get("recently_learned") or []
     learned_uris = {m.get("uri") for m in learned}

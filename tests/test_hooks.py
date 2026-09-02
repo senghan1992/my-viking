@@ -294,6 +294,64 @@ def test_last_exchange_tolerates_garbage(tmp_path):
     assert _last_exchange(tmp_path / "missing.jsonl") == ("", "", "")
 
 
+def _write_edit_transcript(path, question, files):
+    """질문 + 파일을 실제로 편집한 어시스턴트 턴."""
+    tool_uses = []
+    for f in files:
+        name = "NotebookEdit" if f.endswith(".ipynb") else "Edit"
+        key = "notebook_path" if f.endswith(".ipynb") else "file_path"
+        tool_uses.append({"type": "tool_use", "name": name, "input": {key: f}})
+    lines = [
+        {"type": "user", "message": {"role": "user", "content": question}},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "model": "claude-sonnet-5",
+                "content": [{"type": "text", "text": "고쳤습니다."}, *tool_uses],
+            },
+        },
+    ]
+    path.write_text("\n".join(json.dumps(x) for x in lines), encoding="utf-8")
+
+
+def test_touched_files_reads_the_edits_the_agent_made(tmp_path):
+    from jarvis.hooks import _touched_files
+
+    p = tmp_path / "t.jsonl"
+    # 같은 파일을 두 번 고쳐도 한 번, Bash 같은 비편집 도구는 빠진다.
+    _write_edit_transcript(p, "리팩터링 해줘", ["src/auth.py", "src/auth.py", "notes.ipynb"])
+    assert _touched_files(p) == ["src/auth.py", "notes.ipynb"]
+
+
+def test_stop_records_which_files_the_work_touched(
+    transport, client, repo_dir, state_dir, tmp_path
+):
+    """무엇을 물었는지만큼 무엇을 건드렸는지도 남아, 새 세션이 파일을 안다."""
+    client.post("/projects", json={"project": "backend", "template": "coding"})
+    client.post("/aliases", json={"alias": str(repo_dir), "project": "backend", "kind": "path"})
+
+    transcript = tmp_path / "t.jsonl"
+    _write_edit_transcript(transcript, "인증 버그 고쳐줘", ["src/auth.py", "src/models.py"])
+    run(
+        "user-prompt-submit",
+        {"session_id": "s1", "cwd": str(repo_dir), "prompt": "인증 버그 고쳐줘"},
+        transport,
+        state_dir=state_dir,
+    )
+    run(
+        "stop",
+        {"session_id": "s1", "cwd": str(repo_dir), "transcript_path": str(transcript)},
+        transport,
+        state_dir=state_dir,
+    )
+
+    # 변경한 파일이 다음 세션의 오리엔테이션에 뜬다.
+    brief = client.get("/projects/backend/brief").json()
+    text = _orientation("backend", brief)
+    assert "auth.py" in text and "models.py" in text
+
+
 # --------------------------------------------------------------------------
 # 훅은 절대 코딩 세션을 깨지 않는다
 # --------------------------------------------------------------------------
