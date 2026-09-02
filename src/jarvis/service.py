@@ -65,6 +65,11 @@ class Prepared:
     references: list[dict[str, Any]] = field(default_factory=list)
     # Identifies this retrieval in the trace log, so the agent can report back
     # how the answer turned out. Without it, quality feedback has no anchor.
+    # Pitfalls and incidents that matched, pulled out of the context so the
+    # agent leads with them instead of skimming past them.
+    warnings: list[dict[str, Any]] = field(default_factory=list)
+    # Relevant knowledge from *other* projects, always labelled as such.
+    from_other_projects: list[dict[str, Any]] = field(default_factory=list)
     trace_id: str = ""
     latency_ms: int = 0
 
@@ -91,6 +96,8 @@ class Prepared:
             "packed": self.packed.to_dict() if self.packed else None,
             "prompt_uri": self.prompt_uri,
             "references": self.references,
+            "warnings": self.warnings,
+            "from_other_projects": self.from_other_projects,
             "trace_id": self.trace_id,
             "latency_ms": self.latency_ms,
         }
@@ -264,6 +271,166 @@ class Jarvis:
             for r in rows
             if Uri.parse(r["uri"]).parts[:1] != ("_archive",)
         ]
+
+    # ------------------------------------------------------------------
+    # you — preferences that follow you into every project
+    # ------------------------------------------------------------------
+    def remember_about_me(
+        self,
+        statement: str,
+        title: str = "",
+        category: str = "preferences",
+        confidence: float = 0.9,
+    ) -> Uri:
+        """Record something true of you rather than of one project.
+
+        These live in ``jarvis://global`` and are retrieved alongside every
+        project's own memory. This is the difference between a context database
+        and an assistant that is *yours*: how you want things done should not
+        need re-stating in each repo.
+        """
+        self.store.ensure_project(GLOBAL_SCOPE)
+        profile = self.store.profile(GLOBAL_SCOPE)
+        if profile.category(category) is None:
+            raise ValueError(
+                f"'{category}' 는 전역 스코프의 카테고리가 아닙니다. "
+                f"사용 가능: {', '.join(profile.category_names())}"
+            )
+        return self.remember(
+            GLOBAL_SCOPE,
+            category,
+            title or _title_of(statement),
+            statement,
+            confidence=confidence,
+            tags=["나"],
+        )
+
+    def about_me(self) -> list[dict[str, Any]]:
+        return self.memories(GLOBAL_SCOPE)
+
+    def forget_about_me(self, uri: str) -> bool:
+        if not Uri.parse(uri).is_global:
+            raise ValueError("전역 메모리가 아닙니다")
+        return self.forget(uri, archive=True)
+
+    # ------------------------------------------------------------------
+    # briefing — what to know when you come back to a project
+    # ------------------------------------------------------------------
+    def brief(self, project: str, limit: int = 8) -> dict[str, Any]:
+        """A short read for returning to a project after a while.
+
+        Not a dump of everything: the highest-confidence knowledge, the standing
+        warnings, what is unresolved, and what changed recently.
+        """
+        profile = self.store.profile(project)
+        warn_cats = profile.warn_categories()
+        mems = self.memories(project, limit=500)
+        review = self.review_queue(project, limit=200)
+
+        # Anything with an open contradiction is not established knowledge, no
+        # matter how confident it looks. Listing both sides of a disagreement
+        # under "확립된 지식" is worse than not listing them at all.
+        disputed = {
+            it["uri"] for it in review if {"conflict", "harmful"} & set(it["reasons"])
+        }
+
+        def top(pred, n=limit):
+            return [
+                {
+                    "uri": m["uri"],
+                    "title": m["title"],
+                    "category": m["category"],
+                    "abstract": m["abstract"],
+                    "confidence": m["confidence"],
+                }
+                for m in mems
+                if pred(m)
+            ][:n]
+
+        established = [
+            m
+            for m in mems
+            if m["uri"] not in disputed
+            and m["category"] not in warn_cats
+            and m["confidence"] >= 0.6
+        ]
+        return {
+            "project": project,
+            "template": profile.template,
+            "description": profile.description,
+            "totals": {
+                "memories": len(mems),
+                "established": len(established),
+                "disputed": len(disputed),
+                "needs_review": len(review),
+            },
+            "know": top(
+                lambda m: m["uri"] not in disputed
+                and m["category"] not in warn_cats
+                and m["confidence"] >= 0.6
+            ),
+            "warnings": top(lambda m: m["category"] in warn_cats and m["uri"] not in disputed),
+            "unresolved": [
+                {
+                    "uri": it["uri"],
+                    "title": it["title"],
+                    "reasons": it["reasons"],
+                }
+                for it in review
+                if it["priority"] >= 4
+            ][:limit],
+            "recent_sessions": self.recent_sessions(project, limit=5),
+            "prompts": [
+                {"name": p["name"], "description": p["description"], "uses": p["uses"]}
+                for p in self.list_prompts(project)
+            ][:limit],
+        }
+
+    def digest(self, days: int = 7) -> dict[str, Any]:
+        """Everything that happened across projects, for a periodic read."""
+        projects = self.store.projects()
+        out: dict[str, Any] = {
+            "days": days,
+            "projects": [],
+            "review_total": 0,
+            "about_me": len(self.about_me()),
+        }
+        for name in projects:
+            m = self.metrics(name, days=days)
+            review = self.review_summary(name)["projects"].get(name, {})
+            new_mems = self.store.db.one(
+                "SELECT COUNT(*) c FROM nodes WHERE scope=? AND kind=?"
+                " AND created >= datetime('now', ?)",
+                (name, KIND_MEMORY, f"-{int(days)} days"),
+            )
+            entry = {
+                "project": name,
+                "traces": m["traces"],
+                "reuse_rate": m["reuse"]["rate"],
+                "answer_p50_ms": m["answer_ms"]["p50"],
+                "scores": m["scores"],
+                "new_memories": (new_mems["c"] if new_mems else 0) or 0,
+                "needs_review": review.get("items", 0),
+                "review_by_reason": review.get("by_reason", {}),
+            }
+            out["review_total"] += entry["needs_review"]
+            out["projects"].append(entry)
+        out["projects"].sort(key=lambda d: -d["needs_review"])
+        return out
+
+    def maintain(self, days_unused: int = 0) -> dict[str, Any]:
+        """Run the housekeeping the learning loop needs: distill, decay, cap.
+
+        Meant for a scheduler. ``jv commit`` already distills the session it just
+        recorded, but sessions arriving over HTTP with ``distill=false``, and the
+        confidence decay that keeps the store from growing forever, need a
+        periodic sweep.
+        """
+        results = []
+        for name in self.store.projects():
+            report = self.learner.distill(name, limit=50)
+            results.append(report.to_dict())
+        return {"projects": results}
 
     # ------------------------------------------------------------------
     # curation — the part you do *after* the work, not during it
@@ -495,6 +662,7 @@ class Jarvis:
         reinforce: bool = True,
         agent: str = "",
         session_id: str = "",
+        cross_project: bool = True,
     ) -> Prepared:
         """Assemble the best context available for ``question``, and trace it."""
         self.store.ensure_project(project)
@@ -582,9 +750,27 @@ class Jarvis:
         )
 
         refs = self._references(project, question, packed)
+        warnings = self._warnings(project, packed)
+        cross = (
+            self._cross_project(project, retrieval_query) if cross_project else []
+        )
+
         system = SYSTEM_PREFIX
+        if warnings:
+            # A pointer, not a second copy: the packed context already carries
+            # these first under their own heading. Repeating the text here would
+            # pay for it twice and make the prompt read as if it stutters.
+            system += (
+                "\n\n# 아래 '주의' 항목을 먼저 읽고, 거스르는 제안은 하지 마세요: "
+                + ", ".join(w["title"] for w in warnings)
+            )
         if packed.text:
             system += "\n\n# 컨텍스트\n" + packed.text
+        if cross:
+            system += (
+                "\n\n# 다른 프로젝트에서 온 참고 — 이 프로젝트에서 검증된 것이 아닙니다\n"
+                + "\n".join(f"- [{c['project']}] {c['title']}: {c['abstract']}" for c in cross)
+            )
         user_parts = []
         if prompt_render is not None:
             user_parts.append(prompt_render.text)
@@ -628,9 +814,68 @@ class Jarvis:
             prompt_uri=prompt_uri,
             prompt_render=prompt_render,
             references=refs,
+            warnings=warnings,
+            from_other_projects=cross,
             trace_id=trace_id,
             latency_ms=latency,
         )
+
+    def _warnings(
+        self, project: str, packed: PackedContext
+    ) -> list[dict[str, Any]]:
+        """Matches from categories the profile marks as warnings."""
+        warn_cats = self.store.profile(project).warn_categories()
+        if not warn_cats:
+            return []
+        return [
+            {
+                "uri": item.uri,
+                "title": item.title,
+                "category": item.category,
+                "tier": f"L{item.tier}",
+            }
+            for item in packed.items
+            if item.kind == KIND_MEMORY and item.category in warn_cats
+        ]
+
+    def _cross_project(
+        self, project: str, query: str, limit: int = 3, threshold: float = 0.5
+    ) -> list[dict[str, Any]]:
+        """Strongly matching memories from your *other* projects.
+
+        The reason projects are isolated is that their facts must not be mistaken
+        for each other. But "how did I solve this last time" is the single most
+        useful thing a personal assistant can answer, and the answer usually
+        lives in a different repo. So we look, and we label the result loudly:
+        abstracts only, capped at a few, and never presented as verified here.
+        """
+        others = [p for p in self.store.projects() if p != project]
+        if not others:
+            return []
+        out: list[dict[str, Any]] = []
+        for other in others:
+            hits, _trace = self.retriever.search(
+                query,
+                other,
+                kinds=[KIND_MEMORY],
+                limit=2,
+                include_global=False,
+            )
+            for hit in hits:
+                if hit.score < threshold:
+                    continue
+                out.append(
+                    {
+                        "project": other,
+                        "uri": str(hit.uri),
+                        "title": hit.title,
+                        "category": hit.category,
+                        "abstract": hit.abstract,
+                        "score": round(hit.score, 4),
+                    }
+                )
+        out.sort(key=lambda d: -d["score"])
+        return out[:limit]
 
     def _references(
         self, project: str, question: str, packed: PackedContext
@@ -979,3 +1224,16 @@ def _normalise_alias(alias: str) -> str:
 def _project_from_alias(alias: str) -> str:
     norm = _normalise_alias(alias)
     return norm.rsplit("/", 1)[-1] if norm else ""
+
+
+def _title_of(statement: str, max_chars: int = 40) -> str:
+    """Short name for a preference, trimmed on a word boundary."""
+    line = " ".join((statement or "").split())
+    if len(line) <= max_chars:
+        return line.rstrip("?!.,")
+    out: list[str] = []
+    for word in line.split(" "):
+        if out and len(" ".join([*out, word])) > max_chars:
+            break
+        out.append(word)
+    return (" ".join(out) or line[:max_chars]).rstrip("?!.,")

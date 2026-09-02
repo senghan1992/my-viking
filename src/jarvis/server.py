@@ -665,10 +665,45 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     return app
 
 
-def run(host: str = "127.0.0.1", port: int = 8787, home: str | None = None) -> None:
+def start_maintenance(home: str | None, every_hours: float) -> None:
+    """Run distill/decay periodically inside the server process.
+
+    The learning loop needs a sweep that is not tied to a request: sessions
+    committed with ``distill=false`` have to be folded in, and confidence decay
+    is what stops the store growing forever. Doing it here means one container
+    and one systemd unit instead of a second scheduler to forget about.
+
+    Uses its own ``Jarvis`` (and so its own SQLite connection) rather than
+    sharing the request one across threads.
+    """
+    if every_hours <= 0:
+        return
+    import threading
+    import time
+
+    def loop() -> None:
+        worker = Jarvis(home=home)
+        while True:
+            time.sleep(every_hours * 3600)
+            try:
+                worker.maintain()
+            except Exception as exc:  # pragma: no cover - background best effort
+                print(f"[maintain] 실패: {type(exc).__name__}: {exc}", flush=True)
+
+    threading.Thread(target=loop, name="jarvis-maintain", daemon=True).start()
+
+
+def run(
+    host: str = "127.0.0.1",
+    port: int = 8787,
+    home: str | None = None,
+    maintain_every: float = 6.0,
+) -> None:
     import uvicorn
 
-    uvicorn.run(create_app(home), host=host, port=port)
+    app = create_app(home)
+    start_maintenance(home, maintain_every)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

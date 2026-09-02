@@ -28,27 +28,52 @@ L0/L1/L2 티어 로딩, 세션에서 장기 메모리 증류.
 
 ---
 
-## 5분 설치
+## Docker 로 띄우기 (권장)
 
 ```bash
 git clone <이 저장소> && cd my-viking
+bash deploy/up.sh                # 로컬 전용 (127.0.0.1:8787)
+bash deploy/up.sh --public       # 외부 노출 + API 키 자동 발급
+```
+
+`up.sh` 가 이미지를 빌드하고 기동한 뒤 헬스체크까지 확인하고, 다음에 실행할
+명령을 알려줍니다. 데이터는 `myviking-data` 볼륨에 남으므로 컨테이너를 지워도
+살아있고, 백업은 이 볼륨만 챙기면 됩니다.
+
+```
+대시보드   http://127.0.0.1:8787/
+API 문서   http://127.0.0.1:8787/docs
+원격 MCP   http://127.0.0.1:8787/mcp
+```
+
+컨테이너 안에서 명령을 쓰려면:
+
+```bash
+cd deploy
+docker compose exec myviking jv key create laptop
+docker compose exec myviking jv review
+docker compose exec myviking jv agent config --client claude-code --url http://내주소:8787
+```
+
+이미지는 논루트(`viking`, uid 10001)로 돌고, 컴포즈가 루트 파일시스템을 읽기
+전용으로 잠그며(`/data` 볼륨과 `/tmp` 만 쓰기 가능), 기본 포트 바인딩은
+`127.0.0.1` 입니다. `--public` 은 API 키를 먼저 발급한 뒤에만 외부로 엽니다.
+
+서버 안에서 6시간마다 증류·감쇠가 돌아갑니다(`--maintain-every`, 0 이면 끔).
+별도 스케줄러를 둘 필요가 없습니다.
+
+### Docker 없이
+
+```bash
 uv venv --python 3.12 .venv
 uv pip install --python .venv -e ".[all,dev]"
 export PATH="$PWD/.venv/bin:$PATH"
-
-jv serve                                    # 127.0.0.1:8787
+jv serve
 ```
 
-```
-MyViking 서버 http://localhost:8787
-  대시보드   http://localhost:8787/
-  API 문서   http://localhost:8787/docs
-  원격 MCP   http://localhost:8787/mcp
-  인증       없음
-```
-
-상시 실행은 `deploy/` 에 systemd 유닛, Dockerfile, docker-compose, Caddyfile
-(자동 TLS)이 있습니다.
+`deploy/` 에 systemd 유닛과 Caddyfile(자동 TLS)도 있습니다. 코어는 PyYAML 하나만
+의존하므로 `[server]` extra 없이 설치하면 CLI 만 동작하고 `jv serve` 는 어떤
+패키지가 필요한지 알려주며 종료합니다.
 
 ### 저장소를 프로젝트에 연결
 
@@ -252,6 +277,72 @@ $ jv metrics -p backend
 `jv impact -p backend` 는 무엇을 남기고 무엇을 고쳐야 하는지 보여줍니다. 자주
 쓰이지만 점수가 없는 메모리는 *유용한 것이 아니라 검증되지 않은 것*입니다.
 
+## 정말 "나만의" Jarvis로 만드는 세 가지
+
+컨텍스트 DB 는 물어봐야 답합니다. 어시스턴트는 그 이상을 합니다.
+
+### 1. 전역 선호 — 매 프로젝트에서 다시 말하지 않기
+
+프로젝트가 아니라 *당신*에 관한 것은 `jarvis://global` 에 두고, 모든 프로젝트의
+컨텍스트에 함께 실립니다.
+
+```bash
+jv me add "답변과 주석은 항상 한글로 작성한다"
+jv me add "설명은 짧게, 근거를 먼저 말한다"
+jv me add "추측한 명령을 알려주지 말고 확인된 것만 말한다"
+jv me list
+```
+
+에이전트도 직접 넣을 수 있습니다: `jarvis_remember` 에 `project="global"`.
+당신이 직접 쓴 것이므로 검토 대기에 오르지 않고 처음부터 높은 신뢰도를 갖습니다.
+
+### 2. 선제적 경고 — 이미 밟은 함정을 앞에 세우기
+
+프로파일이 **경고 카테고리**를 정합니다(`coding` 은 `pitfalls`, `ops` 는
+`incidents`, `research` 는 `contradictions`). 여기 걸리는 메모리는 일반 컨텍스트에
+섞이지 않고 프롬프트 맨 앞의 `⚠ 주의` 블록으로 올라가고, 시스템 프롬프트가
+"이것을 거스르는 제안은 하지 마세요" 로 지시합니다.
+
+```
+# 아래 '주의' 항목을 먼저 읽고, 거스르는 제안은 하지 마세요: PG 재시도 금지
+
+# 컨텍스트
+## ⚠ 주의 — 이 프로젝트에서 이미 밟은 함정
+### PG 재시도 금지
+승인 응답이 0000 이 아니면 재시도하지 않는다
+...
+```
+
+텍스트를 두 번 싣지 않습니다 — 강조는 위치와 제목으로 하고, 본문은 한 곳에만
+둡니다. 어떤 카테고리를 경고로 볼지는 `profile.yaml` 의 `warn: true` 로 바꿉니다.
+
+### 3. 프로젝트 간 회상 — "저번에 어떻게 했었지"
+
+프로젝트는 서로 격리됩니다. 한 프로젝트의 사실이 다른 프로젝트의 사실로 오해되면
+안 되기 때문입니다. 하지만 개인 어시스턴트가 답할 수 있는 가장 유용한 질문이
+"이거 저번에 어떻게 풀었지"이고, 그 답은 보통 다른 저장소에 있습니다.
+
+그래서 찾아보되 **크게 라벨을 붙입니다**: 요약만, 최대 3건, 그리고
+
+```
+# 다른 프로젝트에서 온 참고 — 이 프로젝트에서 검증된 것이 아닙니다
+- [infra] 중복 승인 대응: 중복 승인이 발생하면 정산 배치를 멈추고 수동 취소한다
+```
+
+이 프로젝트의 컨텍스트 블록에는 들어가지 않습니다. 끄려면 `cross_project=false`.
+
+### 리듬
+
+```bash
+jv brief -p backend     # 오랜만에 돌아왔을 때: 확립된 지식·주의사항·미해결
+jv digest               # 주기적으로: 전체 프로젝트 한 화면
+jv review               # 확인이 필요한 것 (위 두 개가 여기로 안내합니다)
+```
+
+`jv brief` 는 한 달 만에 프로젝트로 돌아왔을 때 읽는 것입니다. 전부 쏟아내지 않고
+신뢰도 높은 지식, 서 있는 경고, 미해결 결정, 최근 작업으로 나눠 보여줍니다.
+에이전트도 `jarvis_profile` 의 `op="brief"` 로 같은 것을 받습니다.
+
 ## 프로젝트마다 다른 기억
 
 코드 프로젝트와 리서치 프로젝트는 *다른 종류의* 기억이 필요합니다. 프로젝트마다
@@ -302,8 +393,12 @@ $ jv metrics -p backend
 | 검색이 코퍼스 크기에 비례 | 스코프 전체를 가져와 파이썬에서 폐기 | SQL 에서 좁힘 |
 | pack 시간의 38% | 항목마다 YAML frontmatter 재파싱 | L0/L1 은 색인에서, L2 는 YAML 없이 |
 | 벡터 점수화 | 인터프리터 루프 | 배치화 (numpy 있으면 사용) |
+| 큰 카테고리에서 다시 전수 스캔 | 진입한 디렉터리가 수천 개를 포함 | 후보 상한 + 디렉터리별 슬라이스 (`capped` 로 표시) |
+| prepare 시간의 56% | 강화가 카운터 하나 올리려 파일 재파싱 | frontmatter 직접 패치 + 일괄 커밋 |
 
-`numpy` 는 선택이지만 검색 지연을 3배 낮춥니다. 없어도 **같은 결과**로 동작합니다.
+1500 노드 기준 `pack` p50 **61ms**, `prepare`(경고·타프로젝트 포함) p50 **81ms**,
+재사용 응답 **4ms**. `numpy` 는 선택이지만 검색 지연을 3배 낮춥니다 — 없어도
+**같은 결과**로 동작합니다.
 
 ## 토큰 회계 (부수적으로)
 
@@ -348,7 +443,7 @@ jv key revoke key_a1b2c3
 | `jarvis_score` | 결과 평가 → 메모리 신뢰도 반영 |
 | `jarvis_browse` | `ls`/`tree`/`find`/`grep`/`read` |
 | `jarvis_prompt` | 저장된 프롬프트 목록/렌더 |
-| `jarvis_profile` | 프로파일·지표·추적·기여도·에이전트 |
+| `jarvis_profile` | brief·프로파일·검토·지표·추적·기여도·에이전트 |
 
 로컬 stdio 도 그대로 씁니다 (같은 도구 표면):
 
@@ -410,6 +505,10 @@ jv trace <id>                         단계별 지연과 사용된 컨텍스트
 jv score <id> <0~1> [--comment]       평가 → 메모리 신뢰도 반영
 jv impact -p 프로젝트                  어떤 메모리가 좋은 결과에 기여했나
 
+jv me add|list|forget                 모든 프로젝트에 적용되는 내 선호
+jv brief -p 프로젝트                   오랜만에 돌아왔을 때 알아야 할 것
+jv digest                             전체 프로젝트 요약
+jv maintain                           증류·감쇠 일괄 (서버가 자동 실행)
 jv review [-p 프로젝트]                확인이 필요한 것 (주 1~2회 여기서 시작)
 jv mem show|confirm|edit|forget <uri>  메모리 확인·수정·보관
 
@@ -443,7 +542,7 @@ n-gram 이라 한국어를 토크나이저 없이 처리합니다.
 
 ```bash
 uv pip install --python .venv -e ".[all,dev]"
-.venv/bin/python -m pytest -q        # 203 tests
+.venv/bin/python -m pytest -q        # 230 tests
 .venv/bin/ruff check src tests
 bash examples/quickstart.sh          # 전체 루프 시연
 ```

@@ -351,7 +351,7 @@ async function openMemory(uri) {
       <div class="split">
         <div><label style="font-size:11.5px;color:var(--muted)">기존</label><pre>${esc(d.conflict.existing)}</pre></div>
         <div><label style="font-size:11.5px;color:var(--muted)">새로 들어온 것</label><pre>${esc(d.conflict.incoming)}</pre></div>
-      </div>` : "";
+      </div>${d.conflict.other ? `<div style="margin:-4px 0 8px"><a onclick="openMemory('${esc(d.conflict.other)}')" class="mono" style="cursor:pointer;text-decoration:underline">상대 메모리 열기: ${esc(short(d.conflict.other))}</a></div>` : ""}` : "";
     $("mem-body").innerHTML = `
       ${why}${clash}
       <div class="row" style="margin:8px 0">

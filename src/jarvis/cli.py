@@ -1072,6 +1072,8 @@ def cmd_review(args, j: Jarvis) -> int:
             c = item["conflict"]
             print(f"  기존: {c['existing'][:80]}")
             print(f"  유입: {c['incoming'][:80]}")
+            if c.get("other"):
+                print(f"  상대: {c['other']}")
         print(f"  {item['uri']}")
         print()
     print("확인: jv mem confirm <uri>   |   수정: jv mem edit <uri> --statement '...'")
@@ -1133,12 +1135,164 @@ def cmd_mem_show(args, j: Jarvis) -> int:
     if d["conflict"]:
         print(f"\n기존: {d['conflict']['existing']}")
         print(f"유입: {d['conflict']['incoming']}")
+        if d["conflict"].get("other"):
+            print(f"상대 메모리: {d['conflict']['other']}")
     print(f"\n요약(L0): {d['abstract']}")
     print(f"\n본문(L2):\n{d['body']}")
     print(f"\n토큰 L0={d['tokens']['l0']} L1={d['tokens']['l1']} L2={d['tokens']['l2']}")
     print(f"파일: {d['path']}")
     if d["sources"]:
         print("출처 세션: " + ", ".join(d["sources"][-3:]))
+    return 0
+
+
+
+
+# ----- you, and coming back to a project ----------------------------------
+def cmd_me_add(args, j: Jarvis) -> int:
+    statement = _read_text_arg(args.statement, None)
+    try:
+        uri = j.remember_about_me(
+            statement, title=args.title or "", category=args.category
+        )
+    except ValueError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    print(f"기록: {uri}")
+    print("  이 항목은 모든 프로젝트의 컨텍스트에 함께 실립니다.")
+    return 0
+
+
+def cmd_me_list(args, j: Jarvis) -> int:
+    rows = j.about_me()
+    if args.json:
+        _out(rows, True)
+        return 0
+    if not rows:
+        print("전역 선호가 아직 없습니다.")
+        print('예: jv me add "답변과 주석은 항상 한글로 작성한다"')
+        return 0
+    print(
+        _table(
+            [
+                {
+                    "category": r["category"],
+                    "statement": r["abstract"][:70],
+                    "conf": r["confidence"],
+                    "hits": r["hits"],
+                }
+                for r in rows
+            ],
+            [("category", "카테고리"), ("statement", "내용"), ("conf", "신뢰"), ("hits", "사용")],
+        )
+    )
+    return 0
+
+
+def cmd_me_forget(args, j: Jarvis) -> int:
+    try:
+        ok = j.forget_about_me(args.uri)
+    except ValueError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    print("보관함으로 옮겼습니다." if ok else "대상을 찾지 못했습니다.")
+    return 0 if ok else 1
+
+
+def cmd_brief(args, j: Jarvis) -> int:
+    b = j.brief(args.project, limit=args.limit)
+    if args.json:
+        _out(b, True)
+        return 0
+    t = b["totals"]
+    print(f"# {b['project']}  ({b['template']})")
+    if b["description"]:
+        print(b["description"])
+    line = f"메모리 {t['memories']}개 · 확립됨 {t['established']} · 확인 필요 {t['needs_review']}"
+    if t.get("disputed"):
+        line += f" · 상충 {t['disputed']}"
+    print(line)
+    if b["warnings"]:
+        print("\n## 주의 — 이미 밟은 함정")
+        for w in b["warnings"]:
+            print(f"  · {w['title']}")
+            print(f"    {w['abstract'][:100]}")
+    if b["know"]:
+        print("\n## 확립된 지식")
+        for k in b["know"]:
+            print(f"  · [{k['category']}] {k['title']}")
+            print(f"    {k['abstract'][:100]}")
+    if b["unresolved"]:
+        print("\n## 미해결 — 결정이 필요합니다")
+        for u in b["unresolved"]:
+            labels = ", ".join(REASON_LABEL.get(r, (r, ""))[0] for r in u["reasons"])
+            print(f"  · [{labels}] {u['title']}")
+            print(f"    {u['uri']}")
+    if b["prompts"]:
+        print("\n## 저장된 프롬프트")
+        for pr in b["prompts"]:
+            print(f"  · {pr['name']}  ({pr['uses']}회 사용) {pr['description'][:50]}")
+    if b["recent_sessions"]:
+        print("\n## 최근 작업")
+        for sess in b["recent_sessions"]:
+            print(f"  · {sess['created'][:10]}  {sess['question'][:70]}")
+    return 0
+
+
+def cmd_digest(args, j: Jarvis) -> int:
+    d = j.digest(days=args.days)
+    if args.json:
+        _out(d, True)
+        return 0
+    print(f"최근 {d['days']}일 · 전역 선호 {d['about_me']}개 · 확인 필요 총 {d['review_total']}건\n")
+    if not d["projects"]:
+        print("프로젝트가 없습니다.")
+        return 0
+    print(
+        _table(
+            [
+                {
+                    "project": e["project"],
+                    "traces": e["traces"],
+                    "reuse": f"{e['reuse_rate'] * 100:.0f}%",
+                    "p50": f"{e['answer_p50_ms']}ms",
+                    "new": e["new_memories"],
+                    "review": e["needs_review"],
+                    "score": (
+                        f"{e['scores'][0]['avg']:.2f}" if e["scores"] else "-"
+                    ),
+                }
+                for e in d["projects"]
+            ],
+            [
+                ("project", "프로젝트"),
+                ("traces", "작업"),
+                ("reuse", "재사용"),
+                ("p50", "응답 p50"),
+                ("new", "새 메모리"),
+                ("review", "확인 필요"),
+                ("score", "점수"),
+            ],
+        )
+    )
+    if d["review_total"]:
+        print("\n확인: jv review")
+    return 0
+
+
+def cmd_maintain(args, j: Jarvis) -> int:
+    res = j.maintain()
+    total = {"created": 0, "merged": 0, "archived": 0, "sessions": 0}
+    for r in res["projects"]:
+        for k in total:
+            total[k] += len(r[k]) if isinstance(r.get(k), list) else r.get(k, 0)
+    if args.json:
+        _out(res, True)
+        return 0
+    print(
+        f"세션 {total['sessions']}건 증류 · 신규 {total['created']} · 병합 {total['merged']}"
+        f" · 보관 {total['archived']}"
+    )
     return 0
 
 
@@ -1358,6 +1512,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("serve", help="서버 실행 (대시보드 + API + 원격 MCP)")
     sp.add_argument("--host", default="127.0.0.1", help="0.0.0.0 으로 열면 외부에서 접속 가능")
     sp.add_argument("--port", type=int, default=8787)
+    sp.add_argument(
+        "--maintain-every",
+        type=float,
+        default=6.0,
+        metavar="시간",
+        help="증류·감쇠를 몇 시간마다 돌릴지 (0=끔, 기본 6)",
+    )
     sp.set_defaults(func=cmd_serve)
 
     # keys
@@ -1395,6 +1556,31 @@ def build_parser() -> argparse.ArgumentParser:
     s2.set_defaults(func=cmd_agents)
 
     # observability
+    sp = sub.add_parser("me", help="모든 프로젝트에 적용되는 내 선호")
+    esub = sp.add_subparsers(dest="sub", required=True)
+    s2 = esub.add_parser("add", help="선호 기록 (예: 답변은 항상 한글로)")
+    s2.add_argument("statement")
+    s2.add_argument("--title")
+    s2.add_argument("-c", "--category", default="preferences")
+    s2.set_defaults(func=cmd_me_add)
+    s2 = esub.add_parser("list", help="전역 선호 목록")
+    s2.set_defaults(func=cmd_me_list)
+    s2 = esub.add_parser("forget", help="전역 선호 보관")
+    s2.add_argument("uri")
+    s2.set_defaults(func=cmd_me_forget)
+
+    sp = sub.add_parser("brief", help="오랜만에 돌아왔을 때 알아야 할 것")
+    proj(sp)
+    sp.add_argument("--limit", type=int, default=8)
+    sp.set_defaults(func=cmd_brief)
+
+    sp = sub.add_parser("digest", help="전체 프로젝트 요약 (주기적으로 읽기)")
+    sp.add_argument("--days", type=int, default=7)
+    sp.set_defaults(func=cmd_digest)
+
+    sp = sub.add_parser("maintain", help="증류·감쇠·정리 일괄 실행 (스케줄러용)")
+    sp.set_defaults(func=cmd_maintain)
+
     sp = sub.add_parser("review", help="에이전트가 기록한 것 중 확인이 필요한 항목")
     proj(sp, required=False)
     sp.add_argument("--limit", type=int, default=30)
@@ -1433,7 +1619,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_serve(args, j: Jarvis) -> int:
     from .auth import KeyStore
-    from .server import run
+
+    try:
+        from .server import run
+    except ModuleNotFoundError as exc:
+        # The core package deliberately depends on PyYAML alone, so a plain
+        # install has no web stack. Say which install fixes it.
+        print(
+            f"서버 의존성이 없습니다 ({exc.name}).\n"
+            '  pip install "my-viking[server]"\n'
+            "  또는  uv pip install -e \".[all]\"",
+            file=sys.stderr,
+        )
+        return 1
 
     secured = KeyStore(j.store.db).any_active()
     shown = "localhost" if args.host in ("127.0.0.1", "localhost") else args.host
@@ -1448,8 +1646,18 @@ def cmd_serve(args, j: Jarvis) -> int:
             "\n경고: 외부 주소로 열었지만 API 키가 없어 누구나 접근할 수 있습니다.\n"
             "       `jv key create <이름>` 으로 키를 먼저 발급하세요."
         )
+    if args.maintain_every > 0:
+        print(f"  유지보수     {args.maintain_every}시간마다 증류·감쇠")
     print()
-    run(host=args.host, port=args.port, home=args.home)
+    # Under Docker stdout is block-buffered, so without this the banner lands
+    # after uvicorn's log lines and reads as if it started twice.
+    sys.stdout.flush()
+    run(
+        host=args.host,
+        port=args.port,
+        home=args.home,
+        maintain_every=args.maintain_every,
+    )
     return 0
 
 

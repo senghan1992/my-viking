@@ -129,3 +129,59 @@ def test_manual_memory_body_contains_statement(coding):
     uri = coding.remember("app", "commands", "빌드", "make build 로 빌드한다", detail="루트에서")
     body = coding.store.read_node(uri).tier(2)
     assert "make build" in body and "루트에서" in body
+
+
+def test_touch_persists_counters_to_the_file_not_just_the_index(coding):
+    """Reinforcement patches the frontmatter directly for speed. It must still
+    survive a rebuild from disk, or the index becomes the real source of truth."""
+    uri = coding.remember("app", "commands", "빌드", "make build 로 빌드한다")
+    coding.store.touch_nodes([uri], reinforce=0.05)
+    coding.store.touch_nodes([uri], reinforce=0.05)
+
+    coding.store.reindex("app")
+    node = coding.store.read_node(uri)
+    assert node.hits == 2
+    assert node.confidence > 0.8
+    assert node.last_used
+    # The body must be untouched by the surgical edit.
+    assert "make build 로 빌드한다" in node.tier(2)
+
+
+def test_touch_does_not_corrupt_a_node_with_rich_frontmatter(coding):
+    uri = coding.remember(
+        "app", "commands", "배포", "make deploy", detail="scripts/deploy.sh"
+    )
+    node = coding.store.read_node(uri)
+    node.tags = ["배포", "위험"]
+    node.sources = ["jarvis://projects/app/sessions/2026-01-01/x"]
+    node.extra = {"conflict": {"kind": "negation", "existing": "a", "incoming": "b"}}
+    coding.store.write_node(node, regenerate_tiers=False)
+
+    coding.store.touch_nodes([uri], reinforce=0.1)
+    back = coding.store.read_node(uri)
+    assert back.tags == ["배포", "위험"]
+    assert back.sources == node.sources
+    assert back.extra["conflict"]["kind"] == "negation"
+    assert back.hits == 1
+
+
+def test_touch_nodes_ignores_unknown_uris(coding):
+    coding.remember("app", "commands", "빌드", "make build")
+    n = coding.store.touch_nodes(
+        [
+            "jarvis://projects/app/memories/commands/빌드",
+            "jarvis://projects/app/memories/commands/없음",
+        ],
+        reinforce=0.05,
+    )
+    assert n == 1
+
+
+def test_patch_frontmatter_leaves_a_body_dash_line_alone():
+    from jarvis.store import _patch_frontmatter
+
+    text = "---\nhits: 0\ntitle: x\n---\n\n## Details\n- 항목\n--- 본문 속 구분선\n"
+    out = _patch_frontmatter(text, {"hits": "5"})
+    assert "hits: 5" in out
+    assert "--- 본문 속 구분선" in out
+    assert out.count("## Details") == 1

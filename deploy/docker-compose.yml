@@ -1,26 +1,48 @@
-# 컨테이너로 돌리는 경우. 데이터는 볼륨에 남습니다.
+# MyViking 을 컨테이너로 상시 실행합니다.
 #
-#   docker compose -f deploy/docker-compose.yml up -d
-#   docker compose -f deploy/docker-compose.yml exec myviking jv key create laptop
+#   cd deploy && docker compose up -d
+#   docker compose exec myviking jv key create laptop   # 외부 노출 시 필수
+#   docker compose logs -f
+#
+# 데이터(메모리·프롬프트·세션·추적)는 myviking-data 볼륨에 남습니다.
+# 컨테이너를 지워도 남고, 백업은 이 볼륨만 챙기면 됩니다.
+
+name: myviking
 
 services:
   myviking:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    image: myviking:latest
+    # 기본은 로컬 전용. 다른 머신의 에이전트가 붙어야 하면 "8787:8787" 로
+    # 바꾸되 반드시 먼저 API 키를 발급하세요.
     ports:
-      - "8787:8787"
+      # up.sh 가 MYVIKING_PORTS 로 덮어씁니다.
+      - "${MYVIKING_PORTS:-127.0.0.1:8787:8787}"
     volumes:
-      - myviking-data:/var/lib/myviking
+      - myviking-data:/data
     environment:
-      JARVIS_HOME: /var/lib/myviking
-      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      JARVIS_HOME: /data
+      # 요약·증류 품질을 올리려면 (없어도 완전히 동작합니다)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8787/health')"]
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request as u; u.urlopen('http://127.0.0.1:8787/health').read()
       interval: 30s
       timeout: 5s
+      start_period: 10s
       retries: 3
+    # 이 서비스가 쓰는 것은 자기 데이터 볼륨뿐입니다.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   myviking-data:

@@ -264,3 +264,53 @@ def test_provenance_stays_out_of_memory_text(coding):
         # It is still recoverable, just not inside the prose.
         if detail["origin"] == "distilled":
             assert detail["sources"]
+
+
+@_pytest.mark.parametrize(
+    "a,b",
+    [
+        # Different polarity, nothing in common: not a contradiction.
+        ("빌드는 make build 로 한다", "배포 전에는 절대 강제 푸시하지 않는다"),
+        ("테스트는 pytest -q 로 돌린다", "로그는 JSON 으로 남기지 않는다"),
+        ("포트는 8080 을 쓴다", "캐시는 없다"),
+        ("커밋 메시지는 한글로 쓴다", "배포는 금요일에 하지 않는다"),
+    ],
+)
+def test_unrelated_statements_are_not_conflicts(a, b):
+    """Polarity alone is meaningless between unrelated sentences, and scanning a
+    whole category with that rule would flood review with noise."""
+    assert _clash_kind(a, b) == ""
+
+
+def test_contradiction_is_found_even_when_memories_stay_separate(coding):
+    """Two opposite rules can be textually far enough apart not to merge. Both
+    then get retrieved, so the conflict must be found independently of merging.
+    """
+    coding.commit("app", "앞으로 커밋은 항상 한글로", "네")
+    coding.commit("app", "앞으로 커밋은 항상 영어로", "네")
+
+    conv = coding.memories("app", "conventions")
+    assert len(conv) == 2, "이 문장쌍은 병합되지 않아야 합니다 (전제 확인)"
+    flagged = [
+        coding.memory_detail(m["uri"]) for m in conv
+    ]
+    assert all(d["conflict"] for d in flagged), "양쪽 모두 표시되어야 합니다"
+    # Each side points at the other so either can be corrected.
+    others = {d["conflict"]["other"] for d in flagged}
+    assert others == {m["uri"] for m in conv}
+
+
+def test_no_false_conflicts_across_a_populated_category(coding):
+    facts = [
+        ("빌드", "빌드는 make build 로 한다"),
+        ("강제 푸시", "배포 전에는 절대 강제 푸시하지 않는다"),
+        ("로그", "로그는 JSON 으로 남기지 않는다"),
+        ("포트", "포트는 8080 을 쓴다"),
+    ]
+    for title, statement in facts:
+        coding.remember("app", "conventions", title, statement)
+    conflicts = [
+        m for m in coding.memories("app", "conventions")
+        if coding.memory_detail(m["uri"])["conflict"]
+    ]
+    assert conflicts == []

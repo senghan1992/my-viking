@@ -59,6 +59,12 @@ class BudgetConfig:
     cache_hit_threshold: float = 0.92
     # Similarity at/above which a past session is offered as a reference.
     reference_threshold: float = 0.45
+    # Ceiling on candidates scored per query. Directory-first retrieval keeps
+    # L0 reads proportional to depth, but a single flat category can still hold
+    # thousands of files — and then every query pays for all of them. Beyond
+    # this we keep the lexical matches plus the most-trusted, most-recent
+    # entries of each directory we entered.
+    max_candidates: int = 600
 
 
 @dataclass

@@ -298,8 +298,8 @@ class Learner:
         if target is not None and cat.cumulative:
             node = self.store.read_node(target)
             if node is not None:
-                clash = _clash_kind(node.abstract, cand.statement)
-                conflict = clash != ""
+                clash_kind = _clash_kind(node.abstract, cand.statement)
+                conflict = clash_kind != ""
                 node.body = _append_detail(node.body, cand, conflict)
                 node.confidence = min(1.0, node.confidence + 0.12)
                 node.sources = _add_source(node.sources, cand.source)
@@ -307,9 +307,10 @@ class Learner:
                 if conflict:
                     node.extra["conflict"] = {
                         "at": now_iso(),
-                        "kind": clash,
+                        "kind": clash_kind,
                         "existing": node.abstract,
                         "incoming": cand.statement,
+                        "other": "",  # accumulated in this same file
                     }
                 if cand.source != "manual":
                     # New machine-written content landed here, so a previous
@@ -342,6 +343,7 @@ class Learner:
         # L2 must be a superset of L1, so the body carries the statement *and*
         # the detail. A body of detail alone makes the "full" tier smaller than
         # its own overview, and then loading detail looks like it costs nothing.
+        clash = self._find_clash(project, cand) if cat.cumulative else None
         body = (
             f"{cand.statement}\n\n{cand.detail}".strip()
             if cand.detail
@@ -370,8 +372,77 @@ class Learner:
                 "reviewed_at": now_iso() if manual else "",
             },
         )
+        if clash is not None:
+            other_uri, kind, other_statement = clash
+            node.extra["conflict"] = {
+                "at": now_iso(),
+                "kind": kind,
+                "existing": other_statement,
+                "incoming": cand.statement,
+                "other": str(other_uri),
+            }
+            node.extra["reviewed"] = False
         self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
+        if clash is not None:
+            other_uri, kind, other_statement = clash
+            # Both sides get flagged: either one may be the one to correct.
+            self._flag_conflict(
+                other_uri, kind, other_statement, cand.statement, uri
+            )
+            return uri, "created", True
         return uri, "created", False
+
+    def _find_clash(
+        self, project: str, cand: MemoryCandidate
+    ) -> tuple[Uri, str, str] | None:
+        """Find an existing memory in the same category that this contradicts.
+
+        Merge similarity and contradiction are different questions. Two opposite
+        rules can be textually far enough apart to stay separate files — and
+        then both get retrieved, with nothing telling the agent which one wins.
+        That is worse than a flagged conflict, so the check does not ride on the
+        merge decision. Categories are capped in size, so scanning one is cheap.
+
+        Returns ``(other_uri, clash_kind, other_statement)``.
+        """
+        # A textual contradiction requires shared words, so the lexical index is
+        # a sound prefilter — and it keeps this from costing O(category) on
+        # every write, which is what made bulk ingestion quadratic before.
+        lexical = [
+            uri for uri, _s in self.db.fts_search(cand.statement, [project], limit=40)
+        ]
+        if not lexical:
+            return None
+        marks = ", ".join("?" for _ in lexical)
+        rows = self.db.query(
+            f"SELECT uri, abstract FROM nodes WHERE scope=? AND kind=? AND"
+            f" category=? AND uri IN ({marks})",
+            [project, KIND_MEMORY, cand.category, *lexical],
+        )
+        for row in rows:
+            if Uri.parse(row["uri"]).parts[:1] == ("_archive",):
+                continue
+            kind = _clash_kind(row["abstract"] or "", cand.statement)
+            if kind:
+                return Uri.parse(row["uri"]), kind, row["abstract"] or ""
+        return None
+
+    def _flag_conflict(
+        self, uri: Uri, kind: str, mine: str, theirs: str, other: Uri
+    ) -> None:
+        """Mark one side of a contradiction so review can show the pair."""
+        node = self.store.read_node(uri)
+        if node is None:
+            return
+        node.extra["conflict"] = {
+            "at": now_iso(),
+            "kind": kind,
+            "existing": mine,
+            "incoming": theirs,
+            "other": str(other),
+        }
+        node.extra["reviewed"] = False
+        self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
 
     def _find_similar(
         self, project: str, cand: MemoryCandidate, cat: MemoryCategory
@@ -476,15 +547,9 @@ class Learner:
     # ------------------------------------------------------------------
     def reinforce(self, project: str, uris: list[str]) -> int:
         """Strengthen memories that were actually used in a packed context."""
-        amount = self.store.config.learn.reinforce
-        n = 0
-        for uri in uris:
-            try:
-                self.store.touch_node(Uri.parse(uri), reinforce=amount)
-                n += 1
-            except Exception:
-                continue
-        return n
+        if not uris:
+            return 0
+        return self.store.touch_nodes(uris, reinforce=self.store.config.learn.reinforce)
 
     def feedback(
         self, project: str, uri: str, helpful: bool, note: str = ""
@@ -645,12 +710,29 @@ def _term_swapped(a: str, b: str) -> bool:
     )
 
 
+def _shares_topic(a: str, b: str) -> bool:
+    """Do these two statements talk about the same thing at all?
+
+    Required before any contradiction verdict. Negation polarity on its own is
+    almost meaningless between unrelated sentences: "빌드는 make 로 한다" and
+    "절대 강제 푸시하지 않는다" differ in polarity while contradicting nothing,
+    and scanning a whole category with that rule floods review with noise.
+    """
+    wa, wb = set(_words(a)), set(_words(b))
+    if not wa or not wb:
+        return False
+    shared = len(wa & wb)
+    return shared >= 2 and shared >= 0.4 * min(len(wa), len(wb))
+
+
 def _clash_kind(existing: str, incoming: str) -> str:
     """Name the kind of textual contradiction, or "" if none is detectable.
 
     Both checks are textual. Neither reads meaning — a semantic contradiction
     with no shared wording needs the LLM extractor to catch it.
     """
+    if not _shares_topic(existing, incoming):
+        return ""
     if _polarity_differs(existing, incoming):
         return "negation"
     if _term_swapped(existing, incoming):

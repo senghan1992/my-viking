@@ -57,14 +57,18 @@ def _tools() -> list[dict[str, Any]]:
         {
             "name": "jarvis_remember",
             "description": (
-                "이 프로젝트에서 다음에도 쓸 지식을 메모리에 기록합니다. category 는 "
-                "해당 프로젝트 프로파일에 정의된 것만 사용할 수 있습니다 "
-                "(jarvis_profile 로 확인)."
+                "다음에도 쓸 지식을 메모리에 기록합니다. category 는 해당 프로젝트 "
+                "프로파일에 정의된 것만 사용할 수 있습니다 (jarvis_profile 로 확인). "
+                "프로젝트가 아니라 사용자 개인에 관한 것(선호하는 방식·톤·금지사항)은 "
+                'project="global" 로 기록하면 모든 프로젝트에 적용됩니다.'
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project": {"type": "string"},
+                    "project": {
+                        "type": "string",
+                        "description": '프로젝트 이름, 또는 "global" (모든 프로젝트 공통)',
+                    },
                     "category": {"type": "string"},
                     "title": {
                         "type": "string",
@@ -170,9 +174,10 @@ def _tools() -> list[dict[str, Any]]:
         {
             "name": "jarvis_profile",
             "description": (
-                "프로젝트의 메모리 스키마와 운영 지표를 봅니다. op: profile(카테고리), "
-                "projects, templates, init, metrics(지연·재사용·점수), traces(최근 작업), "
-                "impact(어떤 메모리가 좋은 결과에 기여했는지), agents, report(토큰)."
+                "프로젝트 상태를 봅니다. op: brief(오랜만에 돌아왔을 때 알아야 할 것 — "
+                "확립된 지식·주의사항·미해결), profile(메모리 카테고리), review(확인이 "
+                "필요한 항목), digest(전체 프로젝트 요약), projects, templates, init, "
+                "metrics(지연·재사용·점수), traces, impact, agents, report(토큰)."
             ),
             "inputSchema": {
                 "type": "object",
@@ -181,6 +186,7 @@ def _tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "enum": [
                             "profile", "projects", "templates", "init",
+                            "brief", "digest", "review",
                             "metrics", "traces", "agents", "impact", "report",
                         ],
                         "default": "profile",
@@ -259,6 +265,8 @@ class Handler:
                 }
                 for i in (pk.items if pk else [])
             ],
+            "warnings": prepared.warnings,
+            "from_other_projects": prepared.from_other_projects,
             "budget": {
                 "used": pk.tokens if pk else 0,
                 "if_full_detail": pk.baseline_tokens if pk else 0,
@@ -267,7 +275,10 @@ class Handler:
             "references": prepared.references,
             "note": (
                 "위 컨텍스트는 이 프로젝트에 대해 이미 확인된 내용입니다. 다시 조사하지 "
-                "말고 여기서 시작하세요. 새로 알게 된 것은 jarvis_remember 로 남기세요."
+                "말고 여기서 시작하세요. '주의' 항목이 있으면 그것을 거스르는 제안은 "
+                "하지 마세요. from_other_projects 는 다른 프로젝트에서 온 참고이며 "
+                "이 프로젝트에서 검증된 것이 아니므로, 쓸 때는 출처를 밝히세요. "
+                "새로 알게 된 것은 jarvis_remember 로 남기세요."
             ),
         }
 
@@ -355,6 +366,12 @@ class Handler:
             return self.j.templates()
         if op == "agents":
             return self.j.agents()
+        if op == "brief":
+            return self.j.brief(self._project(args, create=False))
+        if op == "digest":
+            return self.j.digest()
+        if op == "review":
+            return self.j.review_queue(self._project(args, create=False), limit=30)
         if op == "metrics":
             return self.j.metrics(str(args.get("project") or ""))
         if op == "traces":

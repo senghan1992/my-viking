@@ -15,6 +15,9 @@ from typing import Any, Iterable, Sequence
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
+-- The maintenance sweep runs on its own connection, so a writer can briefly
+-- collide with a request. Wait rather than fail.
+PRAGMA busy_timeout=5000;
 
 CREATE TABLE IF NOT EXISTS nodes (
     uri         TEXT PRIMARY KEY,

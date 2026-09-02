@@ -9,6 +9,7 @@ answer "why did it say that?" by reading a file.
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Iterable
@@ -276,21 +277,68 @@ class Store:
 
     def touch_node(self, uri: Uri | str, reinforce: float = 0.0) -> None:
         """Record that a node was actually used, and optionally reinforce it."""
-        u = uri if isinstance(uri, Uri) else Uri.parse(uri)
-        node = self.read_node(u)
-        if node is None:
-            return
-        node.hits += 1
-        node.last_used = now_iso()
-        if reinforce:
-            node.confidence = min(1.0, node.confidence + reinforce)
-        path = self.path_for(u)
-        path.write_text(node.to_markdown(), encoding="utf-8")
-        self.db.execute(
-            "UPDATE nodes SET hits=?, last_used=?, confidence=? WHERE uri=?",
-            (node.hits, node.last_used, node.confidence, str(u)),
-        )
-        self.db.commit()
+        self.touch_nodes([uri], reinforce)
+
+    def touch_nodes(
+        self, uris: Iterable[Uri | str], reinforce: float = 0.0
+    ) -> int:
+        """Bump usage counters for several nodes at once.
+
+        Every retrieval reinforces everything it used, so this runs on the hot
+        path. It deliberately does **not** parse the files: the three fields it
+        changes (``hits``, ``last_used``, ``confidence``) are counters we wrote
+        ourselves in a known shape, and re-parsing a whole markdown document
+        through YAML to increment one integer dominated request latency.
+
+        Files stay authoritative — the counters are written back to them — and
+        the whole batch commits once instead of once per node.
+        """
+        targets = [u if isinstance(u, Uri) else Uri.parse(u) for u in uris]
+        if not targets:
+            return 0
+        keys = [str(u) for u in targets]
+        marks = ", ".join("?" for _ in keys)
+        current = {
+            r["uri"]: r
+            for r in self.db.query(
+                f"SELECT uri, hits, confidence, path FROM nodes WHERE uri IN ({marks})",
+                keys,
+            )
+        }
+        stamp = now_iso()
+        updates: list[tuple] = []
+        for u in targets:
+            row = current.get(str(u))
+            if row is None:
+                continue
+            hits = int(row["hits"] or 0) + 1
+            confidence = float(row["confidence"] or 0.0)
+            if reinforce:
+                confidence = min(1.0, confidence + reinforce)
+            path = Path(row["path"]) if row["path"] else self.path_for(u)
+            if path.exists():
+                try:
+                    path.write_text(
+                        _patch_frontmatter(
+                            path.read_text(encoding="utf-8"),
+                            {
+                                "hits": str(hits),
+                                "last_used": f"'{stamp}'",
+                                "confidence": f"{round(confidence, 4)}",
+                            },
+                        ),
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
+            updates.append((hits, stamp, confidence, str(u)))
+        if updates:
+            self.db.conn.executemany(
+                "UPDATE nodes SET hits=?, last_used=?, confidence=? WHERE uri=?",
+                updates,
+            )
+            self.db.commit()
+        return len(updates)
 
     # ------------------------------------------------------------------
     # indexing
@@ -597,3 +645,27 @@ class Store:
                 "profile": self.profile(scope).template if scope != GLOBAL_SCOPE else "-",
             }
         return out
+
+
+_FM_LINE = "^{key}:.*$"
+
+
+def _patch_frontmatter(text: str, fields: dict[str, str]) -> str:
+    """Replace scalar frontmatter values without parsing the document.
+
+    Only touches lines inside the leading ``---`` block, and only keys that are
+    already present — so it cannot invent structure or disturb the body.
+    """
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return text
+    head, tail = text[3:end], text[end:]
+    for key, value in fields.items():
+        pattern = re.compile(_FM_LINE.format(key=re.escape(key)), re.M)
+        if pattern.search(head):
+            head = pattern.sub(f"{key}: {value}", head, count=1)
+        else:
+            head = head.rstrip("\n") + f"\n{key}: {value}\n"
+    return "---" + head + tail

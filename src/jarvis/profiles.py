@@ -38,6 +38,10 @@ class MemoryCategory:
     # If true, entries accumulate into one carrier file per topic (append/merge)
     # rather than one file per observation.
     cumulative: bool = True
+    # If true, matches from this category are surfaced as explicit warnings
+    # rather than as ordinary context. A pitfall buried as item 7 of 10 gets
+    # read as trivia; the point of recording it was to change what happens next.
+    warn: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -62,6 +66,9 @@ class MemoryProfile:
             if c.name == name:
                 return c
         return None
+
+    def warn_categories(self) -> set[str]:
+        return {c.name for c in self.categories if c.warn}
 
     def category_names(self) -> list[str]:
         return [c.name for c in self.categories]
@@ -214,6 +221,7 @@ _TEMPLATES: dict[str, MemoryProfile] = {
                 priority=7,
                 keep=40,
                 budget_share=0.25,
+                warn=True,
             ),
             _c(
                 "decisions",
@@ -270,6 +278,7 @@ _TEMPLATES: dict[str, MemoryProfile] = {
                 priority=7,
                 keep=20,
                 budget_share=0.2,
+                warn=True,
             ),
         ],
     ),
@@ -341,6 +350,7 @@ _TEMPLATES: dict[str, MemoryProfile] = {
                 keep=50,
                 budget_share=0.25,
                 cumulative=False,
+                warn=True,
             ),
             _c(
                 "thresholds",

@@ -69,6 +69,8 @@ class PackedContext:
     # What pasting *every* retrieved candidate in full would cost — the naive
     # "dump everything relevant" approach, reported for comparison only.
     dump_tokens: int = 0
+    # Categories the profile marks as warnings, for the caller to point at.
+    warn_categories: list[str] = field(default_factory=list)
     considered: int = 0
 
     @property
@@ -130,8 +132,10 @@ class Retriever:
         limit: int = 20,
         include_global: bool = True,
         dir_fanout: int = 6,
+        max_candidates: int = 0,
     ) -> tuple[list[Candidate], list[dict[str, Any]]]:
         """Directory-first semantic search. Returns (candidates, trace)."""
+        max_candidates = max_candidates or self.store.config.budget.max_candidates
         scopes = self.scopes_for(project, include_global)
         kind_set = set(kinds) if kinds else None
         qvec = self.embedder.embed(query)
@@ -176,34 +180,18 @@ class Retriever:
         seen: dict[str, Candidate] = {}
         now = datetime.now(timezone.utc)
 
-        # Fetch only what the coarse walk or the lexical index actually pointed
-        # at. Scanning every node in scope and discarding in Python makes query
-        # latency grow with the size of the whole project rather than with the
-        # size of the answer.
-        marks = ", ".join("?" for _ in scopes)
-        params: list[Any] = list(scopes)
-        reach: list[str] = []
-        for d in entered_uris:
-            reach.append("uri LIKE ?")
-            params.append(d + "/%")
-        if fts:
-            reach.append(f"uri IN ({', '.join('?' for _ in fts)})")
-            params.extend(fts)
-        if not reach:
-            trace.append({"step": "rank", "considered": 0, "selected": 0, "lexical_hits": 0})
-            return [], trace
-        kind_clause = ""
-        if kind_set:
-            kind_clause = f" AND kind IN ({', '.join('?' for _ in kind_set)})"
-            params.extend(sorted(kind_set))
-
-        rows = self.db.query(
-            f"SELECT uri, kind, category, title, abstract, confidence, hits,"
-            f" updated, tokens_l0, tokens_l1, tokens_l2, vector FROM nodes"
-            f" WHERE scope IN ({marks}) AND ({' OR '.join(reach)})"
-            f" AND instr(uri, '/_archive/') = 0{kind_clause}",
-            params,
+        # Fetch only what the coarse walk or the lexical index pointed at, and
+        # cap how much of a directory we are willing to score. Without the cap a
+        # flat category with thousands of files puts every query back to a full
+        # scan, which is the difference between a 50ms and a 500ms answer.
+        rows, capped = self._candidates(
+            scopes, entered_uris, list(fts), kind_set, max_candidates
         )
+        if not rows:
+            trace.append(
+                {"step": "rank", "considered": 0, "selected": 0, "lexical_hits": len(fts)}
+            )
+            return [], trace
         vec_scores = batch_cosine(qvec, [r["vector"] for r in rows])
         entered_parsed = [(Uri.parse(d), dir_scores.get(d, 0.0)) for d in entered_uris]
         for row, vec_score in zip(rows, vec_scores):
@@ -253,9 +241,68 @@ class Retriever:
                 "considered": len(seen),
                 "selected": len(candidates),
                 "lexical_hits": len(fts),
+                # Says plainly when recall was truncated, so a surprising answer
+                # can be explained rather than guessed at.
+                "capped": capped,
             }
         )
         return candidates, trace
+
+    _CANDIDATE_COLS = (
+        "uri, kind, category, title, abstract, confidence, hits, updated,"
+        " tokens_l0, tokens_l1, tokens_l2, vector"
+    )
+
+    def _candidates(
+        self,
+        scopes: list[str],
+        entered_uris: list[str],
+        lexical: list[str],
+        kind_set: set[str] | None,
+        max_candidates: int,
+    ) -> tuple[list[Any], bool]:
+        """Gather the rows worth scoring: every lexical hit, plus a bounded
+        slice of each directory the coarse walk entered.
+
+        The slice is ordered by confidence then recency — the best available
+        prior when nothing lexical matched, since those are the memories most
+        likely to still be true.
+        """
+        kind_clause = ""
+        kind_params: list[Any] = []
+        if kind_set:
+            kind_clause = f" AND kind IN ({', '.join('?' for _ in kind_set)})"
+            kind_params = sorted(kind_set)
+
+        by_uri: dict[str, Any] = {}
+        if lexical:
+            marks = ", ".join("?" for _ in scopes)
+            uri_marks = ", ".join("?" for _ in lexical)
+            for row in self.db.query(
+                f"SELECT {self._CANDIDATE_COLS} FROM nodes WHERE scope IN ({marks})"
+                f" AND uri IN ({uri_marks}) AND instr(uri, '/_archive/') = 0"
+                f"{kind_clause}",
+                [*scopes, *lexical, *kind_params],
+            ):
+                by_uri[row["uri"]] = row
+
+        capped = False
+        if entered_uris:
+            per_dir = max(60, max_candidates // len(entered_uris))
+            for d in entered_uris:
+                scope = Uri.parse(d).scope
+                rows = self.db.query(
+                    f"SELECT {self._CANDIDATE_COLS} FROM nodes WHERE scope = ?"
+                    f" AND uri LIKE ? AND instr(uri, '/_archive/') = 0{kind_clause}"
+                    f" ORDER BY confidence DESC, updated DESC LIMIT ?",
+                    [scope, d + "/%", *kind_params, per_dir + 1],
+                )
+                if len(rows) > per_dir:
+                    capped = True
+                    rows = rows[:per_dir]
+                for row in rows:
+                    by_uri.setdefault(row["uri"], row)
+        return list(by_uri.values()), capped
 
     def _priority(self, project: str, kind: str, category: str) -> float:
         if kind != KIND_MEMORY or not category:
@@ -278,9 +325,16 @@ class Retriever:
     ) -> PackedContext:
         """Assemble the highest-value context that fits in the token budget."""
         cfg = budget or self.store.config.budget
-        cfg = _apply_profile_budget(cfg, self.store.profile(project).budget)
+        profile = self.store.profile(project)
+        cfg = _apply_profile_budget(cfg, profile.budget)
+        warn_cats = profile.warn_categories()
         candidates, trace = self.search(
-            query, project, kinds=kinds, limit=limit, include_global=include_global
+            query,
+            project,
+            kinds=kinds,
+            limit=limit,
+            include_global=include_global,
+            max_candidates=cfg.max_candidates,
         )
 
         per_kind_cap = {
@@ -366,7 +420,7 @@ class Retriever:
         # against the rendered text and drop the weakest items until it fits.
         # The budget is a promise to the caller, not an aspiration.
         while resolved:
-            body = _join_sections(_sections_of((c, t, x) for c, t, x, _ in resolved))
+            body = _join_sections(_sections_of(((c, t, x) for c, t, x, _ in resolved), warn_cats))
             if estimate_tokens(body) <= total_budget:
                 break
             resolved.pop()  # already ordered by descending score
@@ -384,8 +438,8 @@ class Retriever:
             for cand, tier, text, _full in resolved
         ]
         chosen = {str(c.uri): t for c, t, _x, _f in resolved}
-        body = _join_sections(_sections_of((c, t, x) for c, t, x, _ in resolved))
-        full_body = _join_sections(_sections_of((c, 2, f) for c, _t, _x, f in resolved))
+        body = _join_sections(_sections_of(((c, t, x) for c, t, x, _ in resolved), warn_cats))
+        full_body = _join_sections(_sections_of(((c, 2, f) for c, _t, _x, f in resolved), warn_cats))
         baseline_tokens = estimate_tokens(full_body)
         # Naive dump = the measured baseline for what we included, plus the full
         # cost of everything we left out. Defined this way it is always a
@@ -404,6 +458,7 @@ class Retriever:
             trace=trace,
             baseline_tokens=baseline_tokens,
             dump_tokens=dump,
+            warn_categories=sorted(warn_cats),
             considered=len(candidates),
         )
         trace.append(
@@ -445,10 +500,10 @@ def _render_section(cand: Candidate, tier: int, text: str) -> str:
     return f"{head}\n{meta}\n{text}"
 
 
-def _sections_of(triples) -> dict[str, list[str]]:
+def _sections_of(triples, warn_cats: set[str]) -> dict[str, list[str]]:
     sections: dict[str, list[str]] = {}
     for cand, tier, text in triples:
-        group = _group_label(cand.kind, cand.category)
+        group = _group_label(cand.kind, cand.category, warn_cats)
         sections.setdefault(group, []).append(_render_section(cand, tier, text))
     return sections
 
@@ -461,7 +516,10 @@ def _join_sections(sections: dict[str, list[str]]) -> str:
     return "\n\n".join(parts).strip()
 
 
+WARN_GROUP = "⚠ 주의 — 이 프로젝트에서 이미 밟은 함정"
+
 _GROUP_ORDER = {
+    WARN_GROUP: -1,
     "프로젝트 메모리": 0,
     "전역 선호": 1,
     "프롬프트": 2,
@@ -470,8 +528,12 @@ _GROUP_ORDER = {
 }
 
 
-def _group_label(kind: str, category: str) -> str:
+def _group_label(kind: str, category: str, warn_cats: set[str] | None = None) -> str:
     if kind == KIND_MEMORY:
+        if warn_cats and category in warn_cats:
+            # Emphasis by position and heading, not by repeating the text
+            # somewhere else in the prompt.
+            return WARN_GROUP
         return f"프로젝트 메모리 · {category}" if category else "프로젝트 메모리"
     if kind == KIND_PROMPT:
         return "프롬프트"
