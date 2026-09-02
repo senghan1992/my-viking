@@ -903,7 +903,21 @@ def cmd_metrics(args, j: Jarvis) -> int:
     print(f"  재사용    p50 {a['p50_reused']}ms")
     print(f"  생성      p50 {a['p50_generated']}ms")
     print(f"컨텍스트 조립 p50 {c['p50']}ms · p95 {c['p95']}ms")
-    print(f"\n재사용률 {m['reuse']['rate'] * 100:.1f}% ({m['reuse']['hits']}/{m['traces']})")
+    oc = m.get("outcomes") or {}
+    judged = sum(oc.values())
+    if judged:
+        again = oc.get("reworked", 0) + oc.get("repeated", 0)
+        print(
+            f"\n한 번에 해결 {m['first_try_rate'] * 100:.0f}%"
+            f"  (다시 요청 {again} / 판정 {judged}건)"
+        )
+        print(
+            "  판정 근거: "
+            + ", ".join(f"{REASON_OUTCOME.get(k, k)} {v}" for k, v in sorted(oc.items()))
+        )
+    else:
+        print("\n한 번에 해결: 판정 데이터 없음 (다음 요청이 판정 근거입니다)")
+    print(f"재사용률 {m['reuse']['rate'] * 100:.1f}% ({m['reuse']['hits']}/{m['traces']})")
     if m["scores"]:
         print("점수: " + ", ".join(f"{s['name']} {s['avg']:.2f} ({s['count']}건)" for s in m["scores"]))
     else:
@@ -970,6 +984,13 @@ def cmd_agents(args, j: Jarvis) -> int:
 
 
 # ----- curation -----------------------------------------------------------
+# How an answer landed, inferred from the request that followed it.
+REASON_OUTCOME = {
+    "reworked": "다시 요청됨",
+    "repeated": "같은 요청 반복",
+    "moved_on": "넘어감",
+}
+
 REASON_LABEL = {
     "conflict": ("상충", "같은 주제에 반대되는 내용이 들어왔습니다"),
     "harmful": ("나쁜 결과", "이 메모리가 들어간 작업 평가가 낮습니다"),
@@ -1219,8 +1240,9 @@ def cmd_history(args, j: Jarvis) -> int:
         print(f"\n■ {head}  —  {meta}")
         for w in sess["work"]:
             mark = "↻" if w["reused"] else " "
-            score = "" if w["score"] is None else f" [{w['score']}]"
-            print(f"  {mark} Q: {(w['question'] or '')[:78]}{score}")
+            verdict = REASON_OUTCOME.get(w.get("outcome") or "", "")
+            tail = f"  ({verdict})" if verdict else ""
+            print(f"  {mark} Q: {(w['question'] or '')[:64]}{tail}")
             if w["answer"] and args.verbose:
                 print(f"    A: {w['answer'][:150]}")
     return 0

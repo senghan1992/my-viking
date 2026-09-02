@@ -336,3 +336,18 @@ def test_global_preferences_are_not_scored_down_by_a_project_answer(jarvis):
     jarvis.score(prepared.trace_id, "helpfulness", 0.0)
 
     assert jarvis.about_me()[0]["confidence"] == before
+
+
+def test_trace_output_is_the_answer_not_the_assembled_context(coding):
+    """The answer column has to hold answers. Storing the context there made an
+    uncommitted trace look answered."""
+    coding.remember("app", "commands", "테스트", "pytest -q 로 돌린다")
+    prepared = coding.prepare("app", "테스트 어떻게?", use_cache=False)
+    trace = coding.trace(prepared.trace_id)
+    assert trace["output"] == ""
+    # The context is still recorded, on the retrieval step where it belongs.
+    retrieval = [o for o in trace["observations"] if o["type"] == "retrieval"][0]
+    assert "pytest" in str(retrieval["metadata"]) or retrieval["output"]
+
+    coding.commit("app", "테스트 어떻게?", "pytest -q 입니다", trace_id=prepared.trace_id)
+    assert coding.trace(prepared.trace_id)["output"] == "pytest -q 입니다"

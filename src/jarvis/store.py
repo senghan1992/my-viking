@@ -16,7 +16,7 @@ from typing import Any, Iterable
 
 from .config import Config
 from .db import Database
-from .embed import Embedder, pack_vector, unpack_vector
+from .embed import FEATURE_VERSION, Embedder, pack_vector, unpack_vector
 from .llm import LLM
 from .models import (
     KIND_MEMORY,
@@ -52,6 +52,33 @@ class Store:
         self.embedder = Embedder.from_config(self.config)
         self.llm = LLM.from_config(self.config)
         self._profiles: dict[str, MemoryProfile] = {}
+        self._ensure_index_fresh()
+
+    def _ensure_index_fresh(self) -> None:
+        """Rebuild the index when the embedding features have changed.
+
+        Vectors from a different feature extraction are not comparable with new
+        ones, so a stale index does not fail loudly — it just quietly returns
+        worse results. Rebuilding is cheap (measured in seconds for thousands of
+        nodes) and the files are the source of truth, so do it rather than warn.
+        """
+        want = f"{self.config.embed.provider}:{self.config.embed.dim}:{FEATURE_VERSION}"
+        row = self.db.one("SELECT v FROM meta WHERE k = 'embed_version'")
+        have = row["v"] if row else ""
+        if have == want:
+            return
+        if have and self.db.one("SELECT 1 FROM nodes LIMIT 1"):
+            print(
+                f"[myviking] 임베딩 방식이 바뀌어 색인을 다시 만듭니다 ({have} → {want})",
+                flush=True,
+            )
+            self.reindex()
+        self.db.execute(
+            "INSERT INTO meta (k, v) VALUES ('embed_version', ?)"
+            " ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            (want,),
+        )
+        self.db.commit()
 
     # ------------------------------------------------------------------
     # paths & scopes

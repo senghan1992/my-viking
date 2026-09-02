@@ -151,3 +151,36 @@ def test_default_budget_can_reach_l1_on_a_large_document(coding):
     packed = coding.retriever.pack("웹훅 서명 검증 규격", "app")
     spec = [i for i in packed.items if "spec" in i.uri]
     assert spec and spec[0].tier >= 1
+
+
+# ----- Korean particles must not defeat retrieval --------------------------
+@pytest.mark.parametrize(
+    "query,expect_title",
+    [
+        # Each query attaches a particle to the subject noun ("배포는", not "배포").
+        ("배포는 어떻게 해?", "배포 명령"),
+        ("테스트는 어떻게 돌려?", "테스트 실행"),
+        ("웹훅 서명 검증은 어디서 하지?", "웹훅 서명 검증"),
+        ("마이그레이션 롤백이 필요해", "마이그레이션 롤백"),
+    ],
+)
+def test_query_with_a_particle_still_finds_its_subject(coding, query, expect_title):
+    """Korean attaches particles to nouns, so word- and trigram-level features
+    never matched the bare form and retrieval scored on filler words instead."""
+    coding.remember("app", "commands", "배포 명령", "make deploy 로 배포한다")
+    coding.remember("app", "commands", "테스트 실행", "pytest -q 로 돌린다")
+    coding.remember("app", "architecture", "웹훅 서명 검증", "webhooks/verify.py 에서 HMAC 으로 검증한다")
+    coding.remember("app", "commands", "마이그레이션 롤백", "alembic downgrade -1 로 되돌린다")
+
+    hits, _trace = coding.retriever.search(query, "app")
+    assert hits, query
+    assert hits[0].title == expect_title, [h.title for h in hits[:3]]
+
+
+def test_unrelated_memories_do_not_tie_with_the_right_one(coding):
+    """They used to score identically, because only the shared filler matched."""
+    coding.remember("app", "commands", "배포 명령", "make deploy 로 배포한다")
+    coding.remember("app", "commands", "테스트 실행", "pytest -q 로 돌린다")
+    hits, _ = coding.retriever.search("배포는 어떻게 해?", "app")
+    by_title = {h.title: h.score for h in hits}
+    assert by_title["배포 명령"] > by_title["테스트 실행"] * 1.2, by_title

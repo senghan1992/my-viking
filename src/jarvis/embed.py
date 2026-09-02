@@ -23,16 +23,34 @@ from typing import Iterable, Sequence
 
 from .config import Config, EmbedConfig
 
+# Bump when the feature extraction changes: stored vectors become
+# incomparable with new ones, and the index has to be rebuilt.
+FEATURE_VERSION = "2-cjk-bigram"
+
 _WORD = re.compile(r"[0-9A-Za-z]+|[가-힣]+|[぀-ヿ㐀-䶿一-鿿]+")
+_CJK_WORD = re.compile(r"^[가-힣぀-ヿ㐀-䶿一-鿿]+$")
 
 
 def _tokens(text: str, n: int = 3) -> Iterable[str]:
+    """Hashed features for one text.
+
+    Korean and Japanese attach particles and inflections directly to the stem,
+    so a word-level or trigram-level feature never matches the bare form:
+    "배포는" gives the trigram {배포는} and "배포" gives {배포}, sharing nothing.
+    Measured on real queries, that left "배포는 어떻게 해?" scoring identically
+    against a deployment note and an unrelated test note — the subject
+    contributed nothing and only filler words did.
+
+    Character *bigrams* for CJK survive the particle (both yield "배포"), while
+    Latin keeps trigrams, where they work well.
+    """
     low = (text or "").lower()
     for w in _WORD.findall(low):
         yield "w:" + w
-        if len(w) > n:
-            for i in range(len(w) - n + 1):
-                yield "c:" + w[i : i + n]
+        size = 2 if _CJK_WORD.match(w) else n
+        if len(w) > size:
+            for i in range(len(w) - size + 1):
+                yield "c:" + w[i : i + size]
         else:
             yield "c:" + w
 

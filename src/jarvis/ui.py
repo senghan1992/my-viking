@@ -195,6 +195,10 @@ DASHBOARD_HTML = r"""<!doctype html>
       </div>
     </section>
     <section>
+      <h2>다시 요청된 일 — 아직 해결되지 않았을 수 있습니다</h2>
+      <div class="panel scroll"><table id="threads"></table></div>
+    </section>
+    <section>
       <h2>점검이 필요한 것 — 자동으로 정해지지 않는 것만</h2>
       <div class="panel scroll"><table id="review"></table></div>
     </section>
@@ -282,6 +286,21 @@ const short = (u) => String(u).replace(/^jarvis:\/\/(projects\/)?/, "");
 const when = (s) => s ? String(s).slice(5, 16).replace("T", " ") : "—";
 const scoreClass = (v) => v == null ? "" : v >= 0.7 ? "ok" : v >= 0.4 ? "mid" : "bad";
 
+// How the answer landed, judged by what got asked next rather than by anyone
+// filing a rating — which is the only judgement that reliably exists.
+const OUTCOMES = {
+  reworked: ["다시 요청됨", "bad", "사용자가 문제를 언급하며 다시 요청했습니다"],
+  repeated: ["같은 요청 반복", "warn", "같은 요청이 곧 다시 들어왔습니다"],
+  moved_on: ["넘어감", "ok", "사용자가 다른 주제로 넘어갔습니다"],
+};
+function outcomeChip(trace) {
+  const kind = (trace.metadata || {}).implicit_outcome
+    && trace.metadata.implicit_outcome.kind;
+  if (!kind) return `<span style="color:var(--muted)">—</span>`;
+  const [label, cls, why] = OUTCOMES[kind] || [kind, "", ""];
+  return `<span class="chip ${cls}" title="${esc(why)}">${esc(label)}</span>`;
+}
+
 // Only reasons the automatic rules genuinely cannot settle appear by default.
 const REASONS = {
   conflict:  ["상충",     "bad",  "서로 반대되는 내용이 남아 있습니다. 어느 쪽이 맞는지 정해주세요."],
@@ -349,6 +368,7 @@ function renderProjects() {
       <div class="st">
         <span><b>${p.memories}</b> 지식</span>
         <span><b>${p.tasks}</b> 작업</span>
+        ${p.first_try_rate == null ? "" : `<span>한 번에 <b>${pct(p.first_try_rate)}</b></span>`}
         <span class="chip">${esc(p.template)}</span>
       </div>
       <div class="st" style="margin-top:6px">
@@ -461,10 +481,11 @@ async function loadKnowledge() {
     $("mems").innerHTML = ""; $("review").innerHTML = "";
     return;
   }
-  const [profile, mems, review] = await Promise.all([
+  const [profile, mems, review, brief] = await Promise.all([
     api(`/projects/${encodeURIComponent(project)}/profile`),
     api(`/projects/${encodeURIComponent(project)}/memories?limit=500`),
     api(`/projects/${encodeURIComponent(project)}/review`),
+    api(`/projects/${encodeURIComponent(project)}/brief`),
   ]);
   const counts = {};
   mems.forEach((m) => counts[m.category] = (counts[m.category] || 0) + 1);
@@ -490,8 +511,17 @@ async function loadKnowledge() {
     rows, (r) => openMemory(r.uri),
     `<b>아직 비어 있습니다.</b><br>에이전트를 연결하고 작업하면 여기에 쌓입니다.`);
 
-  $("badge").hidden = !review.length;
-  $("badge").textContent = review.length;
+  table($("threads"),
+    [{ label: "결말", get: (r) => `<span class="chip ${(OUTCOMES[r.kind] || ["", ""])[1]}">${esc((OUTCOMES[r.kind] || [r.kind])[0])}</span>` },
+     { label: "요청", get: (r) => `<b>${esc(r.question || "")}</b><div style="color:var(--muted)">${esc((r.answer || "").slice(0, 130))}</div>`, cls: "wrap" },
+     { label: "근거", get: (r) => `<span style="color:var(--muted)">${esc(r.why || "")}</span>`, cls: "wrap" },
+     { label: "시각", get: (r) => esc(when(r.at)), cls: "mono" }],
+    brief.open_threads || [], null,
+    `<b>다시 요청된 일이 없습니다.</b><br>요청이 한 번에 해결되고 있다는 뜻입니다.`);
+
+  const threadCount = (brief.open_threads || []).length;
+  $("badge").hidden = !(review.length + threadCount);
+  $("badge").textContent = review.length + threadCount;
   table($("review"),
     [{ label: "이유", get: (r) => r.reasons.map(reasonChip).join(" ") },
      { label: "카테고리", get: (r) => `<span class="chip">${esc(r.category)}</span>` },
@@ -586,7 +616,13 @@ async function loadActivity() {
   ]);
   const avg = m.scores.length
     ? m.scores.reduce((a, s) => a + s.avg * s.count, 0) / m.scores.reduce((a, s) => a + s.count, 0) : null;
+  const oc = m.outcomes || {};
+  const judged = Object.values(oc).reduce((a, b) => a + b, 0);
   $("cards").innerHTML = [
+    card("한 번에 해결", m.first_try_rate == null ? "—" : pct(m.first_try_rate),
+         judged ? `다시 요청 ${(oc.reworked || 0) + (oc.repeated || 0)} / 판정 ${judged}건`
+                : "다음 요청이 판정 근거입니다",
+         m.first_try_rate == null ? "" : scoreClass(m.first_try_rate)),
     card("응답 p50", ms(m.answer_ms.p50), `p95 ${ms(m.answer_ms.p95)}`),
     card("재사용률", pct(m.reuse.rate), `${m.reuse.hits} / ${m.traces} 건`),
     card("컨텍스트 조립 p50", ms(m.context_ms.p50), `p95 ${ms(m.context_ms.p95)}`),
@@ -615,6 +651,7 @@ async function loadActivity() {
      { label: "결과", get: (r) => r.cache_hit ? `<span class="chip ok">재사용</span>` : `<span class="chip">생성</span>` },
      { label: "조립", get: (r) => ms(r.latency_ms) },
      { label: "전체", get: (r) => ms(r.total_ms || r.latency_ms) },
+     { label: "결말", get: (r) => outcomeChip(r) },
      { label: "점수", get: (r) => r.avg_score == null ? "—" : `<b class="${scoreClass(r.avg_score)}">${r.avg_score.toFixed(2)}</b>` }],
     traces, openTrace,
     `<b>아직 작업 기록이 없습니다.</b><br>에이전트를 연결하면 호출이 여기에 남습니다.`);
@@ -679,6 +716,11 @@ async function openTrace(row) {
         ${t.agent ? `<span class="chip">${esc(t.agent)}</span>` : ""}</div>
       <h3 style="font-size:12px;color:var(--muted)">질문</h3><pre>${esc(t.input)}</pre>
       <h3 style="font-size:12px;color:var(--muted)">답변</h3><pre>${esc((t.output || "(없음)").slice(0, 3000))}</pre>
+      ${(t.metadata || {}).implicit_outcome ? `
+        <div class="why">${outcomeChip(t)}
+          ${esc(t.metadata.implicit_outcome.why)}<br>
+          <span style="color:var(--muted)">다음 요청: ${esc(t.metadata.implicit_outcome.next_question)}</span>
+        </div>` : ""}
       <h3 style="font-size:12px;color:var(--muted)">단계</h3>${steps || "<div style='color:var(--muted)'>없음</div>"}
       <h3 style="font-size:12px;color:var(--muted);margin-top:14px">이 답에 쓰인 지식 (클릭해 수정)</h3>${ctx}
       <h3 style="font-size:12px;color:var(--muted);margin-top:14px">점수</h3>${scores}`;

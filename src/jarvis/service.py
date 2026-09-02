@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from .budget import UsageReport, usage_report
+import re
+
 from .config import BudgetConfig, Config
 from .learn import DistillReport, Learner, MemoryCandidate
 from .models import KIND_MEMORY, KIND_PROMPT, KIND_SESSION, Node, Uri, now_iso, slugify
@@ -42,9 +44,12 @@ _REVIEW_WEIGHT = {
     "fading": 1,
 }
 
-# A negative score only reaches context matched at least this strongly relative
-# to the best match in the same trace. Below it, the item was along for the ride.
-_BLAME_FLOOR = 0.6
+# A negative score reaches only the top-ranked context and anything effectively
+# tied with it. Retrieval hands over a ranked list and a wrong answer is driven
+# by what came first; at a looser floor (0.6) a merely adjacent memory took more
+# damage than the actual culprit, because in a small corpus the scores sit close
+# together and a *relative* threshold stops separating them.
+_BLAME_FLOOR = 0.9
 
 SYSTEM_PREFIX = (
     "당신은 이 프로젝트에 대한 누적 컨텍스트를 가진 어시스턴트입니다.\n"
@@ -164,6 +169,7 @@ class Jarvis:
                     "prompts": by_kind.get(KIND_PROMPT, {}).get("count", 0),
                     "cache_entries": s.get("cache_entries", 0),
                     "tasks": (last["n"] if last else 0) or 0,
+                    "first_try_rate": self.metrics(name, days=0)["first_try_rate"],
                     "last_active": (last["ts"] if last else "") or "",
                     "aliases": [a["alias"] for a in self.aliases(name)],
                 }
@@ -405,6 +411,7 @@ class Jarvis:
                 for it in review
                 if it["priority"] >= 4
             ][:limit],
+            "open_threads": self.tracer.unresolved_threads(project, limit=5),
             "recent_work": self.recent_work(project, limit=4),
             "recently_learned": self.recently_learned(project, days=14, limit=limit),
             "recent_sessions": self.recent_sessions(project, limit=5),
@@ -437,6 +444,9 @@ class Jarvis:
         ][:3]
         return {
             "last_worked_on": work[0]["started"] if work else "",
+            # The single most useful thing to hand a fresh session: what was
+            # asked more than once and may still not be done.
+            "open_threads": self.tracer.unresolved_threads(project, limit=3),
             "recent_threads": [
                 {
                     "at": w["started"],
@@ -537,6 +547,9 @@ class Jarvis:
 
     def work_sessions(self, project: str = "", limit: int = 20) -> list[dict[str, Any]]:
         return self.tracer.work_sessions(project, limit)
+
+    def open_threads(self, project: str, limit: int = 5) -> list[dict[str, Any]]:
+        return self.tracer.unresolved_threads(project, limit)
 
     def digest(self, days: int = 7) -> dict[str, Any]:
         """Everything that happened across projects, for a periodic read."""
@@ -856,6 +869,20 @@ class Jarvis:
         if agent:
             self.tracer.touch_agent(agent, project=project)
 
+        # What is being asked now judges what was answered before.
+        inferred = None
+        if not first_call:
+            inferred = self._infer_previous_outcome(
+                project, sitting, question, trace_id
+            )
+        if inferred is not None:
+            self.store.db.execute(
+                "UPDATE traces SET metadata = json_set(COALESCE(NULLIF(metadata,''),'{}'),"
+                " '$.follows_up_on', ?) WHERE id = ?",
+                (inferred["kind"], trace_id),
+            )
+            self.store.db.commit()
+
         if use_cache:
             obs = self.tracer.start_observation(
                 trace_id, "cache", "cache_lookup", input_text=question
@@ -991,7 +1018,11 @@ class Jarvis:
         latency = self.tracer.end_trace(
             trace_id,
             t0,
-            output_text=packed.text[:2000],
+            # A trace's output is the *answer*, which only `commit` knows. The
+            # assembled context belongs to the retrieval observation, and
+            # storing it here made every uncommitted trace look answered — both
+            # in the UI's answer column and to the implicit-feedback check.
+            output_text="",
             tokens_in=estimate_tokens(system) + estimate_tokens(user),
             metadata={
                 "included": len(packed.items),
@@ -1175,6 +1206,83 @@ class Jarvis:
         return result
 
     # ==================================================================
+    # implicit feedback — the next prompt is the real score
+    # ==================================================================
+    def _infer_previous_outcome(
+        self, project: str, sitting: str, question: str, current_trace: str
+    ) -> dict[str, Any] | None:
+        """Judge the *previous* answer by what is being asked now.
+
+        People almost never file an explicit score, but their next request says
+        plenty. Asking the same thing again — especially with "still doesn't
+        work" attached — is a clear statement that the last answer missed.
+        Moving on to something else is weaker evidence that it landed: they
+        might equally have given up and done it by hand. So the two signals are
+        not symmetric, and neither is as strong as a stated judgement.
+
+        Returns the recorded outcome, or None when there is nothing to judge.
+        """
+        cfg = self.config.learn
+        if not cfg.implicit_feedback or not sitting:
+            return None
+        prev = self.store.db.one(
+            "SELECT id, input, output, started, metadata FROM traces"
+            " WHERE scope=? AND session_id=? AND id != ? AND output != ''"
+            " ORDER BY started DESC LIMIT 1",
+            (project, sitting, current_trace),
+        )
+        if prev is None:
+            return None
+        # Never overwrite a judgement someone actually made.
+        stated = self.store.db.one(
+            "SELECT 1 FROM scores WHERE trace_id=? AND source != 'implicit' LIMIT 1",
+            (prev["id"],),
+        )
+        if stated is not None:
+            return None
+        if self.store.db.one(
+            "SELECT 1 FROM scores WHERE trace_id=? AND name=? LIMIT 1",
+            (prev["id"], IMPLICIT_SCORE),
+        ):
+            return None  # already judged this one
+
+        overlap = topic_overlap(prev["input"] or "", question)
+        minutes = _minutes_between(prev["started"], now_iso())
+        kind, value, why = _classify_followup(
+            question, overlap, minutes, cfg.rework_similarity
+        )
+        if kind is None:
+            return None
+
+        outcome = {
+            "kind": kind,
+            "value": value,
+            "signal": "wording" if kind == "reworked" else "topic_overlap",
+            "topic_overlap": round(overlap, 4),
+            "minutes_later": round(minutes, 1),
+            "next_question": question[:200],
+            "why": why,
+        }
+        self.score(
+            prev["id"],
+            name=IMPLICIT_SCORE,
+            value=value,
+            comment=why,
+            source="implicit",
+            strength=cfg.implicit_strength,
+        )
+        self.tracer.annotate(prev["id"], {"implicit_outcome": outcome})
+        self.tracer.event(
+            prev["id"],
+            "outcome",
+            kind,
+            output_text=why,
+            metadata=outcome,
+            level="warning" if value < 0.5 else "info",
+        )
+        return outcome
+
+    # ==================================================================
     # quality loop
     # ==================================================================
     def score(
@@ -1186,6 +1294,7 @@ class Jarvis:
         source: str = "human",
         apply_to_memory: bool = True,
         uris: list[str] | None = None,
+        strength: float = 1.0,
     ) -> dict[str, Any]:
         """Record a judgement about a trace, and let it move memory confidence.
 
@@ -1214,7 +1323,7 @@ class Jarvis:
             used = self.tracer.context_of(trace_id)
             named = {u.rstrip("/") for u in (uris or [])}
             top = max((float(i["score"]) for i in used), default=0.0)
-            base = self._score_delta(value)
+            base = self._score_delta(value) * max(0.0, float(strength))
             negative = base < 0
             for item in used:
                 uri = Uri.parse(item["uri"])
@@ -1474,3 +1583,153 @@ def _derived_session(agent: str) -> str:
 
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return f"{agent or 'agent'}@{day}"
+
+
+IMPLICIT_SCORE = "implicit_outcome"
+_HANGUL_RE = re.compile(r"^[가-힣]+$")
+
+# Two tiers, because a single list produced false positives that demoted
+# knowledge which was fine. In a payments project "결제 승인 실패하면?" is a
+# question *about* failure, not a complaint about the last answer — and it was
+# being read as one, marking a perfectly good answer as reworked.
+#
+# Corrections speak about the work just done, whatever the subject:
+_CORRECTION_MARKERS = (
+    "안 되는데", "안되는데", "안 되네", "안되네", "안 돼", "안돼", "안 됩니다",
+    "여전히", "아직", "그대로", "다시 해", "다시 봐", "다시 한", "제대로",
+    "동작하지", "작동하지", "구현이 안", "왜 안", "고쳐", "수정해", "잘못",
+    "틀렸", "제대로 안",
+    "still", "doesn't work", "does not work", "not working", "again",
+    "didn't work", "did not work", "fix it", "fix this", "broken",
+)
+# Trouble words only count as a complaint when the subject has not changed —
+# otherwise they are simply the topic of a new question:
+_TROUBLE_WORDS = (
+    "실패", "오류", "에러", "안 됨", "안됨", "죽어", "터져", "예외",
+    "error", "failed", "failing", "crash", "wrong", "exception",
+)
+# Phrases that make a same-topic follow-up a *continuation*, not a complaint.
+_CONTINUATION_MARKERS = (
+    "그럼", "그러면", "추가로", "이번엔", "이번에는", "다음으로", "그리고",
+    "also", "next", "additionally", "what about",
+)
+
+
+_WORD_RE = re.compile(r"[0-9A-Za-z]+|[가-힣]+")
+
+# Interrogative and request boilerplate. Two questions sharing only these are
+# not about the same thing, and leaving them in made "배포 어떻게 해?" look like
+# a repeat of "테스트는 어떻게 돌려?".
+_TOPIC_STOPWORDS = {
+    "어떻게", "어떻", "떻게", "해줘", "해야", "하나", "되나", "뭐야", "무엇",
+    "알려", "알려줘", "좀", "줄래", "봐줘", "해", "할", "수", "있", "이거",
+    "이건", "그거", "방법", "해주", "주세", "지금", "다시", "또",
+    "how", "do", "does", "the", "a", "an", "to", "is", "it", "what",
+    "please", "can", "i", "me", "my", "you",
+}
+
+
+def _topic_grams(text: str) -> set[str]:
+    """Content grams of a question, with Korean particles absorbed.
+
+    Korean attaches particles to nouns, so "배포가" and "배포" are different
+    tokens and different trigrams — which is why word- and trigram-level
+    matching failed on exactly the follow-ups that matter. Character *bigrams*
+    over each Korean word survive the particle: both yield "배포".
+    """
+    out: set[str] = set()
+    for word in _WORD_RE.findall((text or "").lower()):
+        if word in _TOPIC_STOPWORDS:
+            continue
+        if _HANGUL_RE.match(word):
+            if len(word) <= 2:
+                out.add(word)
+            else:
+                out.update(word[i : i + 2] for i in range(len(word) - 1))
+        else:
+            out.add(word)
+    return {g for g in out if g not in _TOPIC_STOPWORDS}
+
+
+def topic_overlap(a: str, b: str) -> float:
+    """How much of the shorter question's subject the longer one covers.
+
+    Containment rather than cosine: a terse repeat ("배포 어떻게 해?") is mostly
+    contained in the verbose original, but cosine dilutes it to zero against all
+    the words the original adds. Measured on real pairs, this separates repeats
+    (0.50-1.00) from changes of subject (0.00) with nothing in between.
+    """
+    ga, gb = _topic_grams(a), _topic_grams(b)
+    if not ga or not gb:
+        return 0.0
+    return len(ga & gb) / min(len(ga), len(gb))
+
+
+def _classify_followup(
+    question: str, overlap: float, minutes: float, rework_similarity: float
+) -> tuple[str | None, float, str]:
+    """Map the next request onto an outcome for the previous answer.
+
+    Two signals, in order of how much they can be trusted:
+
+    * the **wording** — a complaint inside a sitting is about the work just
+      done. That is what "still doesn't work" means arriving after an answer.
+    * the **topic overlap** — without a complaint, the same question again soon
+      after means the answer did not land.
+
+    Otherwise, moving on to something else is *mild* evidence it did land.
+    Mild, because giving up and doing it by hand looks identical from here.
+
+    Returns ``(kind, value, why)``; ``kind`` is None when the follow-up says
+    nothing about the previous answer.
+    """
+    low = (question or "").lower()
+    continuing = any(m in low for m in _CONTINUATION_MARKERS)
+    same_topic = overlap >= rework_similarity
+    corrected = any(m in low for m in _CORRECTION_MARKERS)
+    troubled = any(m in low for m in _TROUBLE_WORDS)
+    complained = corrected or (troubled and same_topic)
+
+    if complained and not continuing:
+        detail = "같은 주제로 " if same_topic else ""
+        return (
+            "reworked",
+            0.1 if same_topic else 0.18,
+            f"{detail}직전 작업에 문제가 있다고 언급했습니다"
+            f" ({minutes:.0f}분 뒤, 주제 일치 {overlap:.2f})",
+        )
+    if continuing:
+        # "그럼 …", "추가로 …" is the next thing, not a verdict on the last one.
+        return None, 0.5, ""
+    if same_topic and minutes <= 120:
+        return (
+            "repeated",
+            0.35,
+            f"같은 요청이 {minutes:.0f}분 뒤 다시 들어왔습니다 (주제 일치 {overlap:.2f})",
+        )
+    if same_topic:
+        return None, 0.5, ""
+    if minutes <= 240:
+        # Mild, because giving up and doing it by hand looks identical here.
+        return (
+            "moved_on",
+            0.62,
+            f"다른 주제로 넘어갔습니다 (주제 일치 {overlap:.2f})",
+        )
+    return None, 0.5, ""
+
+
+def _minutes_between(a: str, b: str) -> float:
+    from datetime import datetime, timezone
+
+    def parse(x: str):
+        try:
+            ts = datetime.fromisoformat(x)
+        except (TypeError, ValueError):
+            return None
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+    ta, tb = parse(a), parse(b)
+    if ta is None or tb is None:
+        return 0.0
+    return max(0.0, (tb - ta).total_seconds() / 60.0)

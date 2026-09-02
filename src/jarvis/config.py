@@ -76,8 +76,15 @@ class LearnConfig:
     archive_below: float = 0.25
     # Multiplicative decay applied per distill run to unused memories.
     decay: float = 0.97
-    # Confidence added each time a memory is actually used in a packed context.
-    reinforce: float = 0.08
+    # Confidence added each time a memory is used in a packed context.
+    #
+    # Zero by default, and that is the point: being retrieved is not evidence of
+    # being *right*. Retrieval already records `last_used`, which is what stops
+    # decay from archiving something in active use, so a confidence bonus on top
+    # only muddies the signal — at 0.08 it cancelled the penalty for having
+    # driven a wrong answer, and knowledge that kept failing looked identical to
+    # knowledge that kept working. Confidence moves on outcomes.
+    reinforce: float = 0.0
     # Two candidate memories above this similarity are merged, not duplicated.
     merge_threshold: float = 0.82
     max_per_category: int = 40
@@ -88,6 +95,17 @@ class LearnConfig:
     #              one, which is why this is the default.
     #   "flag"   — keep both and surface the pair for a person to decide.
     conflict_policy: str = "newest"
+    # Infer how the last answer landed from what gets asked next. Explicit
+    # scores are rare in practice; being asked the same thing again is not.
+    implicit_feedback: bool = True
+    # Implicit signals move confidence less than a stated judgement, because
+    # they are inferred. An explicit score on the same trace still lands at
+    # full strength.
+    implicit_strength: float = 0.5
+    # Topic-overlap at/above which the next question counts as the same request
+    # coming back rather than a new subject. Calibrated on measured pairs:
+    # repeats landed 0.50-1.00, every change of subject 0.00.
+    rework_similarity: float = 0.25
 
 
 @dataclass

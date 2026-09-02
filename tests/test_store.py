@@ -185,3 +185,26 @@ def test_patch_frontmatter_leaves_a_body_dash_line_alone():
     assert "hits: 5" in out
     assert "--- 본문 속 구분선" in out
     assert out.count("## Details") == 1
+
+
+def test_index_rebuilds_itself_when_the_embedding_changes(coding, monkeypatch):
+    """A stale index does not fail loudly; it just returns worse results."""
+    coding.remember("app", "commands", "빌드", "make build 로 빌드한다")
+    row = coding.store.db.one("SELECT v FROM meta WHERE k='embed_version'")
+    assert row is not None and "cjk-bigram" in row["v"]
+
+    # Simulate an index written by an older feature extraction.
+    coding.store.db.execute(
+        "UPDATE meta SET v='1-legacy' WHERE k='embed_version'"
+    )
+    coding.store.db.execute("UPDATE nodes SET vector = NULL")
+    coding.store.db.commit()
+
+    from jarvis.store import Store
+
+    fresh = Store(coding.config, coding.store.db)
+    assert (
+        fresh.db.one("SELECT v FROM meta WHERE k='embed_version'")["v"] == row["v"]
+    )
+    revived = fresh.db.one("SELECT vector FROM nodes WHERE uri LIKE '%빌드'")
+    assert revived["vector"], "재색인이 벡터를 복구하지 못했습니다"

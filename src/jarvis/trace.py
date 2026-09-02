@@ -320,6 +320,65 @@ class Tracer:
         self.db.commit()
         return oid
 
+    def annotate(self, trace_id: str, extra: dict[str, Any]) -> None:
+        """Merge fields into a trace's metadata without losing what is there."""
+        row = self.db.one("SELECT metadata FROM traces WHERE id = ?", (trace_id,))
+        if row is None:
+            return
+        current = _loads(row["metadata"]) or {}
+        if not isinstance(current, dict):
+            current = {"raw": current}
+        current.update(extra)
+        self.db.execute(
+            "UPDATE traces SET metadata = ? WHERE id = ?", (_json(current), trace_id)
+        )
+        self.db.commit()
+
+    def outcome_counts(self, scope: str = "", days: int = 7) -> dict[str, int]:
+        """How the last answers landed, judged by what got asked next."""
+        where, params = ["o.type = 'outcome'"], []
+        if scope:
+            where.append("t.scope = ?")
+            params.append(scope)
+        if days > 0:
+            where.append("o.started >= datetime('now', ?)")
+            params.append(f"-{int(days)} days")
+        rows = self.db.query(
+            "SELECT o.name AS kind, COUNT(*) AS n FROM observations o"
+            f" JOIN traces t ON t.id = o.trace_id WHERE {' AND '.join(where)}"
+            " GROUP BY o.name",
+            params,
+        )
+        return {r["kind"]: r["n"] for r in rows}
+
+    def unresolved_threads(
+        self, scope: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Requests that were asked again — the ones that may still be open.
+
+        This is the most useful thing a new session can be told: not "here is
+        everything", but "last time this was asked twice and never settled".
+        """
+        rows = self.db.query(
+            "SELECT t.id, t.input, t.output, t.started, t.session_id, o.name AS kind,"
+            " o.output AS why FROM observations o JOIN traces t ON t.id = o.trace_id"
+            " WHERE t.scope = ? AND o.type = 'outcome' AND o.name IN ('reworked','repeated')"
+            " ORDER BY t.started DESC LIMIT ?",
+            (scope, limit),
+        )
+        return [
+            {
+                "trace_id": r["id"],
+                "question": r["input"],
+                "answer": (r["output"] or "")[:280],
+                "at": r["started"],
+                "session_id": r["session_id"],
+                "kind": r["kind"],
+                "why": r["why"],
+            }
+            for r in rows
+        ]
+
     # ----- context provenance -----------------------------------------
     def record_context(self, trace_id: str, scope: str, items: list[dict[str, Any]]) -> None:
         if not items:
@@ -528,7 +587,7 @@ class Tracer:
         out: list[dict[str, Any]] = []
         for row in rows:
             traces = self.db.query(
-                "SELECT t.id, t.input, t.output, t.started, t.cache_hit,"
+                "SELECT t.id, t.input, t.output, t.started, t.cache_hit, t.metadata,"
                 " (SELECT AVG(value) FROM scores s WHERE s.trace_id = t.id) AS avg_score"
                 " FROM traces t WHERE t.session_id = ? ORDER BY t.started",
                 (row["session_id"],),
@@ -552,6 +611,11 @@ class Tracer:
                             "answer": t["output"],
                             "at": t["started"],
                             "reused": bool(t["cache_hit"]),
+                            # How it landed, judged by what got asked next.
+                            "outcome": (
+                                (_loads(t["metadata"]).get("implicit_outcome") or {})
+                                .get("kind", "")
+                            ),
                             "score": (
                                 round(t["avg_score"], 3)
                                 if t["avg_score"] is not None
@@ -676,10 +740,32 @@ def metrics(db: Database, scope: str = "", days: int = 7) -> dict[str, Any]:
         [scope] if scope else [],
     )
 
+    outcomes = {}
+    for r in db.query(
+        "SELECT o.name AS kind, COUNT(*) AS n FROM observations o"
+        " JOIN traces t ON t.id = o.trace_id WHERE o.type = 'outcome'"
+        + (" AND t.scope = ?" if scope else "")
+        + " GROUP BY o.name",
+        [scope] if scope else [],
+    ):
+        outcomes[r["kind"]] = r["n"]
+    judged = sum(outcomes.values())
+    settled = outcomes.get("moved_on", 0)
+
     return {
         "scope": scope or "(all)",
         "days": days,
         "traces": len(rows),
+        # Judged by what got asked next, not by anyone filing a rating.
+        "outcomes": outcomes,
+        "first_try_rate": round(settled / judged, 4) if judged else None,
+        "rework_rate": (
+            round(
+                (outcomes.get("reworked", 0) + outcomes.get("repeated", 0)) / judged, 4
+            )
+            if judged
+            else None
+        ),
         "errors": sum(1 for r in rows if r["status"] != "ok"),
         # "context" = what MyViking spent; "answer" = what the user waited for.
         "context_ms": {
