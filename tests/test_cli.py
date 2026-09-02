@@ -176,3 +176,155 @@ def test_distill_reports_what_it_learned(jv, capsys):
     out = capsys.readouterr().out
     assert "세션 1건" in out
     assert "memories/conventions" in out
+
+
+# ----- server operations ---------------------------------------------------
+def test_key_lifecycle(jv, capsys):
+    jv("key", "create", "laptop")
+    out = capsys.readouterr().out
+    assert "jv_" in out
+    assert "다시 볼 수 없습니다" in out
+    assert "서버 전체가 인증을 요구" in out  # first key flips the posture
+
+    jv("--json", "key", "list")
+    rows = _json(capsys)
+    assert rows[0]["name"] == "laptop"
+    assert "key" not in rows[0]
+
+    jv("key", "revoke", rows[0]["id"])
+    assert "폐기" in capsys.readouterr().out
+    jv("key", "revoke", rows[0]["id"], expect=1)
+
+
+def test_key_can_be_scoped_to_projects(jv, capsys):
+    jv("init", "app")
+    jv("key", "create", "ci", "--project", "app")
+    capsys.readouterr()
+    jv("--json", "key", "list")
+    assert _json(capsys)[0]["projects"] == "app"
+
+
+def test_link_binds_repo_and_path(jv, capsys, tmp_path):
+    jv(
+        "--json",
+        "link",
+        "-p",
+        "backend",
+        "--repo",
+        "git@github.com:me/backend.git",
+        "--path",
+        str(tmp_path),
+    )
+    data = _json(capsys)
+    assert data["project"] == "backend"
+    assert any("repo" in b for b in data["bound"])
+    assert any("path" in b for b in data["bound"])
+
+
+def test_link_infers_project_from_repo(jv, capsys, tmp_path):
+    jv("--json", "link", "--repo", "https://github.com/me/payments.git", "--path", str(tmp_path))
+    assert _json(capsys)["project"] == "payments"
+
+
+def test_agent_config_includes_endpoint_and_instructions(jv, capsys):
+    jv("agent", "config", "--client", "claude-code", "--url", "https://vk.example.com", "-p", "app")
+    out = capsys.readouterr().out
+    assert "claude mcp add --transport http myviking https://vk.example.com/mcp" in out
+    assert "jarvis_context" in out and "jarvis_score" in out
+    assert 'project="app"' in out
+
+
+def test_agent_config_embeds_key_per_client(jv, capsys):
+    jv("agent", "config", "--client", "claude-code", "--url", "http://h:1", "--key", "jv_X")
+    assert 'Authorization: Bearer jv_X' in capsys.readouterr().out
+    jv("agent", "config", "--client", "cursor", "--url", "http://h:1", "--key", "jv_X")
+    cursor = capsys.readouterr().out
+    assert '"url": "http://h:1/mcp"' in cursor
+    assert "Bearer jv_X" in cursor
+    jv("agent", "config", "--client", "codex", "--url", "http://h:1", "--key", "jv_X")
+    assert "[mcp_servers.myviking]" in capsys.readouterr().out
+
+
+# ----- observability -------------------------------------------------------
+def _one_traced_task(jarvis, project="app"):
+    jarvis.init_project(project, template="coding")
+    jarvis.remember(project, "commands", "테스트", "pytest -q 로 돌린다")
+    prepared = jarvis.prepare(project, "테스트 실행", agent="cli-test")
+    jarvis.commit(
+        project,
+        "테스트 실행",
+        "pytest -q",
+        trace_id=prepared.trace_id,
+        latency_ms=1800,
+        tokens_in=900,
+        tokens_out=20,
+    )
+    return prepared.trace_id
+
+
+def test_traces_trace_and_score(jv, jarvis, capsys):
+    trace_id = _one_traced_task(jarvis)
+    capsys.readouterr()
+
+    jv("--json", "traces", "-p", "app")
+    rows = _json(capsys)
+    assert rows[0]["id"] == trace_id
+    # total = 조립 + 생성. 이 합이 맞아야 지연 귀속이 의미를 갖는다.
+    assert rows[0]["total_ms"] == rows[0]["latency_ms"] + 1800
+
+    jv("trace", trace_id)
+    detail = capsys.readouterr().out
+    assert "retrieval" in detail and "generation" in detail
+    assert "memories/commands/테스트" in detail
+
+    jv("score", trace_id, "1.0", "--comment", "정확")
+    scored = capsys.readouterr().out
+    assert "신뢰도 조정" in scored
+    assert "memories/commands/테스트" in scored
+
+
+def test_score_on_unknown_trace_fails_cleanly(jv, capsys):
+    jv("score", "tr_nope", "1.0", expect=1)
+    assert "없는 트레이스" in capsys.readouterr().err
+
+
+def test_metrics_splits_context_from_answer(jv, jarvis, capsys):
+    _one_traced_task(jarvis)
+    capsys.readouterr()
+    jv("--json", "metrics", "-p", "app")
+    m = _json(capsys)
+    assert m["answer_ms"]["p50"] >= 1800
+    assert m["context_ms"]["p50"] <= m["answer_ms"]["p50"]
+    assert {s["type"] for s in m["steps"]} >= {"retrieval", "generation"}
+
+
+def test_metrics_says_so_when_no_scores_exist(jv, jarvis, capsys):
+    _one_traced_task(jarvis)
+    capsys.readouterr()
+    jv("metrics", "-p", "app")
+    assert "점수: 아직 없음" in capsys.readouterr().out
+
+
+def test_impact_marks_unscored_memories_as_unproven(jv, jarvis, capsys):
+    _one_traced_task(jarvis)
+    capsys.readouterr()
+    jv("impact", "-p", "app")
+    out = capsys.readouterr().out
+    assert "미검증" in out
+    assert "memories/commands/테스트" in out
+
+
+def test_traces_can_filter_slow_ones(jv, jarvis, capsys):
+    _one_traced_task(jarvis)
+    capsys.readouterr()
+    jv("--json", "traces", "-p", "app", "--slower-than", "999999")
+    assert _json(capsys) == []
+
+
+def test_agent_list_shows_connected_agents(jv, jarvis, capsys):
+    _one_traced_task(jarvis)
+    capsys.readouterr()
+    jv("--json", "agent", "list")
+    rows = _json(capsys)
+    assert rows[0]["name"] == "cli-test"
+    assert rows[0]["projects"] == ["app"]
