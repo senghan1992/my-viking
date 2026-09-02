@@ -112,6 +112,28 @@ jv backup restore --yes   # 최신 스냅샷으로 복원 (복원 후 컨테이�
 `jv backup config --provider local --path /backups` 로 바꾸고 compose 에 그
 경로를 볼륨으로 추가하면 됩니다.
 
+### 집 서버를 밖으로 여는 체크리스트 (포트포워딩)
+
+"집에 서버를 두고 회사·카페 어디서든 붙는다"가 이 서비스의 표준 시나리오라서,
+그 순서를 그대로 적어둡니다.
+
+1. **키 먼저, 노출은 나중** — `bash deploy/up.sh --public` 은 API 키를 발급한
+   뒤에만 외부 바인딩으로 엽니다. 키가 생기는 순간 전 API 가 인증을 요구하고,
+   틀린 키를 반복하는 IP 는 자동으로 차단됩니다(분당 10회 초과 시 429).
+2. **공유기 포트포워딩** — TLS 를 쓸 거면 80/443 만, 아니면 8787 을 이 머신으로.
+3. **TLS (강력 권장)** — 평문 HTTP 로 열면 API 키와 프로젝트 지식이 그대로
+   지나갑니다. 도메인이 없어도 DuckDNS 같은 무료 DDNS 면 됩니다:
+   ```bash
+   MYVIKING_DOMAIN=viking.duckdns.org docker compose --profile tls up -d
+   ```
+   Caddy 가 인증서를 자동 발급/갱신하고, 에이전트는
+   `https://viking.duckdns.org/mcp` 로 붙습니다. 8787 은 포워딩하지 마세요.
+4. **키는 용도별로** — `jv key create 회사노트북 --project backend` 처럼
+   프로젝트 스코프를 걸어 두면, 키 하나가 새어도 그 프로젝트 밖은 못 봅니다.
+   `jv key list` 로 마지막 사용 시각을 보고, 안 쓰는 키는 `jv key revoke`.
+5. **백업 연결** — 위의 [백업](#백업--볼륨이-사라져도-살아남는-사본) 절 참고.
+   외부에 열린 서버라면 더더욱.
+
 ### 저장소를 프로젝트에 연결
 
 ```bash
@@ -167,6 +189,30 @@ jv agent config --client cursor --url https://viking.example.com --key jv_...
 연결하고 언제 쓸지 알려주지 않으면 에이전트는 대개 쓰지 않으므로, 지시문이
 절반입니다. 수동 지시문은 jarvis_context(시작) → jarvis_remember(작업 중) →
 jarvis_commit(끝) → jarvis_score(평가) 의 전체 루프를 에이전트에게 맡깁니다.
+
+### MCP 조차 없는 에이전트 — 셸 브리지
+
+코딩 에이전트는 종류가 많고, 전부가 MCP 를 지원하지는 않습니다. 하지만 셸
+명령은 **모든** 에이전트가 실행할 수 있으므로, 같은 루프가 명령으로도
+열려 있습니다:
+
+```bash
+pip install my-viking            # 에이전트 머신에 코어만 (의존성: PyYAML 하나)
+export MYVIKING_URL=https://viking.example.com
+export MYVIKING_KEY=jv_...
+
+jv remote brief                  # 세션 시작: 최근 작업·주의·미해결
+jv remote ctx "결제 실패 처리?"    # 작업 전: 축적된 컨텍스트 + trace_id
+jv remote remember pitfalls "PG 재시도 금지" "재시도하면 이중 결제"
+jv remote commit "질문" "답변 요약" --trace tr_...
+jv remote score tr_... 1.0
+```
+
+프로젝트는 cwd 의 git remote 로 자동 해석되므로 `-p` 없이도 됩니다.
+에이전트 지시문은 `jv agent config --client shell` 이 출력해 주며(대시보드
+연결정보의 드롭다운에도 있습니다), 그 에이전트의 지시문 파일에 붙이면
+끝입니다. 출력은 에이전트가 읽는 것을 전제로 설계되어 있습니다 — 컨텍스트
+다음 줄에 "끝나면 이 명령을 실행하라"가 붙어 나옵니다.
 
 ## 실제로 무엇이 일어나나
 

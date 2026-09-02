@@ -51,5 +51,28 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # 외부(포트포워딩)로 열 때의 TLS 종료. 켜는 법:
+  #   MYVIKING_DOMAIN=viking.example.com docker compose --profile tls up -d
+  # 공유기에서 80/443 만 포워딩하면 됩니다 — 8787 은 로컬 바인딩 그대로 두세요.
+  # 도메인이 없으면 DuckDNS 같은 무료 DDNS 로 받으면 됩니다.
+  caddy:
+    image: caddy:2
+    profiles: ["tls"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      MYVIKING_DOMAIN: ${MYVIKING_DOMAIN:-}
+      MYVIKING_UPSTREAM: myviking:8787
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - myviking
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   myviking-data:
+  caddy-data:

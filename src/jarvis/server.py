@@ -247,6 +247,33 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         allow_headers=["*"],
     )
 
+    # Failed-auth backoff. This server is designed to sit on a port-forwarded
+    # home connection, where "someone will try keys all day" is the baseline,
+    # not the edge case. Per-IP, in-memory: simple, and it only ever touches
+    # requests that already failed to authenticate.
+    auth_failures: dict[str, list[float]] = {}
+    AUTH_WINDOW, AUTH_MAX_FAILS = 60.0, 10
+
+    def _auth_blocked(ip: str) -> bool:
+        import time as _time
+
+        now = _time.time()
+        log = auth_failures.get(ip)
+        if not log:
+            return False
+        log[:] = [t for t in log if now - t < AUTH_WINDOW]
+        if not log:
+            auth_failures.pop(ip, None)
+            return False
+        return len(log) >= AUTH_MAX_FAILS
+
+    def _auth_failed(ip: str) -> None:
+        import time as _time
+
+        if len(auth_failures) > 10_000:  # an IP-rotating attacker defeats any map
+            auth_failures.clear()
+        auth_failures.setdefault(ip, []).append(_time.time())
+
     @app.middleware("http")
     async def authenticate(request: Request, call_next):
         """Require a key once one exists.
@@ -266,15 +293,25 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         if not keys.any_active():
             return await call_next(request)
 
+        ip = request.client.host if request.client else "?"
+        if _auth_blocked(ip):
+            return JSONResponse(
+                {"detail": "인증 실패가 너무 잦습니다. 잠시 후 다시 시도하세요."},
+                status_code=429,
+                headers={"Retry-After": str(int(AUTH_WINDOW))},
+            )
+
         header = request.headers.get("authorization", "")
         raw = header[7:].strip() if header.lower().startswith("bearer ") else ""
         raw = raw or request.headers.get("x-api-key", "")
         info = keys.verify(raw)
         if info is None:
+            _auth_failed(ip)
             return JSONResponse(
                 {"detail": "유효한 API 키가 필요합니다 (Authorization: Bearer jv_...)"},
                 status_code=401,
             )
+        auth_failures.pop(ip, None)
         request.state.key = info
         return await call_next(request)
 

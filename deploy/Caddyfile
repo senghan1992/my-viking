@@ -1,14 +1,18 @@
 # TLS 종료를 붙이는 가장 짧은 방법. Caddy 가 인증서를 자동 발급합니다.
 #
-#   sudo caddy run --config deploy/Caddyfile
+# compose 로 (권장 — 포트포워딩으로 외부에 열 때):
+#   MYVIKING_DOMAIN=viking.example.com docker compose --profile tls up -d
+#   (공유기에서 80/443 을 이 머신으로 포워딩하세요. 8787 은 열 필요 없습니다.)
 #
-# 이 뒤에 있는 MyViking 은 127.0.0.1 에만 바인딩하면 됩니다:
-#   jv serve --port 8787
+# 직접 실행할 때:
+#   MYVIKING_DOMAIN=viking.example.com sudo caddy run --config deploy/Caddyfile
+#   이 경우 MyViking 은 127.0.0.1 에만 바인딩하면 됩니다: jv serve --port 8787
 #
-# 에이전트는 https://viking.example.com/mcp 로 붙습니다.
+# 도메인이 없다면 DuckDNS 같은 무료 DDNS 로 하나 받으면 됩니다 — 집 IP 가
+# 바뀌어도 따라갑니다. 에이전트는 https://<도메인>/mcp 로 붙습니다.
 
-viking.example.com {
-	reverse_proxy 127.0.0.1:8787
+{$MYVIKING_DOMAIN} {
+	reverse_proxy {$MYVIKING_UPSTREAM:127.0.0.1:8787}
 
 	# MCP 응답은 스트리밍이 아니지만, 대시보드 폴링과 함께
 	# 버퍼링 없이 흘려보내는 편이 응답 지연이 낮습니다.

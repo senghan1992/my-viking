@@ -565,3 +565,38 @@ def test_dashboard_shows_the_work_session_view(client):
     page = client.get("/").text
     assert 'id="sessions"' in page
     assert "작업 세션" in page
+
+
+def test_repeated_auth_failures_get_backed_off(client):
+    """포트포워딩으로 인터넷에 열리는 서버다 — 키 무차별 대입은 기본 전제.
+
+    한 IP 가 1분 안에 10번 틀리면 그 다음부터는 검증조차 하지 않고 429 를
+    돌려준다. 공개 경로(/health, 대시보드)는 영향을 받지 않는다."""
+    client.post("/keys", json={"name": "k"})
+
+    for _ in range(10):
+        res = client.get("/projects", headers={"authorization": "Bearer jv_wrong"})
+        assert res.status_code == 401
+    blocked = client.get("/projects", headers={"authorization": "Bearer jv_wrong"})
+    assert blocked.status_code == 429
+    assert "Retry-After" in blocked.headers
+
+    # 차단은 인증이 필요한 경로에만 걸린다.
+    assert client.get("/health").status_code == 200
+    assert client.get("/").status_code == 200
+
+
+def test_successful_auth_resets_the_failure_count(home):
+    from fastapi.testclient import TestClient as TC
+
+    from jarvis.server import create_app as ca
+
+    client = TC(ca(home=str(home)))
+    made = client.post("/keys", json={"name": "k"}).json()
+    for _ in range(9):  # 문턱(10) 직전까지 실패
+        client.get("/projects", headers={"authorization": "Bearer jv_wrong"})
+    ok = client.get("/projects", headers={"authorization": f"Bearer {made['key']}"})
+    assert ok.status_code == 200
+    # 성공이 카운터를 리셋했으므로 한 번 더 틀려도 401 (429 아님)
+    res = client.get("/projects", headers={"authorization": "Bearer jv_wrong"})
+    assert res.status_code == 401
