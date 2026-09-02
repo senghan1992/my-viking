@@ -371,21 +371,49 @@ class Tracer:
             "SELECT t.id, t.input, t.output, t.started, t.session_id, o.name AS kind,"
             " o.output AS why FROM observations o JOIN traces t ON t.id = o.trace_id"
             " WHERE t.scope = ? AND o.type = 'outcome' AND o.name IN ('reworked','repeated')"
-            " ORDER BY t.started DESC LIMIT ?",
-            (scope, limit),
+            " ORDER BY t.started DESC",
+            (scope,),
         )
-        return [
-            {
-                "trace_id": r["id"],
-                "question": r["input"],
-                "answer": (r["output"] or "")[:280],
-                "at": r["started"],
-                "session_id": r["session_id"],
-                "kind": r["kind"],
-                "why": r["why"],
-            }
-            for r in rows
-        ]
+        out: list[dict[str, Any]] = []
+        seen_sessions: set[str] = set()
+        for r in rows:
+            sid = r["session_id"] or ""
+            # A re-ask chain (A→B→C on the same topic) marks every link. They are
+            # one open thread, not three — keep only the most recent link.
+            if sid and sid in seen_sessions:
+                continue
+            if sid:
+                seen_sessions.add(sid)
+            # ...and it is only still open if the session did not later land a
+            # judged-good answer. If it did, the user got unstuck; drop it.
+            if sid and self._session_settled_after(scope, sid, r["started"]):
+                continue
+            out.append(
+                {
+                    "trace_id": r["id"],
+                    "question": r["input"],
+                    "answer": (r["output"] or "")[:280],
+                    "at": r["started"],
+                    "session_id": r["session_id"],
+                    "kind": r["kind"],
+                    "why": r["why"],
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
+
+    def _session_settled_after(self, scope: str, session_id: str, started: str) -> bool:
+        """Did a later trace in this session get a *stated* good judgement? Only an
+        explicit score closes a thread — the mild ``moved_on`` implicit signal
+        looks identical to giving up and doing it by hand, so it must not."""
+        row = self.db.one(
+            "SELECT 1 FROM scores s JOIN traces t ON t.id = s.trace_id"
+            " WHERE t.scope = ? AND t.session_id = ? AND t.started > ?"
+            " AND s.source != 'implicit' AND s.value >= 0.6 LIMIT 1",
+            (scope, session_id, started),
+        )
+        return row is not None
 
     # ----- retention -----------------------------------------------------
     def prune(self, days: int) -> int:

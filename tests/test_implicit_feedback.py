@@ -209,6 +209,30 @@ def test_reworked_threads_reach_the_next_session(coding):
     assert coding.brief("app")["open_threads"]
 
 
+def test_a_reask_chain_is_one_open_thread_not_three(coding):
+    """A→B→C 로 같은 일을 세 번 다시 시켰으면 열린 스레드는 하나다."""
+    coding.remember("app", "commands", "배포 명령", "make deploy")
+    _turn(coding, "app", "A기능 배포 어떻게 해?", sid="s1")
+    _turn(coding, "app", "배포가 안 되는데 고쳐줘", sid="s1")
+    _turn(coding, "app", "여전히 배포가 안 되는데 다시 고쳐줘", sid="s1")
+
+    threads = coding.open_threads("app")
+    from_s1 = [t for t in threads if t["session_id"] == "s1"]
+    assert len(from_s1) == 1, "재작업 체인이 스레드 목록을 도배했습니다"
+
+
+def test_a_stated_good_score_later_closes_the_thread(coding):
+    """다시 시켰던 일도, 이후 사람이 좋다고 평가하면 더는 미해결이 아니다."""
+    coding.remember("app", "commands", "배포 명령", "make deploy")
+    first = _turn(coding, "app", "A기능 배포 어떻게 해?", sid="s1")
+    fixed = _turn(coding, "app", "배포가 안 되는데 고쳐줘", sid="s1")
+    assert coding.open_threads("app"), "재작업 직후엔 열려 있어야 한다"
+
+    # 뒤이은 답에 사람이 명시적으로 합격점을 주면 스레드가 닫힌다.
+    coding.score(fixed, "helpfulness", 1.0, comment="이제 됩니다")
+    assert not any(t["trace_id"] == first for t in coding.open_threads("app"))
+
+
 def test_retrieval_is_not_inflated_by_being_used(coding):
     """검색되었다는 것은 정답이었다는 증거가 아니다."""
     uri = coding.remember("app", "commands", "테스트 실행", "pytest -q 로 돌린다")
