@@ -323,6 +323,7 @@ def test_every_post_route_parses_its_body(client):
         # so this exercises body parsing without dialing Google from a test.
         "/backup/connect/start": {"client_id": "", "client_secret": ""},
         "/backup/connect/poll": None,
+        "/backup/disconnect": None,
         "/backup/run": None,
     }
     posts = [

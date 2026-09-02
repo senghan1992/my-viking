@@ -194,6 +194,9 @@ class FakeGoogle:
         if auth != f"Bearer {self.access}":
             return 401, b"{}"
 
+        if "/drive/v3/about" in url:
+            return 200, json.dumps({"user": {"emailAddress": "me@gmail.com"}}).encode()
+
         if "upload/drive/v3/files" in url:
             self.next_id += 1
             fid = f"f{self.next_id}"
@@ -268,6 +271,47 @@ def test_gdrive_upload_creates_folder_and_survives_token_expiry(home, tmp_path, 
     assert [f["name"] for f in m.list_remote()]
 
 
+def test_connect_reveals_where_backups_will_land(home):
+    """연결이 끝난 순간 '어느 계정, 어느 폴더인지'가 확인 가능해야 한다.
+    값만 받고 끝나는 연동은 사용자가 검증할 방법이 없다."""
+    fake = FakeGoogle()
+    m = BackupManager(home, http=fake)
+    m.connect_start("cid", "sec")
+
+    # 승인 전: 대시보드를 새로고침해도 코드가 다시 보이도록 상태에 남아 있다.
+    st = m.status()
+    assert st["pending_auth"] is True
+    assert st["pending_user_code"] == "ABCD-EFGH"
+    assert "google.com/device" in st["pending_verification_url"]
+
+    fake.approved = True
+    res = m.connect_poll()
+    assert res["status"] == "ok"
+    assert res["account"] == "me@gmail.com"
+    assert res["folder"] == "MyViking-Backups"
+    assert res["folder_url"].startswith("https://drive.google.com/drive/folders/")
+
+    # 이후 status 만 봐도 목적지가 나온다 (연결 확인 화면의 근거).
+    st = m.status()
+    assert st["account"] == "me@gmail.com"
+    assert st["folder_id"] and st["folder_url"].endswith(st["folder_id"])
+    assert st["pending_auth"] is False and st["pending_user_code"] == ""
+
+
+def test_disconnect_forgets_the_token_but_not_the_archives(home, remote_dir, jarvis):
+    fake = FakeGoogle()
+    m = BackupManager(home, http=fake)
+    m.connect_start("cid", "sec")
+    fake.approved = True
+    m.connect_poll()
+
+    st = m.disconnect()
+    assert st["provider"] == "none" and st["connected"] is False
+    assert m.settings().gdrive == {}  # 시크릿·토큰이 파일에서 사라진다
+    # 드라이브 쪽 파일은 건드리지 않는다 (폴더는 그대로).
+    assert any(f.get("folder") for f in fake.files.values())
+
+
 def test_gdrive_poll_reports_denial(home):
     fake = FakeGoogle()
 
@@ -301,6 +345,11 @@ def test_backup_endpoints(home, remote_dir, jarvis):
     assert run.json()["name"].startswith("myviking-")
     assert len(client.get("/backup/list").json()) == 1
     assert client.get("/backup/status").json()["last_status"] == "ok"
+
+    # 연결 해제는 대상만 지운다 — 원격의 파일은 남는다.
+    off = client.post("/backup/disconnect").json()
+    assert off["provider"] == "none"
+    assert list(remote_dir.glob("myviking-*.tar.gz"))
 
 
 def test_backup_endpoints_require_key_once_auth_is_on(home):

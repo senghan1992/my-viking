@@ -1041,7 +1041,14 @@ def cmd_backup_status(args, j: Jarvis | None = None) -> int:
         "none": "설정 안 됨",
     }[st["provider"]]
     print(f"대상       {where}")
+    if st["provider"] == "gdrive":
+        if st["account"]:
+            print(f"계정       {st['account']}")
+        if st["folder_url"]:
+            print(f"폴더       {st['folder_url']}")
     print(f"연결       {'예' if st['connected'] else ('인증 진행 중' if st['pending_auth'] else '아니오')}")
+    if st["pending_auth"] and st["pending_verification_url"]:
+        print(f"승인 대기  {st['pending_verification_url']} 에서 코드 {st['pending_user_code']} 입력")
     print(f"주기       {st['every_hours']}시간 · 보관 {st['keep']}개")
     if st["last_run"]:
         size_mb = st["last_size"] / 1_000_000
@@ -1092,8 +1099,13 @@ def cmd_backup_connect(args, j: Jarvis | None = None) -> int:
         _time.sleep(interval)
         res = mgr.connect_poll()
         if res["status"] == "ok":
-            print("연결됐습니다. 이제 백업이 Google Drive 로 올라갑니다.")
-            print("바로 한 번 올리려면:  jv backup run")
+            print("연결됐습니다.")
+            if res.get("account"):
+                print(f"  계정   {res['account']}")
+            print(f"  폴더   {res.get('folder', '')}")
+            if res.get("folder_url"):
+                print(f"  확인   {res['folder_url']}  ← 브라우저에서 열어 직접 볼 수 있습니다")
+            print("바로 한 번 올려서 확인하려면:  jv backup run && jv backup list")
             return 0
         if res["status"] == "error":
             print(f"실패: {res.get('error')}", file=sys.stderr)
@@ -1105,6 +1117,16 @@ def cmd_backup_connect(args, j: Jarvis | None = None) -> int:
 
 
 cmd_backup_connect.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_backup_disconnect(args, j: Jarvis | None = None) -> int:
+    st = _backup_manager(args).disconnect()
+    print("연결을 해제했습니다. 이미 올라간 백업은 드라이브 폴더에 그대로 남습니다.")
+    print(f"현재 대상: {st['provider']}")
+    return 0
+
+
+cmd_backup_disconnect.no_jarvis = True  # type: ignore[attr-defined]
 
 
 def cmd_backup_run(args, j: Jarvis | None = None) -> int:
@@ -2000,6 +2022,8 @@ def build_parser() -> argparse.ArgumentParser:
     s2.add_argument("--client-id", required=True, help="Google Cloud OAuth 클라이언트 ID (TV/제한된 입력 장치 유형)")
     s2.add_argument("--client-secret", required=True)
     s2.set_defaults(func=cmd_backup_connect)
+    s2 = bsub.add_parser("disconnect", help="Google Drive 연결 해제 (올라간 백업은 남음)")
+    s2.set_defaults(func=cmd_backup_disconnect)
     s2 = bsub.add_parser("run", help="지금 즉시 백업 한 번")
     s2.set_defaults(func=cmd_backup_run)
     s2 = bsub.add_parser("list", help="원격에 있는 백업 목록")

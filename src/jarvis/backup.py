@@ -60,6 +60,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def folder_url(folder_id: str) -> str:
+    """The folder's address in the Drive web UI — so a person can open the
+    destination and see the archives with their own eyes. Trust needs a URL."""
+    return f"https://drive.google.com/drive/folders/{folder_id}" if folder_id else ""
+
+
 def _urllib_http(
     method: str,
     url: str,
@@ -253,13 +259,18 @@ class GoogleDrive:
         if status != 200:
             raise RuntimeError(f"기기 코드 발급 실패: {data.get('error', status)}")
         # device_code stays server-side; the person only ever sees user_code.
+        # The code and URL are kept too, so a dashboard reloaded mid-flow can
+        # show them again instead of forcing a restart.
         self.creds["_device_code"] = data["device_code"]
         self.creds["_poll_interval"] = str(data.get("interval", 5))
+        self.creds["_user_code"] = data["user_code"]
+        self.creds["_verification_url"] = (
+            data.get("verification_url") or data.get("verification_uri", "")
+        )
         self.on_change()
         return {
             "user_code": data["user_code"],
-            "verification_url": data.get("verification_url")
-            or data.get("verification_uri", ""),
+            "verification_url": self.creds["_verification_url"],
             "expires_in": data.get("expires_in", 1800),
             "interval": data.get("interval", 5),
         }
@@ -284,8 +295,7 @@ class GoogleDrive:
         data = _jsonb(body)
         if status == 200 and data.get("refresh_token"):
             self.creds["refresh_token"] = data["refresh_token"]
-            self.creds.pop("_device_code", None)
-            self.creds.pop("_poll_interval", None)
+            self._drop_pending()
             self._access = data.get("access_token", "")
             self._access_until = time.time() + float(data.get("expires_in", 0)) - 60
             self.on_change()
@@ -293,9 +303,19 @@ class GoogleDrive:
         err = data.get("error", f"http {status}")
         if err in ("authorization_pending", "slow_down"):
             return {"status": "pending", "error": err}
-        self.creds.pop("_device_code", None)
+        self._drop_pending()
         self.on_change()
         return {"status": "error", "error": err}
+
+    def _drop_pending(self) -> None:
+        for key in ("_device_code", "_poll_interval", "_user_code", "_verification_url"):
+            self.creds.pop(key, None)
+
+    def about(self) -> dict[str, Any]:
+        """Whose Drive this token reaches — shown so the person can verify the
+        connection landed on the account they meant."""
+        data = self._api("GET", f"{GOOGLE_API}/about?fields=user")
+        return data.get("user") or {}
 
     # ----- tokens --------------------------------------------------------
     def _token(self, force: bool = False) -> str:
@@ -498,7 +518,35 @@ class BackupManager:
         if result["status"] == "ok":
             s.provider = "gdrive"
             s.save(self.home)
+            # Resolve the destination *now*, not at the first scheduled run:
+            # "어디로 연결됐나" is the first thing the person will ask, and the
+            # answer should be on screen the moment the flow finishes.
+            try:
+                drive.ensure_folder(s.folder)
+                user = drive.about()
+                if user.get("emailAddress"):
+                    s.gdrive["account_email"] = str(user["emailAddress"])
+                    s.save(self.home)
+            except Exception:
+                pass  # enrichment only — the connection itself already stands
+            result = {
+                **result,
+                "account": s.gdrive.get("account_email", ""),
+                "folder": s.folder,
+                "folder_url": folder_url(s.gdrive.get("folder_id", "")),
+            }
         return result
+
+    def disconnect(self) -> dict[str, Any]:
+        """Stop backing up and forget the Drive token. Archives already
+        uploaded stay where they are — this only severs the connection.
+        (``local_path`` is kept: pointing at the directory again is one
+        config call, and the path holds no secret.)"""
+        s = self.settings()
+        s.gdrive = {}
+        s.provider = "none"
+        s.save(self.home)
+        return self.status()
 
     # ----- the run ---------------------------------------------------------
     def run(self) -> dict[str, Any]:
@@ -572,6 +620,14 @@ class BackupManager:
             "connected": s.provider == "local"
             or bool(s.gdrive.get("refresh_token")),
             "pending_auth": bool(s.gdrive.get("_device_code")),
+            # A flow interrupted mid-approval (dashboard reloaded, terminal
+            # closed) can resume: re-show the same code instead of restarting.
+            "pending_user_code": s.gdrive.get("_user_code", ""),
+            "pending_verification_url": s.gdrive.get("_verification_url", ""),
+            # Where exactly the archives land — account and a clickable folder.
+            "account": s.gdrive.get("account_email", ""),
+            "folder_id": s.gdrive.get("folder_id", ""),
+            "folder_url": folder_url(s.gdrive.get("folder_id", "")),
             "every_hours": s.every_hours,
             "keep": s.keep,
             "folder": s.folder,

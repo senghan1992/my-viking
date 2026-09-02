@@ -797,6 +797,10 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     def backup_connect_poll() -> dict[str, Any]:
         return backups.connect_poll()
 
+    @app.post("/backup/disconnect")
+    def backup_disconnect() -> dict[str, Any]:
+        return backups.disconnect()
+
     @app.post("/backup/run")
     def backup_run() -> dict[str, Any]:
         try:
