@@ -102,6 +102,21 @@ class CommitBody(BaseModel):
     agent: str = ""
 
 
+class EditMemoryBody(BaseModel):
+    uri: str
+    title: str | None = None
+    statement: str | None = None
+    body: str | None = None
+    category: str | None = None
+    tags: list[str] | None = None
+    confidence: float | None = None
+
+
+class ConfirmBody(BaseModel):
+    uri: str
+    confidence: float | None = None
+
+
 class ScoreBody(BaseModel):
     trace_id: str
     name: str = "helpfulness"
@@ -471,6 +486,47 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
             latency_ms=body.latency_ms,
             agent=body.agent,
         )
+
+    # ----- curation ----------------------------------------------------
+    @app.get("/projects/{project}/review")
+    def review(project: str, request: Request, limit: int = 50) -> list[dict[str, Any]]:
+        _guard(request, project)
+        return jarvis.review_queue(project, limit)
+
+    @app.get("/review/summary")
+    def review_summary(project: str = "") -> dict[str, Any]:
+        return jarvis.review_summary(project)
+
+    @app.get("/memories/detail")
+    def memory_detail(uri: str) -> dict[str, Any]:
+        data = jarvis.memory_detail(uri)
+        if data is None:
+            raise HTTPException(404, "없는 메모리")
+        return data
+
+    @app.patch("/memories")
+    def edit_memory(body: EditMemoryBody) -> dict[str, Any]:
+        try:
+            return jarvis.edit_memory(
+                body.uri,
+                title=body.title,
+                statement=body.statement,
+                body=body.body,
+                category=body.category,
+                tags=body.tags,
+                confidence=body.confidence,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/memories/confirm")
+    def confirm_memory(body: ConfirmBody) -> dict[str, Any]:
+        try:
+            return jarvis.confirm_memory(body.uri, body.confidence)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
 
     # ----- observability ----------------------------------------------
     @app.post("/scores")

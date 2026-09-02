@@ -28,8 +28,19 @@ from .prompts import PromptLibrary, RenderResult
 from .retrieve import PackedContext, Retriever
 from .sessions import CacheHit, SessionLog
 from .store import GLOBAL_SCOPE, Store
-from .tokens import estimate_tokens
+from .tiers import summarize
+from .tokens import estimate_tokens, truncate_to_tokens
 from .trace import Tracer, memory_impact, metrics, timeseries
+
+# Ordering for the review queue: a contradiction or a memory that showed up in
+# bad outcomes is worth interrupting for; an unconfirmed guess can wait.
+_REVIEW_WEIGHT = {
+    "conflict": 5,
+    "harmful": 4,
+    "unproven": 3,
+    "unconfirmed": 2,
+    "fading": 1,
+}
 
 SYSTEM_PREFIX = (
     "당신은 이 프로젝트에 대한 누적 컨텍스트를 가진 어시스턴트입니다.\n"
@@ -253,6 +264,198 @@ class Jarvis:
             for r in rows
             if Uri.parse(r["uri"]).parts[:1] != ("_archive",)
         ]
+
+    # ------------------------------------------------------------------
+    # curation — the part you do *after* the work, not during it
+    # ------------------------------------------------------------------
+    def review_queue(self, project: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Memories that want a human decision, most consequential first.
+
+        You are not watching while your agents work, so the useful question is
+        not "what is happening" but "what did my agents write down, and is it
+        right?" Each entry carries the reason it surfaced so the decision is a
+        few seconds of reading rather than an investigation.
+        """
+        rows = self.store.db.query(
+            "SELECT uri, title, category, abstract, confidence, hits, updated"
+            " FROM nodes WHERE scope=? AND kind=? ORDER BY updated DESC",
+            (project, KIND_MEMORY),
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            uri = Uri.parse(row["uri"])
+            if uri.parts[:1] == ("_archive",):
+                continue
+            node = self.store.read_node(uri)
+            if node is None:
+                continue
+            impact = self.tracer.scores_for_uri(row["uri"])
+            reasons = self._review_reasons(node, impact)
+            if not reasons:
+                continue
+            out.append(
+                {
+                    "uri": row["uri"],
+                    "title": node.title,
+                    "category": node.category,
+                    "abstract": node.abstract,
+                    "confidence": round(node.confidence, 3),
+                    "hits": node.hits,
+                    "updated": node.updated,
+                    "origin": node.extra.get("origin", "distilled"),
+                    "reviewed": bool(node.extra.get("reviewed")),
+                    "conflict": node.extra.get("conflict"),
+                    "uses": impact["uses"],
+                    "avg_score": impact["avg_score"],
+                    "reasons": reasons,
+                    "priority": max(_REVIEW_WEIGHT.get(r, 0) for r in reasons),
+                    "sources": node.sources[-3:],
+                }
+            )
+        out.sort(key=lambda d: (-d["priority"], -d["uses"], d["updated"]))
+        return out[:limit]
+
+    def _review_reasons(self, node: Node, impact: dict[str, Any]) -> list[str]:
+        reasons: list[str] = []
+        if node.extra.get("conflict"):
+            reasons.append("conflict")
+        if impact["avg_score"] is not None and impact["avg_score"] < 0.4:
+            reasons.append("harmful")
+        if not node.extra.get("reviewed"):
+            reasons.append("unconfirmed")
+        if impact["uses"] >= 3 and impact["scored"] == 0:
+            # Leaned on repeatedly, never judged. Popular is not the same as
+            # correct, and this is where a wrong belief quietly compounds.
+            reasons.append("unproven")
+        if node.confidence <= self.config.learn.archive_below + 0.05:
+            reasons.append("fading")
+        return reasons
+
+    def review_summary(self, project: str = "") -> dict[str, Any]:
+        """Counts per reason, for a digest you can read in five seconds."""
+        projects = [project] if project else self.store.projects()
+        out: dict[str, Any] = {"projects": {}, "total": 0, "by_reason": {}}
+        for name in projects:
+            queue = self.review_queue(name, limit=500)
+            counts: dict[str, int] = {}
+            for item in queue:
+                for reason in item["reasons"]:
+                    counts[reason] = counts.get(reason, 0) + 1
+                    out["by_reason"][reason] = out["by_reason"].get(reason, 0) + 1
+            out["projects"][name] = {"items": len(queue), "by_reason": counts}
+            out["total"] += len(queue)
+        return out
+
+    def confirm_memory(self, uri: str, confidence: float | None = None) -> dict[str, Any]:
+        """Mark a memory human-verified. It stops asking and gains confidence."""
+        u = Uri.parse(uri)
+        node = self.store.read_node(u)
+        if node is None:
+            raise KeyError(f"없는 메모리: {uri}")
+        node.extra["reviewed"] = True
+        node.extra["reviewed_at"] = now_iso()
+        node.extra.pop("conflict", None)
+        node.confidence = (
+            max(0.0, min(1.0, confidence))
+            if confidence is not None
+            else min(1.0, max(node.confidence, 0.85))
+        )
+        self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
+        return {"uri": uri, "reviewed": True, "confidence": node.confidence}
+
+    def edit_memory(
+        self,
+        uri: str,
+        title: str | None = None,
+        statement: str | None = None,
+        body: str | None = None,
+        category: str | None = None,
+        tags: list[str] | None = None,
+        confidence: float | None = None,
+    ) -> dict[str, Any]:
+        """Correct a memory in place.
+
+        Editing counts as review: you just read it. Changing the category moves
+        the file, because the category *is* the directory.
+        """
+        u = Uri.parse(uri)
+        node = self.store.read_node(u)
+        if node is None:
+            raise KeyError(f"없는 메모리: {uri}")
+        project = u.scope
+
+        if category is not None and category != node.category:
+            profile = self.store.profile(project)
+            if profile.category(category) is None:
+                raise ValueError(
+                    f"'{category}' 는 이 프로젝트의 카테고리가 아닙니다. "
+                    f"사용 가능: {', '.join(profile.category_names())}"
+                )
+            node.category = category
+
+        if title is not None:
+            node.title = title
+        if statement is not None:
+            node.abstract = truncate_to_tokens(statement, 100)
+        if body is not None:
+            node.body = body
+        if tags is not None:
+            node.tags = list(tags)
+        if confidence is not None:
+            node.confidence = max(0.0, min(1.0, confidence))
+
+        # Tiers are derived, so regenerate them from whatever the text is now.
+        node.overview = ""
+        abstract, overview = summarize(node.body, node.title, self.store.llm)
+        node.overview = overview or node.abstract
+        if statement is None and abstract:
+            node.abstract = abstract
+        node.extra["reviewed"] = True
+        node.extra["reviewed_at"] = now_iso()
+        node.extra["edited_by_human"] = True
+        node.extra.pop("conflict", None)
+
+        target = Uri(project, ("memories", node.category, slugify(node.title, "memory")))
+        if target != u:
+            self.store.delete_node(u)
+            node.uri = target
+        self.store.write_node(node, regenerate_tiers=False)
+        return {"uri": str(node.uri), "moved_from": uri if target != u else ""}
+
+    def memory_detail(self, uri: str) -> dict[str, Any] | None:
+        """Everything the review UI needs about one memory, in one call."""
+        node = self.store.read_node(uri)
+        if node is None:
+            return None
+        impact = self.tracer.scores_for_uri(uri)
+        u = Uri.parse(uri)
+        return {
+            "uri": uri,
+            "project": u.scope,
+            "kind": node.kind,
+            "title": node.title,
+            "category": node.category,
+            "abstract": node.abstract,
+            "overview": node.overview,
+            "body": node.body,
+            "tags": node.tags,
+            "confidence": round(node.confidence, 3),
+            "hits": node.hits,
+            "created": node.created,
+            "updated": node.updated,
+            "sources": node.sources,
+            "origin": node.extra.get("origin", "distilled"),
+            "reviewed": bool(node.extra.get("reviewed")),
+            "conflict": node.extra.get("conflict"),
+            "tokens": {
+                "l0": estimate_tokens(node.tier(0)),
+                "l1": estimate_tokens(node.tier(1)),
+                "l2": estimate_tokens(node.tier(2)),
+            },
+            "impact": impact,
+            "reasons": self._review_reasons(node, impact),
+            "path": str(self.store.path_for(u)),
+        }
 
     def add_resource(
         self,

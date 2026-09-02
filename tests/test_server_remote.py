@@ -262,3 +262,125 @@ def test_agents_are_registered_from_calls(client):
 
 def test_score_on_unknown_trace_is_404(client):
     assert client.post("/scores", json={"trace_id": "nope", "value": 1.0}).status_code == 404
+
+
+# --------------------------------------------------------------------------
+# curation over HTTP — what the dashboard's 검토 / 데이터베이스 tabs call
+# --------------------------------------------------------------------------
+def _seed(client):
+    client.post("/projects", json={"project": "app", "template": "coding"})
+    client.post(
+        "/memories",
+        json={
+            "project": "app",
+            "category": "commands",
+            "title": "테스트 실행",
+            "statement": "pytest -q 로 돌린다",
+        },
+    )
+    for q, a in [
+        ("앞으로 커밋 메시지는 항상 한글로 써줘", "네, 한글로 씁니다."),
+        ("앞으로 커밋 메시지는 항상 영어로 써줘", "네, 영어로 씁니다."),
+    ]:
+        client.post("/commit", json={"project": "app", "question": q, "answer": a})
+
+
+def test_review_endpoints_surface_the_conflict(client):
+    _seed(client)
+    summary = client.get("/review/summary", params={"project": "app"}).json()
+    assert summary["total"] > 0
+    assert "conflict" in summary["by_reason"]
+
+    queue = client.get("/projects/app/review").json()
+    assert queue[0]["priority"] >= queue[-1]["priority"]  # sorted by urgency
+    top = queue[0]
+    assert "conflict" in top["reasons"]
+    assert top["conflict"]["existing"] and top["conflict"]["incoming"]
+
+
+def test_manual_memory_is_not_in_the_review_queue(client):
+    _seed(client)
+    uris = [i["uri"] for i in client.get("/projects/app/review").json()]
+    assert not any("commands/테스트-실행" in u for u in uris)
+
+
+def test_memory_detail_gives_the_editor_everything_it_needs(client):
+    _seed(client)
+    uri = client.get("/projects/app/review").json()[0]["uri"]
+    d = client.get("/memories/detail", params={"uri": uri}).json()
+    for key in ("title", "category", "abstract", "body", "confidence", "origin",
+                "reviewed", "sources", "tokens", "impact", "reasons", "path"):
+        assert key in d, key
+
+
+def test_confirm_clears_the_item(client):
+    _seed(client)
+    uri = client.get("/projects/app/review").json()[0]["uri"]
+    before = client.get("/review/summary", params={"project": "app"}).json()["total"]
+    res = client.post("/memories/confirm", json={"uri": uri}).json()
+    assert res["reviewed"] is True
+    after = client.get("/review/summary", params={"project": "app"}).json()["total"]
+    assert after == before - 1
+
+
+def test_edit_moves_the_file_and_marks_reviewed(client):
+    _seed(client)
+    uri = [
+        i["uri"] for i in client.get("/projects/app/review").json()
+        if i["category"] == "cases"
+    ][0]
+    res = client.patch(
+        "/memories",
+        json={
+            "uri": uri,
+            "title": "커밋 메시지 언어",
+            "statement": "커밋 메시지는 한글로 쓴다",
+            "category": "conventions",
+        },
+    ).json()
+    assert res["uri"].endswith("conventions/커밋-메시지-언어")
+    assert res["moved_from"] == uri
+    assert client.get("/memories/detail", params={"uri": uri}).status_code == 404
+    d = client.get("/memories/detail", params={"uri": res["uri"]}).json()
+    assert d["reviewed"] is True
+    assert d["abstract"] == "커밋 메시지는 한글로 쓴다"
+
+
+def test_edit_rejects_an_unknown_category(client):
+    _seed(client)
+    uri = client.get("/projects/app/review").json()[0]["uri"]
+    res = client.patch("/memories", json={"uri": uri, "category": "없는것"})
+    assert res.status_code == 400
+
+
+def test_edit_and_confirm_on_missing_memory_are_404(client):
+    _seed(client)
+    ghost = "jarvis://projects/app/memories/commands/ghost"
+    assert client.patch("/memories", json={"uri": ghost, "title": "x"}).status_code == 404
+    assert client.post("/memories/confirm", json={"uri": ghost}).status_code == 404
+
+
+def test_archive_from_the_ui_removes_it_from_retrieval(client):
+    _seed(client)
+    uri = client.get("/projects/app/review").json()[0]["uri"]
+    client.delete("/memories", params={"uri": uri, "archive": True})
+    assert uri not in [i["uri"] for i in client.get("/projects/app/review").json()]
+    ctx = client.post("/prepare", json={"project": "app", "question": "커밋 메시지 규칙"}).json()
+    assert uri not in [i["uri"] for i in (ctx.get("packed") or {}).get("items", [])]
+
+
+def test_review_is_scoped_by_key(client):
+    client.post("/projects", json={"project": "a", "template": "coding"})
+    client.post("/projects", json={"project": "b", "template": "coding"})
+    key = client.post("/keys", json={"name": "only-a", "projects": ["a"]}).json()["key"]
+    hdr = {"authorization": f"Bearer {key}"}
+    assert client.get("/projects/a/review", headers=hdr).status_code == 200
+    assert client.get("/projects/b/review", headers=hdr).status_code == 403
+
+
+def test_dashboard_declares_all_four_tabs(client):
+    page = client.get("/").text
+    for label in ("검토", "데이터베이스", "작업 기록", "프롬프트"):
+        assert label in page
+    # The review tab must be the landing tab: it is what you open this for.
+    assert 'data-tab="review" class="on"' in page

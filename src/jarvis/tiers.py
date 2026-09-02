@@ -39,8 +39,10 @@ def summarize(
         return (title or "").strip(), ""
 
     # Short documents are their own overview; summarising them wastes tokens.
+    # The abstract still gets cleaned: a heading or a dated log bullet is
+    # structure, and structure in a one-line summary reads as corruption.
     if estimate_tokens(text) <= l0_tokens:
-        return text, text
+        return _clean_oneline(text) or text, text
 
     if llm is not None and llm.available:
         got = _llm_summarize(text, title, llm, l0_tokens, l1_tokens)
@@ -77,6 +79,20 @@ def _llm_summarize(
         truncate_to_tokens(abstract, l0_tokens),
         truncate_to_tokens(overview or abstract, l1_tokens),
     )
+
+
+_LOG_BULLET = re.compile(r"^\s*[-*+]\s*\d{4}-\d{2}-\d{2}\S*\s*:?\s*", re.M)
+
+
+def _clean_oneline(text: str) -> str:
+    """Flatten short markdown into a single readable sentence."""
+    body = _LOG_BULLET.sub("", text or "")
+    lines = [
+        ln.strip().lstrip("-*+ ").strip()
+        for ln in body.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+    return " ".join(lines).strip()
 
 
 def _first_sentences(text: str, limit_tokens: int) -> str:

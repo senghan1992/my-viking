@@ -1010,6 +1010,138 @@ def cmd_agents(args, j: Jarvis) -> int:
     return 0
 
 
+
+
+# ----- curation -----------------------------------------------------------
+REASON_LABEL = {
+    "conflict": ("상충", "같은 주제에 반대되는 내용이 들어왔습니다"),
+    "harmful": ("나쁜 결과", "이 메모리가 들어간 작업 평가가 낮습니다"),
+    "unproven": ("미검증", "여러 번 쓰였지만 평가가 없습니다"),
+    "unconfirmed": ("확인 대기", "에이전트가 기록했고 아직 사람이 보지 않았습니다"),
+    "fading": ("잊히는 중", "오래 쓰이지 않아 신뢰도가 떨어졌습니다"),
+}
+
+
+def cmd_review(args, j: Jarvis) -> int:
+    """What did my agents write down, and is it right?"""
+    if args.summary or not args.project:
+        summary = j.review_summary(args.project or "")
+        if args.json:
+            _out(summary, True)
+            return 0
+        if not summary["total"]:
+            print("확인할 것이 없습니다.")
+            return 0
+        print(f"확인이 필요한 항목 {summary['total']}건\n")
+        for reason, count in sorted(
+            summary["by_reason"].items(), key=lambda kv: -kv[1]
+        ):
+            label, why = REASON_LABEL.get(reason, (reason, ""))
+            print(f"  {label:<10} {count:>3}건  {why}")
+        print()
+        rows = [
+            {"project": name, "items": v["items"]}
+            for name, v in summary["projects"].items()
+            if v["items"]
+        ]
+        print(_table(rows, [("project", "프로젝트"), ("items", "건수")]))
+        print("\n자세히: jv review -p <프로젝트>")
+        return 0
+
+    queue = j.review_queue(args.project, limit=args.limit)
+    if args.json:
+        _out(queue, True)
+        return 0
+    if not queue:
+        print(f"'{args.project}' 에 확인할 것이 없습니다.")
+        return 0
+
+    print(f"'{args.project}' 확인 필요 {len(queue)}건 — 위쪽이 더 시급합니다\n")
+    for item in queue:
+        labels = " ".join(REASON_LABEL.get(r, (r, ""))[0] for r in item["reasons"])
+        print(f"[{labels}] {item['category']}/{item['title']}")
+        print(f"  {item['abstract'][:110]}")
+        meta = (
+            f"  출처={'직접 작성' if item['origin'] == 'manual' else '에이전트'}"
+            f" 신뢰={item['confidence']} 사용={item['uses']}회"
+        )
+        if item["avg_score"] is not None:
+            meta += f" 평균점수={item['avg_score']}"
+        print(meta)
+        if item["conflict"]:
+            c = item["conflict"]
+            print(f"  기존: {c['existing'][:80]}")
+            print(f"  유입: {c['incoming'][:80]}")
+        print(f"  {item['uri']}")
+        print()
+    print("확인: jv mem confirm <uri>   |   수정: jv mem edit <uri> --statement '...'")
+    print("보관: jv mem forget <uri>    |   파일을 직접 편집한 뒤 jv reindex 도 가능합니다")
+    return 0
+
+
+def cmd_mem_confirm(args, j: Jarvis) -> int:
+    try:
+        res = j.confirm_memory(args.uri, args.confidence)
+    except KeyError as exc:
+        print(f"오류: {exc.args[0]}", file=sys.stderr)
+        return 1
+    print(f"확인했습니다. 신뢰도 {res['confidence']:.2f}")
+    return 0
+
+
+def cmd_mem_edit(args, j: Jarvis) -> int:
+    body = _read_text_arg(args.body, args.file) if (args.body or args.file) else None
+    try:
+        res = j.edit_memory(
+            args.uri,
+            title=args.title,
+            statement=args.statement,
+            body=body,
+            category=args.category,
+            tags=args.tag,
+            confidence=args.confidence,
+        )
+    except KeyError as exc:
+        print(f"오류: {exc.args[0]}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    print(f"수정했습니다: {res['uri']}")
+    if res["moved_from"]:
+        print(f"  (이동: {res['moved_from']})")
+    return 0
+
+
+def cmd_mem_show(args, j: Jarvis) -> int:
+    d = j.memory_detail(args.uri)
+    if d is None:
+        print("없는 메모리입니다.")
+        return 1
+    if args.json:
+        _out(d, True)
+        return 0
+    print(f"# {d['title']}   [{d['category']}]")
+    print(
+        f"출처={'직접 작성' if d['origin'] == 'manual' else '에이전트'} "
+        f"확인={'예' if d['reviewed'] else '아니오'} 신뢰={d['confidence']} "
+        f"사용={d['hits']}회 · 작업 {d['impact']['uses']}건에 포함"
+    )
+    if d["reasons"]:
+        labels = ", ".join(REASON_LABEL.get(r, (r, ""))[0] for r in d["reasons"])
+        print(f"확인 필요: {labels}")
+    if d["conflict"]:
+        print(f"\n기존: {d['conflict']['existing']}")
+        print(f"유입: {d['conflict']['incoming']}")
+    print(f"\n요약(L0): {d['abstract']}")
+    print(f"\n본문(L2):\n{d['body']}")
+    print(f"\n토큰 L0={d['tokens']['l0']} L1={d['tokens']['l1']} L2={d['tokens']['l2']}")
+    print(f"파일: {d['path']}")
+    if d["sources"]:
+        print("출처 세션: " + ", ".join(d["sources"][-3:]))
+    return 0
+
+
 # --------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -1105,6 +1237,23 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-c", "--category")
     s.add_argument("--limit", type=int, default=100)
     s.set_defaults(func=cmd_mem_list)
+    s = msub.add_parser("show", help="메모리 상세 (출처·검토 상태·기여도)")
+    s.add_argument("uri")
+    s.set_defaults(func=cmd_mem_show)
+    s = msub.add_parser("confirm", help="이 메모리가 맞다고 확인 (검토 큐에서 제거)")
+    s.add_argument("uri")
+    s.add_argument("--confidence", type=float)
+    s.set_defaults(func=cmd_mem_confirm)
+    s = msub.add_parser("edit", help="메모리 수정 (수정하면 확인 처리됩니다)")
+    s.add_argument("uri")
+    s.add_argument("--title")
+    s.add_argument("--statement", help="요약(L0) — 검색에서 먼저 읽히는 문장")
+    s.add_argument("--body", help="본문(L2)")
+    s.add_argument("-f", "--file", help="본문을 파일에서 읽기")
+    s.add_argument("--category")
+    s.add_argument("--tag", action="append")
+    s.add_argument("--confidence", type=float)
+    s.set_defaults(func=cmd_mem_edit)
     s = msub.add_parser("forget", help="메모리 보관/삭제")
     s.add_argument("uri")
     s.add_argument("--purge", action="store_true", help="보관하지 않고 완전 삭제")
@@ -1246,6 +1395,12 @@ def build_parser() -> argparse.ArgumentParser:
     s2.set_defaults(func=cmd_agents)
 
     # observability
+    sp = sub.add_parser("review", help="에이전트가 기록한 것 중 확인이 필요한 항목")
+    proj(sp, required=False)
+    sp.add_argument("--limit", type=int, default=30)
+    sp.add_argument("--summary", action="store_true", help="건수만 요약")
+    sp.set_defaults(func=cmd_review)
+
     sp = sub.add_parser("traces", help="최근 작업 기록")
     proj(sp, required=False)
     sp.add_argument("--limit", type=int, default=25)

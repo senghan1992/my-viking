@@ -38,6 +38,7 @@ _PREF_MARKERS = (
     "always", "never", "prefer", "must", "don't", "do not", "from now on",
 )
 _NEG_MARKERS = ("아니", "안 ", "않", "말고", "하지", "없", "not ", "never", "no ")
+_WORD_RE = re.compile(r"[0-9A-Za-z]+|[가-힣]+|[぀-ヿ㐀-䶿一-鿿]+")
 
 _SYSTEM = (
     "당신은 프로젝트 메모리 증류기입니다. 세션 기록에서 다음 세션에 재사용할 가치가 있는 "
@@ -230,9 +231,11 @@ class Learner:
                     out.append(
                         MemoryCandidate(
                             category=pref_cat,
-                            title=truncate_to_tokens(sent, 12),
+                            title=_title_from(sent),
                             statement=sent,
-                            detail=f"출처 세션: {session.uri}",
+                            # No provenance in the body: `sources` records it,
+                            # and prose here ends up in the regenerated summary.
+                            detail="",
                             confidence=0.6,
                             tags=["규칙"],
                             source=str(session.uri),
@@ -247,9 +250,7 @@ class Learner:
                 out.append(
                     MemoryCandidate(
                         category=cmd_cat,
-                        title=truncate_to_tokens(
-                            question.strip() or session.title, 12
-                        ) or "명령",
+                        title=_title_from(question.strip() or session.title) or "명령",
                         statement=f"{question.strip()[:160]} 에 사용된 명령/코드",
                         detail="\n\n".join(f"```\n{b}\n```" for b in blocks[:3]),
                         confidence=0.5,
@@ -266,7 +267,7 @@ class Learner:
             out.append(
                 MemoryCandidate(
                     category=case_cat,
-                    title=truncate_to_tokens(question.strip() or session.title, 14)
+                    title=_title_from(question.strip() or session.title)
                     or session.uri.name,
                     statement=truncate_to_tokens(
                         f"{question.strip()} → {_lead(answer)}", 120
@@ -285,14 +286,20 @@ class Learner:
     def absorb(
         self, project: str, cand: MemoryCandidate, profile: MemoryProfile
     ) -> tuple[Uri | None, str, bool]:
-        """Fold ``cand`` into memory. Returns (uri, "created"|"merged", conflict)."""
+        """Fold ``cand`` into memory.
+
+        Returns ``(uri, "created"|"merged", needs_review)``. The last flag means
+        the merge put two different claims about one topic in the same file — it
+        does not assert which is right.
+        """
         cat = profile.category(cand.category) or MemoryCategory(name=cand.category)
         target = self._find_similar(project, cand, cat)
 
         if target is not None and cat.cumulative:
             node = self.store.read_node(target)
             if node is not None:
-                conflict = _polarity_differs(node.abstract, cand.statement)
+                clash = _clash_kind(node.abstract, cand.statement)
+                conflict = clash != ""
                 node.body = _append_detail(node.body, cand, conflict)
                 node.confidence = min(1.0, node.confidence + 0.12)
                 node.sources = _add_source(node.sources, cand.source)
@@ -300,12 +307,23 @@ class Learner:
                 if conflict:
                     node.extra["conflict"] = {
                         "at": now_iso(),
+                        "kind": clash,
                         "existing": node.abstract,
                         "incoming": cand.statement,
                     }
-                # Refresh L0/L1 so the summary reflects the accumulated body.
-                abstract, overview = summarize(node.body, node.title, self.llm)
-                node.abstract = abstract or node.abstract
+                if cand.source != "manual":
+                    # New machine-written content landed here, so a previous
+                    # human sign-off no longer covers the whole file.
+                    node.extra["reviewed"] = False
+                # L0 is "what to know at a glance", so for a cumulative
+                # carrier it is the current claim — the newest statement, or the
+                # existing one when the two disagree and a human must choose.
+                # Summarising the accumulated body instead produces a digest of
+                # dated log lines, which is not a headline.
+                if not conflict:
+                    node.abstract = truncate_to_tokens(cand.statement, 100)
+                # L1 does summarise the whole record: that is its job.
+                _abstract, overview = summarize(node.body, node.title, self.llm)
                 node.overview = overview or node.overview
                 self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
                 return node.uri, "merged", conflict
@@ -329,6 +347,10 @@ class Learner:
             if cand.detail
             else cand.statement
         )
+        # Who wrote this decides whether a human still needs to look at it.
+        # You asserting something is not a claim awaiting verification; the
+        # distiller's guess from a transcript is.
+        manual = cand.source == "manual"
         node = Node(
             uri=uri,
             kind=KIND_MEMORY,
@@ -342,6 +364,11 @@ class Learner:
             tags=cand.tags,
             confidence=cand.confidence,
             sources=[cand.source] if cand.source else [],
+            extra={
+                "origin": "manual" if manual else "distilled",
+                "reviewed": manual,
+                "reviewed_at": now_iso() if manual else "",
+            },
         )
         self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
         return uri, "created", False
@@ -535,9 +562,9 @@ def _add_source(sources: list[str], new: str) -> list[str]:
     return out[-20:]  # keep provenance bounded
 
 
-def _append_detail(body: str, cand: MemoryCandidate, conflict: bool) -> str:
+def _append_detail(body: str, cand: MemoryCandidate, needs_review: bool) -> str:
     stamp = now_iso()
-    marker = " ⚠ 기존 내용과 상충" if conflict else ""
+    marker = " ⚠ 기존 내용과 다름 — 확인 필요" if needs_review else ""
     entry = f"- {stamp}{marker}: {cand.statement}"
     if cand.detail:
         entry += f"\n\n{_indent(cand.detail)}"
@@ -556,6 +583,79 @@ def _polarity_differs(a: str, b: str) -> bool:
     na = any(m in la for m in _NEG_MARKERS)
     nb = any(m in lb for m in _NEG_MARKERS)
     return na != nb
+
+
+_TITLE_TRAIL = re.compile(r"[\s?!.,:;·]+$")
+
+
+def _title_from(text: str, max_chars: int = 40) -> str:
+    """A title fit to be a filename and a list row.
+
+    Measured in characters, not tokens: a title is a name, and the token
+    estimator deliberately counts Korean at ~1.5 per syllable, which would clip
+    a perfectly reasonable Korean title to a few words.
+
+    Titles are also the identity of a cumulative memory, so cutting one
+    mid-word both looks broken and makes two distinct memories render as the
+    same row in the review queue.
+    """
+    line = " ".join((text or "").split())
+    if not line:
+        return ""
+    if len(line) <= max_chars:
+        return _TITLE_TRAIL.sub("", line)
+    out: list[str] = []
+    for word in line.split(" "):
+        candidate = " ".join([*out, word])
+        if out and len(candidate) > max_chars:
+            break
+        out.append(word)
+    return _TITLE_TRAIL.sub("", " ".join(out) or line[:max_chars])
+
+
+def _words(text: str) -> list[str]:
+    return _WORD_RE.findall((text or "").lower())
+
+
+def _term_swapped(a: str, b: str) -> bool:
+    """Same sentence with a term substituted — "커밋 메시지는 한글로" vs "... 영어로".
+
+    The negation check cannot see this, and vector similarity is the wrong tool:
+    the longer the sentence, the more a single decisive word is drowned out, so a
+    cosine threshold fires on one phrasing and misses an equivalent one.
+
+    A substitution has a specific shape instead: the two statements share most
+    of their words, and *each* carries a couple the other lacks. If only one
+    side has extra words it is an elaboration, not a disagreement.
+    """
+    wa, wb = set(_words(a)), set(_words(b))
+    if not wa or not wb:
+        return False
+    only_a, only_b = wa - wb, wb - wa
+    if not only_a or not only_b:
+        return False  # one side only elaborates the other
+    shared = len(wa & wb)
+    # Measured against the differing part rather than as a ratio of the whole:
+    # a Jaccard threshold that works for a long sentence rejects the same single
+    # swap in a three-word one.
+    return (
+        len(only_a) <= 2
+        and len(only_b) <= 2
+        and shared >= max(len(only_a), len(only_b))
+    )
+
+
+def _clash_kind(existing: str, incoming: str) -> str:
+    """Name the kind of textual contradiction, or "" if none is detectable.
+
+    Both checks are textual. Neither reads meaning — a semantic contradiction
+    with no shared wording needs the LLM extractor to catch it.
+    """
+    if _polarity_differs(existing, incoming):
+        return "negation"
+    if _term_swapped(existing, incoming):
+        return "substitution"
+    return ""
 
 
 def _days_since(iso: str, now: datetime) -> int:

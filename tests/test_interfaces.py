@@ -314,6 +314,7 @@ def test_every_post_route_parses_its_body(client):
         "/aliases": {"alias": "github.com/me/app", "project": "app"},
         "/resolve": {"project": "app"},
         "/keys": {"name": "test-key"},
+        "/memories/confirm": {"uri": "jarvis://projects/app/memories/commands/t"},
         "/reindex": None,
     }
     posts = [

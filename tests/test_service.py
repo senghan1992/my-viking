@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from jarvis.tokens import estimate_tokens
 
 
@@ -99,3 +103,128 @@ def test_stats_covers_global_and_projects(coding):
     assert "app" in stats and "global" in stats
     assert stats["app"]["total_nodes"] >= 1
     assert stats["app"]["profile"] == "coding"
+
+
+# ----- curation: the review-and-fix loop -----------------------------------
+def test_manual_memories_need_no_review(coding):
+    coding.remember("app", "commands", "테스트", "pytest -q 로 돌린다")
+    queue = coding.review_queue("app")
+    assert queue == [], "직접 쓴 메모리가 검토 큐에 올랐습니다"
+
+
+def test_distilled_memories_wait_for_confirmation(coding):
+    coding.commit("app", "빌드는 어떻게?", "make build 를 실행하세요.")
+    queue = coding.review_queue("app")
+    assert queue
+    assert all("unconfirmed" in it["reasons"] for it in queue)
+    assert all(it["origin"] == "distilled" for it in queue)
+
+
+def test_confirm_removes_from_queue_and_raises_confidence(coding):
+    coding.commit("app", "빌드는 어떻게?", "make build")
+    item = coding.review_queue("app")[0]
+    res = coding.confirm_memory(item["uri"])
+    assert res["confidence"] >= 0.85
+    assert item["uri"] not in [i["uri"] for i in coding.review_queue("app")]
+
+
+def test_edit_counts_as_review_and_can_move_category(coding):
+    coding.commit("app", "앞으로 주석은 항상 한글로", "네")
+    item = [i for i in coding.review_queue("app") if i["category"] == "cases"][0]
+    res = coding.edit_memory(
+        item["uri"],
+        title="주석 언어",
+        statement="주석은 한글로 쓴다",
+        category="conventions",
+    )
+    assert res["uri"].endswith("memories/conventions/주석-언어")
+    assert res["moved_from"] == item["uri"]
+    # The old location is gone, not duplicated.
+    assert coding.store.read_node(item["uri"]) is None
+    detail = coding.memory_detail(res["uri"])
+    assert detail["reviewed"] is True
+    assert detail["abstract"] == "주석은 한글로 쓴다"
+    assert res["uri"] not in [i["uri"] for i in coding.review_queue("app")]
+
+
+def test_edit_rejects_a_category_the_profile_lacks(coding):
+    coding.remember("app", "commands", "테스트", "pytest -q")
+    uri = coding.memories("app")[0]["uri"]
+    with pytest.raises(ValueError, match="카테고리"):
+        coding.edit_memory(uri, category="없는카테고리")
+
+
+def test_edited_memory_is_actually_retrieved_with_new_text(coding):
+    uri = coding.remember("app", "commands", "배포", "make deploy 로 배포한다")
+    coding.edit_memory(str(uri), statement="배포는 스크립트 scripts/deploy.sh 로 한다",
+                       body="scripts/deploy.sh --env prod")
+    packed = coding.retriever.pack("배포 방법", "app")
+    assert "scripts/deploy.sh" in packed.text
+    assert "make deploy" not in packed.text
+
+
+def test_frequently_used_but_never_scored_is_flagged_unproven(coding):
+    coding.remember("app", "commands", "테스트", "pytest -q 로 돌린다")
+    for _ in range(3):
+        coding.prepare("app", "테스트 실행 방법", use_cache=False)
+    reasons = {r for it in coding.review_queue("app") for r in it["reasons"]}
+    assert "unproven" in reasons
+
+
+def test_low_scoring_memory_is_flagged_harmful(coding):
+    coding.remember("app", "commands", "틀린 배포", "make deploy 로 배포한다", confidence=0.9)
+    prepared = coding.prepare("app", "배포 방법", use_cache=False)
+    coding.score(prepared.trace_id, "helpfulness", 0.0, comment="그런 명령 없음")
+    reasons = {r for it in coding.review_queue("app") for r in it["reasons"]}
+    assert "harmful" in reasons
+
+
+def test_review_summary_counts_across_projects(jarvis):
+    jarvis.init_project("a", template="coding")
+    jarvis.init_project("b", template="coding")
+    jarvis.commit("a", "질문1", "답1")
+    jarvis.commit("b", "질문2", "답2")
+    summary = jarvis.review_summary()
+    assert summary["total"] == summary["projects"]["a"]["items"] + summary["projects"]["b"]["items"]
+    assert summary["by_reason"]["unconfirmed"] >= 2
+
+
+def test_memory_detail_exposes_provenance_and_file_path(coding):
+    coding.commit("app", "웹훅 검증은 어디서?", "webhooks/verify.py 에서 HMAC 검증")
+    item = coding.review_queue("app")[0]
+    d = coding.memory_detail(item["uri"])
+    assert d["origin"] == "distilled"
+    assert d["sources"], "출처 세션이 기록되지 않았습니다"
+    assert d["path"].endswith(".md")
+    assert Path(d["path"]).exists()
+    assert d["tokens"]["l0"] <= d["tokens"]["l2"]
+
+
+def test_archived_memory_leaves_the_queue(coding):
+    coding.commit("app", "질문", "답변")
+    item = coding.review_queue("app")[0]
+    coding.forget(item["uri"], archive=True)
+    assert item["uri"] not in [i["uri"] for i in coding.review_queue("app")]
+
+
+def test_accumulated_memory_keeps_a_clean_one_line_summary(coding):
+    """L0 is a headline. A carrier that has accumulated dated observations must
+    not surface its own change log as its summary."""
+    coding.commit("app", "앞으로 주석은 항상 한글로 써줘", "네")
+    coding.commit("app", "앞으로 주석은 항상 한글로 쓰고 존댓말은 쓰지 마", "네")
+    for mem in coding.memories("app"):
+        d = coding.memory_detail(mem["uri"])
+        assert "## " not in d["abstract"], d["abstract"]
+        assert "Observations" not in d["abstract"]
+        assert "\n" not in d["abstract"].strip()
+        # The full record is still there at L2.
+        assert d["tokens"]["l2"] >= d["tokens"]["l0"]
+
+
+def test_conflict_keeps_the_original_headline_for_the_human_to_decide(coding):
+    coding.commit("app", "앞으로 커밋 메시지는 항상 한글로 써줘", "네")
+    coding.commit("app", "앞으로 커밋 메시지는 항상 영어로 써줘", "네")
+    item = [i for i in coding.review_queue("app") if "conflict" in i["reasons"]][0]
+    # The incoming claim must not silently become the headline.
+    assert "한글" in item["abstract"]
+    assert "영어" in coding.memory_detail(item["uri"])["body"]
