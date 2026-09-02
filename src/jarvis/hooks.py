@@ -373,9 +373,10 @@ def _clip(text: Any, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def _orientation(project: str, brief: dict[str, Any]) -> str:
+def _orientation(project: str, brief: dict[str, Any], tail: str = "") -> str:
     """The session-start read: recent work first, because "what was I doing"
-    is the question a returning session actually has."""
+    is the question a returning session actually has. ``tail`` swaps the
+    closing guidance — the hook and the shell bridge end differently."""
     lines = [f"[MyViking] '{project}' — 이 프로젝트에 대해 이미 축적된 내용입니다."]
 
     threads = brief.get("open_threads") or []
@@ -411,9 +412,10 @@ def _orientation(project: str, brief: dict[str, Any]) -> str:
             lines.append(f"- {_clip(m.get('title'), 60)} ({', '.join(m.get('reasons') or [])})")
 
     if len(lines) == 1:
-        lines.append("아직 기록이 없습니다. 지금부터의 작업이 자동으로 축적됩니다.")
+        lines.append("아직 기록이 없습니다. 지금부터의 작업이 축적됩니다.")
     lines.append(
-        "위 내용은 이미 확인된 사실이니 다시 조사하지 말고 여기서 시작하세요. "
+        tail
+        or "위 내용은 이미 확인된 사실이니 다시 조사하지 말고 여기서 시작하세요. "
         "작업 기록은 자동으로 수집됩니다. 새로 확정된 규칙·명령·함정은 jarvis_remember 로 남기세요."
     )
     return "\n".join(lines)

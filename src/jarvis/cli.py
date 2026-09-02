@@ -879,6 +879,150 @@ def cmd_hook(args, j: Jarvis | None = None) -> int:
 cmd_hook.no_jarvis = True  # type: ignore[attr-defined]
 
 
+# ----- remote (shell bridge) -------------------------------------------------
+# The universal adapter: agents that speak neither MCP nor hooks can still run
+# shell commands. Errors here must be *loud* (exit 1, message on stderr) —
+# unlike the hooks, an agent reads this output and should notice a failure.
+def _remote(args):
+    import os
+
+    from . import remote
+
+    url = args.url or os.environ.get("MYVIKING_URL", "")
+    key = args.key or os.environ.get("MYVIKING_KEY", "")
+    if not url:
+        raise SystemExit(
+            "서버 주소가 없습니다. --url 을 주거나 MYVIKING_URL 을 설정하세요."
+        )
+    return remote.client_for(url, key)
+
+
+def _remote_project(client, args, create: bool = False) -> str:
+    import os
+
+    return client.resolve_or_fail(
+        project=args.project or "",
+        repo=getattr(args, "repo", "") or "",
+        path=os.getcwd(),
+        create=create,
+    )
+
+
+def cmd_remote_brief(args, j: Jarvis | None = None) -> int:
+    from .hooks import _orientation
+
+    try:
+        client = _remote(args)
+        project = _remote_project(client, args)
+        brief = client.brief(project)
+    except Exception as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    print(_orientation(project, brief, tail=(
+        "위 내용은 이미 확인된 사실이니 다시 조사하지 말고 여기서 시작하세요. "
+        "작업 전에 `jv remote ctx \"<하려는 일>\"` 로 관련 컨텍스트를 받으세요."
+    )))
+    return 0
+
+
+cmd_remote_brief.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_remote_ctx(args, j: Jarvis | None = None) -> int:
+    import os
+
+    from .remote import format_context
+
+    try:
+        client = _remote(args)
+        prepared = client.context(
+            args.question,
+            project=args.project or "",
+            repo=args.repo or "",
+            path=os.getcwd(),
+            agent=args.agent or "",
+            session_id=args.session or "",
+            max_tier=args.max_tier,
+            use_cache=not args.no_cache,
+        )
+    except Exception as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        _out(prepared, True)
+        return 0
+    print(format_context(prepared))
+    return 0
+
+
+cmd_remote_ctx.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_remote_commit(args, j: Jarvis | None = None) -> int:
+    answer = _read_text_arg(args.answer, None)
+    try:
+        client = _remote(args)
+        project = _remote_project(client, args, create=True)
+        res = client.commit(
+            project,
+            args.question,
+            answer,
+            trace_id=args.trace or "",
+            outcome=args.outcome or "",
+            model=args.model or "",
+            latency_ms=args.latency_ms,
+            agent=args.agent or "",
+        )
+    except Exception as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    distilled = res.get("distill") or {}
+    print(f"기록했습니다: {res.get('session', '')}")
+    if distilled.get("created") or distilled.get("merged"):
+        print(
+            f"증류: 신규 {len(distilled.get('created') or [])}"
+            f" · 병합 {len(distilled.get('merged') or [])}"
+        )
+    return 0
+
+
+cmd_remote_commit.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_remote_remember(args, j: Jarvis | None = None) -> int:
+    try:
+        client = _remote(args)
+        project = _remote_project(client, args, create=True)
+        res = client.remember(
+            project, args.category, args.title, args.statement, detail=args.detail or ""
+        )
+    except Exception as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    print(f"기억했습니다: {res.get('uri', '')}")
+    return 0
+
+
+cmd_remote_remember.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_remote_score(args, j: Jarvis | None = None) -> int:
+    try:
+        client = _remote(args)
+        res = client.score(
+            args.trace_id, args.value, name=args.name, comment=args.comment or ""
+        )
+    except Exception as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    adjusted = res.get("memories_adjusted") or []
+    print(f"반영했습니다 (신뢰도 조정 {len(adjusted)}건)")
+    return 0
+
+
+cmd_remote_score.no_jarvis = True  # type: ignore[attr-defined]
+
+
 # ----- backup ---------------------------------------------------------------
 def _backup_manager(args):
     from .backup import BackupManager
@@ -1786,6 +1930,56 @@ def build_parser() -> argparse.ArgumentParser:
     s2.set_defaults(func=cmd_agent_hooks)
     s2 = asub.add_parser("list", help="연결된 에이전트 목록")
     s2.set_defaults(func=cmd_agents)
+
+    # remote — the shell bridge for agents without MCP or hooks
+    sp = sub.add_parser(
+        "remote",
+        help="원격 서버를 셸 명령으로 사용 (MCP 없는 에이전트용 브리지)",
+    )
+    rsub = sp.add_subparsers(dest="sub", required=True)
+
+    def remote_common(s: Any, with_repo: bool = True) -> None:
+        s.add_argument("--url", default="", help="서버 주소 (기본 $MYVIKING_URL)")
+        s.add_argument("--key", default="", help="API 키 (기본 $MYVIKING_KEY)")
+        s.add_argument("-p", "--project", help="프로젝트 이름 (생략하면 cwd 의 git remote 로 해석)")
+        if with_repo:
+            s.add_argument("--repo", default="", help="git remote URL 직접 지정")
+
+    s2 = rsub.add_parser("brief", help="세션 시작: 프로젝트 파악 (최근 작업·주의·미해결)")
+    remote_common(s2)
+    s2.set_defaults(func=cmd_remote_brief)
+    s2 = rsub.add_parser("ctx", help="작업 전: 축적된 컨텍스트 받기 (trace_id 포함)")
+    s2.add_argument("question")
+    remote_common(s2)
+    s2.add_argument("--agent", default="", help="에이전트 식별자 (예: pi@laptop)")
+    s2.add_argument("--session", default="", help="세션 ID (생략하면 에이전트+날짜)")
+    s2.add_argument("--max-tier", type=int, default=2, choices=[0, 1, 2])
+    s2.add_argument("--no-cache", action="store_true")
+    s2.set_defaults(func=cmd_remote_ctx)
+    s2 = rsub.add_parser("commit", help="작업 후: 질문·답변 기록 (증류까지)")
+    s2.add_argument("question")
+    s2.add_argument("answer", help="답변 요약 ('-' 는 stdin)")
+    remote_common(s2)
+    s2.add_argument("--trace", default="", help="ctx 가 준 trace_id")
+    s2.add_argument("--outcome", default="")
+    s2.add_argument("--model", default="")
+    s2.add_argument("--latency-ms", type=int, default=0)
+    s2.add_argument("--agent", default="")
+    s2.set_defaults(func=cmd_remote_commit)
+    s2 = rsub.add_parser("remember", help="확정된 지식 기록")
+    s2.add_argument("category")
+    s2.add_argument("title")
+    s2.add_argument("statement")
+    remote_common(s2)
+    s2.add_argument("--detail", default="", help="명령·경로·오류 메시지 원문")
+    s2.set_defaults(func=cmd_remote_remember)
+    s2 = rsub.add_parser("score", help="결과 평가 (사용된 지식의 신뢰도 조정)")
+    s2.add_argument("trace_id")
+    s2.add_argument("value", type=float, help="0=틀림, 0.5=보통, 1=도움됨")
+    remote_common(s2, with_repo=False)
+    s2.add_argument("--name", default="helpfulness")
+    s2.add_argument("--comment", default="")
+    s2.set_defaults(func=cmd_remote_score)
 
     # backup — the copy that survives losing the volume
     sp = sub.add_parser("backup", help="서버 밖 백업 (Google Drive / 디렉터리)")

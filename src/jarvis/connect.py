@@ -20,7 +20,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-CLIENTS = ("claude-code", "cursor", "codex", "mcp-json")
+CLIENTS = ("claude-code", "cursor", "codex", "mcp-json", "shell")
 
 # Claude Code hook events → `jv hook` subcommands. Hooks are what make capture
 # unconditional: the client runs them whether or not the agent remembers the
@@ -128,6 +128,35 @@ INSTRUCTIONS = """이 저장소에서 작업할 때는 MyViking 을 프로젝트
 
 모르는 것을 추측해서 기록하지 않는다. 확인된 것만 남긴다."""
 
+# The lowest common denominator: an agent that supports neither MCP nor hooks
+# can still run shell commands, and that is every coding agent there is. The
+# loop is the same; only the verbs change.
+INSTRUCTIONS_SHELL = """이 저장소에서 작업할 때는 MyViking 을 셸 명령으로 사용한다.
+(MYVIKING_URL / MYVIKING_KEY 환경변수가 설정되어 있어야 한다.)
+
+0. 세션을 시작할 때 먼저 실행한다:
+       jv remote brief
+   최근 작업·주의사항·미해결이 나온다. 저장소를 처음부터 훑지 말고 여기서 시작한다.
+
+1. 개별 작업을 시작하기 전에 실행한다:
+       jv remote ctx "지금 하려는 작업 한 줄"
+   - 출력된 컨텍스트는 이 프로젝트에서 이미 확인된 사실이다. 다시 조사하지 않는다.
+   - ⚠ 주의 항목을 거스르는 제안은 하지 않는다.
+   - 첫 줄의 trace_id 를 기억해 둔다.
+   - "전에 같은 질문에 답했습니다" 가 나오면 유효한지만 확인하고 재사용한다.
+
+2. 작업 중 새로 확정된 규칙·명령·함정은 즉시 남긴다:
+       jv remote remember <카테고리> "<제목>" "<한두 문장>" --detail "<명령·오류 원문>"
+   같은 지식은 항상 같은 제목으로 (한 파일에 누적된다).
+
+3. 작업을 마치면 기록한다:
+       jv remote commit "<질문>" "<답변 요약>" --trace <trace_id>
+
+4. 사용자가 만족했거나 수정을 요구했으면 평가한다:
+       jv remote score <trace_id> <0..1> --comment "<무엇이 좋았/틀렸나>"
+
+모르는 것을 추측해서 기록하지 않는다. 확인된 것만 남긴다."""
+
 # What the agent is asked to do once hooks capture the mechanical half.
 # Context arrives injected, every exchange is committed automatically, so the
 # instructions shrink to the two things only the agent can judge: what got
@@ -204,6 +233,15 @@ def build(
     elif client == "codex":
         setup = f"[mcp_servers.{name}]\nurl = \"{mcp_url}\"{_toml_headers(key)}"
         kind, where = "toml", "~/.codex/config.toml 에 넣으세요."
+    elif client == "shell":
+        # No MCP endpoint at all: the agent shells out to `jv remote ...`.
+        key_line = f"export MYVIKING_KEY={key}\n" if key else ""
+        setup = (
+            "pip install my-viking          # 코어만 설치됩니다 (의존성: PyYAML 하나)\n"
+            f"export MYVIKING_URL={base}\n"
+            f"{key_line}jv remote brief                # 연결 확인"
+        )
+        kind, where = "shell", "에이전트가 도는 머신의 셸 프로파일에 넣으세요."
     else:  # mcp-json — 그 외 MCP 클라이언트 공통 형식
         setup = (
             "{\n"
@@ -223,7 +261,9 @@ def build(
         setup=setup,
         setup_kind=kind,
         where=where,
-        instructions=INSTRUCTIONS.format(project=proj),
+        instructions=(
+            INSTRUCTIONS_SHELL if client == "shell" else INSTRUCTIONS.format(project=proj)
+        ),
         has_key=bool(key),
         hooks_setup=hooks_setup,
         hooks_where=hooks_where,
@@ -238,4 +278,5 @@ def instruction_file(client: str) -> str:
         "cursor": ".cursorrules",
         "codex": "AGENTS.md",
         "mcp-json": "에이전트 지시문 파일",
+        "shell": "AGENTS.md (또는 그 에이전트의 지시문 파일)",
     }.get(client, "에이전트 지시문 파일")
