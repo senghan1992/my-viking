@@ -183,6 +183,37 @@ def test_scoped_key_cannot_create_a_project_outside_its_scope(client):
     ).status_code == 403
 
 
+def test_scoped_key_creates_its_own_project_through_a_repo_resolve(client):
+    """가장 흔한 배포는 프로젝트 스코프 키다. 훅은 이름 없이 repo/path 로만
+    해석하는데, 이름 없는 생성을 전부 막으면 그 키로는 캡처가 조용히 시작되지
+    못한다. repo 가 자기 범위 안 슬러그로 매핑되면 스스로 만들 수 있어야 한다."""
+    key = client.post(
+        "/keys", json={"name": "only-blog", "projects": ["blog"]}
+    ).json()["key"]
+    hdr = {"authorization": f"Bearer {key}"}
+
+    # 아직 존재하지 않는 blog 를, repo 만 가리켜도 스스로 만든다 (훅 캡처 경로).
+    res = client.post(
+        "/resolve",
+        json={"repo": "github.com/me/blog", "create": True},
+        headers=hdr,
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["project"] == "blog"
+
+    # 하지만 범위 밖 슬러그로 매핑되는 repo 는 여전히 못 만든다.
+    outside = client.post(
+        "/resolve",
+        json={"repo": "github.com/me/secret", "create": True},
+        headers=hdr,
+    )
+    # 범위 밖 생성 거절: 만들지 않거나(빈 project) 가드가 403.
+    if outside.status_code == 200:
+        assert not outside.json()["project"]
+    else:
+        assert outside.status_code == 403
+
+
 def test_scoped_key_cannot_read_cross_project_aggregates(client):
     """project 를 비우면 metrics·traces·agents 등은 전 프로젝트를 가로지른다 —
     스코프 키는 반드시 자기 프로젝트를 지정해야 하고, 비우면 거절된다."""

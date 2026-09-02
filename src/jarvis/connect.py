@@ -17,7 +17,9 @@ not call them, and the knowledge base stays empty.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 CLIENTS = ("claude-code", "cursor", "codex", "mcp-json", "shell")
@@ -33,15 +35,30 @@ HOOK_EVENTS = (
 )
 
 
+def _in_container() -> bool:
+    """Are we generating this config inside the server's container?
+
+    The dashboard and `jv agent config` run server-side; in the Docker
+    deployment that is a different machine from where the agent runs."""
+    return os.environ.get("MYVIKING_IN_CONTAINER") == "1" or Path("/.dockerenv").exists()
+
+
 def _jv_command() -> str:
     """The `jv` invocation to bake into hooks. A coding agent's hooks run in a
     non-login shell (often GUI-launched) whose PATH may not include the pipx /
     `pip install --user` bin dir, so a bare `jv` silently fails to start and
     capture quietly never happens. Resolve the absolute path when we can see it
-    at config time; fall back to `jv` when we cannot (e.g. generated somewhere
-    other than where the agent runs)."""
+    at config time.
+
+    But when this is generated *inside the server container* (dashboard / `jv
+    agent config` on the server), the absolute path is the container's, and the
+    agent runs on another machine where it does not exist — baking it there is
+    worse than a bare `jv`. So emit `jv` in that case; running `jv agent hooks
+    --install` on the agent's own machine rewrites it to that machine's path."""
     import shutil
 
+    if _in_container():
+        return "jv"
     return shutil.which("jv") or "jv"
 
 

@@ -21,6 +21,11 @@ RUN pip install --no-cache-dir "$(ls /tmp/*.whl)[server]" numpy \
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# 대시보드·jv agent config 가 컨테이너 안에서 훅 JSON 을 생성할 때, 이 컨테이너의
+# 절대경로(jv)는 에이전트 머신에 존재하지 않는다. 이 표식이 있으면 맨 `jv` 를 굽고,
+# 에이전트 머신에서 `jv agent hooks --install` 이 로컬 절대경로로 다시 쓴다.
+ENV MYVIKING_IN_CONTAINER=1
+
 # 컨텍스트 DB 를 root 로 굴릴 이유가 없습니다. 이름 있는 볼륨은 첫 마운트 때
 # 이미지 안 디렉터리의 소유권을 물려받으므로, 여기서 미리 잡아둡니다.
 ENV JARVIS_HOME=/data

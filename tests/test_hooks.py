@@ -423,3 +423,89 @@ def test_hook_failures_leave_breadcrumbs(repo_dir, state_dir, transport):
     res2 = health_check(transport, state_dir=state_dir)
     assert res2["server_ok"] is True
     assert "user-prompt-submit" in res2["last_ok"]
+
+
+def test_installed_events_reports_missing_when_settings_absent(tmp_path):
+    from jarvis.hooks import installed_events
+
+    res = installed_events(tmp_path)
+    assert res["exists"] is False
+    assert res["installed"] == []
+    assert set(res["missing"]) == {"SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"}
+
+
+def test_installed_events_sees_the_wired_hooks(tmp_path):
+    from jarvis.connect import hook_settings
+    from jarvis.hooks import installed_events
+
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        json.dumps(hook_settings("http://localhost:8787")), encoding="utf-8"
+    )
+
+    res = installed_events(tmp_path)
+    assert res["exists"] is True
+    assert set(res["installed"]) == {
+        "SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"
+    }
+    assert res["missing"] == []
+
+
+def test_installed_events_flags_a_partial_install(tmp_path):
+    from jarvis.hooks import installed_events
+
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command": "jv hook session-start"}]}
+                    ],
+                    # 다른 사람 훅은 있으나 우리 것은 아니다 — 설치로 세지 않는다.
+                    "Stop": [{"hooks": [{"type": "command", "command": "echo hi"}]}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    res = installed_events(tmp_path)
+    assert res["installed"] == ["SessionStart"]
+    assert "Stop" in res["missing"] and "UserPromptSubmit" in res["missing"]
+
+
+def test_installed_events_survives_broken_json(tmp_path):
+    from jarvis.hooks import installed_events
+
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text("{not json", encoding="utf-8")
+
+    res = installed_events(tmp_path)
+    assert "error" in res
+    assert res["installed"] == []
+
+
+def test_container_bakes_bare_jv_not_a_container_path(monkeypatch):
+    """서버 컨테이너 안에서 config 를 만들면, 그 절대경로는 에이전트 머신에
+    없다. 컨테이너 표식이 있으면 맨 jv 를 굽고, 에이전트 머신에서 --install 이
+    로컬 경로로 다시 쓴다."""
+    import shutil
+
+    from jarvis import connect
+
+    monkeypatch.setenv("MYVIKING_IN_CONTAINER", "1")
+    settings = connect.hook_settings("http://server:8787")
+    cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert " jv hook session-start" in cmd
+
+    # 컨테이너가 아니면 절대경로를 굽는다 (에이전트 머신의 비로그인 셸 PATH 문제).
+    monkeypatch.delenv("MYVIKING_IN_CONTAINER", raising=False)
+    monkeypatch.setattr(connect.Path, "exists", lambda self: False)
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/local/bin/jv")
+    settings = connect.hook_settings("http://server:8787")
+    cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert "/usr/local/bin/jv hook session-start" in cmd

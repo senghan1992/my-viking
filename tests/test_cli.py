@@ -61,6 +61,22 @@ def test_strict_render_fails_cleanly(jv, capsys):
     assert "누락" in capsys.readouterr().err
 
 
+def test_link_warns_when_a_remote_server_is_configured(jv, capsys, monkeypatch, tmp_path):
+    """MYVIKING_URL 이 걸린 머신에서 jv link 는 로컬 저장소에만 심긴다 — 서버는
+    모른다. 조용히 성공하면 사용자는 연결됐다 착각한다. 경고하고 방향을 알린다."""
+    monkeypatch.setenv("MYVIKING_URL", "http://server:8787")
+    jv("link", "-p", "app", "--repo", "github.com/me/app", "--path", str(tmp_path))
+    err = capsys.readouterr().err
+    assert "MYVIKING_URL" in err
+    assert "jv remote link" in err
+
+
+def test_link_is_quiet_without_a_remote_server(jv, capsys, monkeypatch, tmp_path):
+    monkeypatch.delenv("MYVIKING_URL", raising=False)
+    jv("link", "-p", "app", "--repo", "github.com/me/app", "--path", str(tmp_path))
+    assert "MYVIKING_URL" not in capsys.readouterr().err
+
+
 def test_mem_add_list_and_forget(jv, capsys):
     jv("init", "app", "-t", "coding")
     jv("mem", "add", "-p", "app", "commands", "테스트", "pytest -q 로 돌린다")

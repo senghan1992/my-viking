@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -754,7 +755,21 @@ def _git_remote(path: str = ".") -> str:
 
 
 def cmd_link(args, j: Jarvis) -> int:
-    """Bind this checkout to a project so any agent here resolves to it."""
+    """Bind this checkout to a project so any agent here resolves to it.
+
+    Local store only: the alias lands in *this machine's* ~/.jarvis, not on a
+    remote server. On a machine that talks to a server (MYVIKING_URL set), that
+    binding is almost never what you want — the agents resolve against the
+    server, which never learns of it. So say so and point at `jv remote link`.
+    """
+    remote_url = os.environ.get("MYVIKING_URL", "")
+    if remote_url:
+        print(
+            f"주의: MYVIKING_URL={remote_url} 이 설정돼 있습니다.\n"
+            "  jv link 는 이 머신의 로컬 저장소에만 별칭을 심습니다 — 서버는 모릅니다.\n"
+            "  서버에 연결하려면:  jv remote link --repo <git remote URL> -p <프로젝트>",
+            file=sys.stderr,
+        )
     target = str(Path(args.path or ".").resolve())
     repo = args.repo or _git_remote(target)
     project = args.project or (
@@ -823,14 +838,23 @@ def cmd_agent_hooks(args, j: Jarvis | None = None) -> int:
     from .connect import hook_settings
 
     if args.check:
-        from .hooks import HttpTransport, health_check
+        from .connect import HOOK_EVENTS
+        from .hooks import HttpTransport, health_check, installed_events
 
         url = os.environ.get("MYVIKING_URL", "") or args.url
         key = args.key or os.environ.get("MYVIKING_KEY", "")
         res = health_check(HttpTransport(url, key), state_dir=args.state_dir or None)
+        res["hooks"] = installed_events(args.path or ".")
         if args.json:
             _out(res, True)
             return 0 if res["server_ok"] else 1
+        hk = res["hooks"]
+        if not hk["exists"]:
+            print(f"훅 설치    안 됨 ({hk['path']} 없음) — `jv agent hooks --install` 로 설치하세요")
+        elif hk["missing"]:
+            print(f"훅 설치    일부 ({len(hk['installed'])}/{len(HOOK_EVENTS)}) — 누락: {', '.join(hk['missing'])}")
+        else:
+            print(f"훅 설치    완료 (이벤트 {len(hk['installed'])}개 모두)")
         if res["server_ok"]:
             srv = res["server"]
             print(f"서버       연결됨 ({url} · v{srv.get('version')} · 프로젝트 {srv.get('projects')}개)")
@@ -1991,7 +2015,10 @@ def build_parser() -> argparse.ArgumentParser:
     s2.set_defaults(func=cmd_key_revoke)
 
     # link / agent
-    sp = sub.add_parser("link", help="현재 저장소를 프로젝트에 연결 (git remote/경로 기준)")
+    sp = sub.add_parser(
+        "link",
+        help="현재 저장소를 프로젝트에 연결 — 로컬 저장소 전용 (원격 서버는 jv remote link)",
+    )
     sp.add_argument("-p", "--project", help="프로젝트 이름 (생략하면 remote 에서 추론)")
     sp.add_argument("--path", help="연결할 경로 (기본 현재 디렉터리)")
     sp.add_argument("--repo", help="git remote URL 직접 지정")

@@ -407,17 +407,30 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
             raise HTTPException(403, "키 관리는 전체 접근 키만 가능합니다")
 
     def _resolve_guarded(request: Request, body) -> dict[str, Any]:
-        """Resolve a project for a route that may create one, honouring scope:
-        a scoped key never invents a project by repo/path guessing and may
-        create one only when it is explicitly named and inside its scope."""
+        """Resolve a project for a route that may create one, honouring scope.
+
+        A scoped key must never invent a project *outside* its scope. But hooks
+        resolve by repo/path with no explicit name, so refusing every unnamed
+        creation would quietly kill capture under a project-scoped key — the
+        common deployment. So: an explicit name must be in scope; an unnamed
+        resolve is allowed to create only when the slug the repo/path would map
+        to is itself in scope. Either way the resolved project is guarded, so a
+        scoped key can only ever create the project it is already allowed to see.
+        """
+        from .service import _project_from_alias
+
         info = _scoped_key(request)
         name = body.project or ""
         if info is not None and name:
             _guard(request, name)
         want_create = getattr(body, "create", True)
-        may_create = want_create and (
-            info is None or (bool(name) and info.allows(name))
-        )
+        if info is None:
+            may_create = want_create
+        elif name:
+            may_create = want_create and info.allows(name)
+        else:
+            guess = _project_from_alias(body.repo or body.path or "")
+            may_create = want_create and bool(guess) and info.allows(guess)
         resolved = jarvis.resolve_project(
             name, body.repo, body.path, create=may_create, template=body.template
         )

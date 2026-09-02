@@ -377,8 +377,12 @@ function renderProjects() {
         <span class="chip">${esc(p.template)}</span>
       </div>
       <div class="st" style="margin-top:6px">
-        <span>최근 ${esc(when(p.last_active))}</span>
         ${p.aliases.length ? `<span class="chip">연결됨</span>` : `<span class="chip warn">연결 대기</span>`}
+        ${p.tasks
+          ? `<span class="chip">캡처 중 · 최근 ${esc(when(p.last_active))}</span>`
+          : (p.aliases.length
+              ? `<span class="chip warn">캡처 없음 — 훅 확인 (jv agent hooks --check)</span>`
+              : "")}
       </div>
     </button>`).join("");
   $("projects").querySelectorAll(".proj").forEach((b) =>

@@ -400,6 +400,38 @@ def health_check(transport: Any, state_dir: Path | str | None = None) -> dict[st
     return out
 
 
+def installed_events(project_path: Path | str = ".") -> dict[str, Any]:
+    """Which hook events this checkout's ``.claude/settings.json`` actually wires
+    to ``jv hook``. A server that answers /health says nothing about whether the
+    repo in front of you is even calling the hooks — the most common reason
+    capture silently never starts. This closes that gap for ``--check``."""
+    from .connect import HOOK_EVENTS
+
+    settings_path = Path(project_path) / ".claude" / "settings.json"
+    out: dict[str, Any] = {
+        "path": str(settings_path),
+        "exists": settings_path.exists(),
+        "installed": [],
+        "missing": [event for event, _ in HOOK_EVENTS],
+    }
+    if not settings_path.exists():
+        return out
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        out["error"] = "settings.json 을 읽지 못했습니다 (JSON 오류)"
+        return out
+    hooks = (data or {}).get("hooks", {}) or {}
+    installed = [
+        event
+        for event, _ in HOOK_EVENTS
+        if "jv hook" in json.dumps(hooks.get(event, []))
+    ]
+    out["installed"] = installed
+    out["missing"] = [event for event, _ in HOOK_EVENTS if event not in installed]
+    return out
+
+
 # --------------------------------------------------------------------------
 # transcript parsing (Claude Code JSONL)
 # --------------------------------------------------------------------------
