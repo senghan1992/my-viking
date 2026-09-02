@@ -796,13 +796,87 @@ def cmd_agent_config(args, j: Jarvis) -> int:
     if args.json:
         _out(conn.to_dict(), True)
         return 0
-    print(f"# 1) MCP 연결 — {conn.where}\n")
+    step = 1
+    print(f"# {step}) MCP 연결 — {conn.where}\n")
     print(conn.setup)
-    print(f"\n# 2) 에이전트 지시문 — {instruction_file(args.client)} 에 추가\n")
-    print(conn.instructions)
+    if conn.hooks_setup:
+        step += 1
+        print(f"\n# {step}) 자동 캡처 훅 (권장) — {conn.hooks_where}\n")
+        print(conn.hooks_setup)
+    step += 1
+    print(f"\n# {step}) 에이전트 지시문 — {instruction_file(args.client)} 에 추가\n")
+    if conn.instructions_hooks:
+        print(conn.instructions_hooks)
+        print("\n(훅을 설치하지 않았다면 대신 아래의 수동 지시문을 쓰세요.)\n")
+        print(conn.instructions)
+    else:
+        print(conn.instructions)
     if not conn.has_key:
         print("\n(API 키 없이 생성했습니다. 서버가 인증을 요구하면 --key 를 주세요.)")
     return 0
+
+
+def cmd_agent_hooks(args, j: Jarvis | None = None) -> int:
+    """Print or install the Claude Code hooks that make capture automatic."""
+    from .connect import hook_settings
+
+    settings = hook_settings(args.url, args.key or "")
+    if not args.install:
+        text = json.dumps(settings, ensure_ascii=False, indent=2)
+        if args.json:
+            print(text)
+            return 0
+        print("# 저장소의 .claude/settings.json 에 병합하세요 (또는 --install)\n")
+        print(text)
+        return 0
+
+    target = Path(args.path or ".").resolve() / ".claude" / "settings.json"
+    existing: dict[str, Any] = {}
+    if target.exists():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            print(f"오류: {target} 가 올바른 JSON 이 아닙니다. 직접 병합하세요.", file=sys.stderr)
+            return 1
+    hooks = existing.setdefault("hooks", {})
+    for event, matchers in settings["hooks"].items():
+        # Replace our previous entries (idempotent install), keep everyone else's.
+        kept = [m for m in hooks.get(event, []) if "jv hook" not in json.dumps(m)]
+        hooks[event] = kept + matchers
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"{target} 에 훅을 설치했습니다.")
+    print("이제 이 저장소의 Claude Code 세션은 자동으로 기록되고, 시작할 때 이전 작업을 브리핑받습니다.")
+    return 0
+
+
+cmd_agent_hooks.no_jarvis = True  # type: ignore[attr-defined]
+
+
+def cmd_hook(args, j: Jarvis | None = None) -> int:
+    """Receive one Claude Code hook event on stdin. Always exits 0: a context
+    server being down must never break the coding session it observes."""
+    import os
+
+    from .hooks import HttpTransport, run as run_hook
+
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        payload = {}
+    transport = HttpTransport(
+        args.url or os.environ.get("MYVIKING_URL", ""),
+        args.key or os.environ.get("MYVIKING_KEY", ""),
+    )
+    out = run_hook(args.event, payload, transport, state_dir=args.state_dir)
+    if out:
+        print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+cmd_hook.no_jarvis = True  # type: ignore[attr-defined]
 
 
 # ----- observability ------------------------------------------------------
@@ -1559,8 +1633,25 @@ def build_parser() -> argparse.ArgumentParser:
     s2.add_argument("--key", help="API 키 (인증을 켰다면 필요)")
     s2.add_argument("-p", "--project", help="지시문에 넣을 프로젝트 이름")
     s2.set_defaults(func=cmd_agent_config)
+    s2 = asub.add_parser("hooks", help="Claude Code 자동 캡처 훅 설정 생성/설치")
+    s2.add_argument("--url", default="http://127.0.0.1:8787", help="MyViking 서버 주소")
+    s2.add_argument("--key", help="API 키 (인증을 켰다면 필요)")
+    s2.add_argument("--install", action="store_true", help=".claude/settings.json 에 병합")
+    s2.add_argument("--path", help="설치할 저장소 경로 (기본 현재 디렉터리)")
+    s2.set_defaults(func=cmd_agent_hooks)
     s2 = asub.add_parser("list", help="연결된 에이전트 목록")
     s2.set_defaults(func=cmd_agents)
+
+    # hook — called by the coding agent's hook system, not by people
+    sp = sub.add_parser("hook", help="코딩 에이전트 훅 수신기 (Claude Code hooks 가 stdin 으로 호출)")
+    sp.add_argument(
+        "event",
+        choices=["session-start", "user-prompt-submit", "stop", "session-end"],
+    )
+    sp.add_argument("--url", default="", help="서버 주소 (기본: $MYVIKING_URL 또는 로컬)")
+    sp.add_argument("--key", default="", help="API 키 (기본: $MYVIKING_KEY)")
+    sp.add_argument("--state-dir", default="", help="세션 상태 저장 위치 (기본 ~/.myviking/hook-state)")
+    sp.set_defaults(func=cmd_hook)
 
     # observability
     sp = sub.add_parser("me", help="모든 프로젝트에 적용되는 내 선호")
@@ -1682,7 +1773,9 @@ def cmd_serve(args, j: Jarvis) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    jarvis = Jarvis(home=args.home)
+    # Hook receivers run on the *agent* machine for every prompt; they talk
+    # HTTP only and must not build (or create) a local store as a side effect.
+    jarvis = None if getattr(args.func, "no_jarvis", False) else Jarvis(home=args.home)
     try:
         return int(args.func(args, jarvis) or 0)
     except KeyError as exc:

@@ -328,3 +328,64 @@ def test_agent_list_shows_connected_agents(jv, jarvis, capsys):
     rows = _json(capsys)
     assert rows[0]["name"] == "cli-test"
     assert rows[0]["projects"] == ["app"]
+
+
+def test_hook_command_fails_open(jv, monkeypatch, capsys, tmp_path):
+    """훅은 서버가 죽어 있어도, stdin 이 깨져 있어도 코딩 세션을 막으면 안 된다."""
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("깨진 json"))
+    jv(
+        "hook",
+        "stop",
+        "--url",
+        "http://127.0.0.1:1",  # nothing listens here
+        "--state-dir",
+        str(tmp_path / "state"),
+        expect=0,
+    )
+    assert capsys.readouterr().out == ""
+
+
+def test_hook_command_does_not_create_a_local_store(home, monkeypatch, tmp_path):
+    """훅 수신기는 에이전트 머신에서 매 프롬프트마다 돈다. 로컬 DB 를 만들면 안 된다."""
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    code = main(
+        ["--home", str(home), "hook", "session-end",
+         "--url", "http://127.0.0.1:1", "--state-dir", str(tmp_path / "state")]
+    )
+    assert code == 0
+    assert not (home / "index.db").exists()
+
+
+def test_agent_hooks_install_is_idempotent_and_preserves_others(jv, tmp_path, capsys):
+    import json as _json
+
+    repo = tmp_path / "repo"
+    settings = repo / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(_json.dumps({
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]},
+        "model": "opus",
+    }), encoding="utf-8")
+
+    jv("agent", "hooks", "--install", "--path", str(repo), "--url", "http://v:8787", "--key", "jv_k")
+    jv("agent", "hooks", "--install", "--path", str(repo), "--url", "http://v:8787", "--key", "jv_k")
+    capsys.readouterr()
+
+    data = _json.loads(settings.read_text(encoding="utf-8"))
+    assert data["model"] == "opus"  # untouched
+    stop_cmds = [h["command"] for m in data["hooks"]["Stop"] for h in m["hooks"]]
+    assert stop_cmds.count("echo mine") == 1
+    assert sum("jv hook stop" in c for c in stop_cmds) == 1  # not duplicated
+    assert set(data["hooks"]) == {"Stop", "SessionStart", "UserPromptSubmit", "SessionEnd"}
+
+
+def test_agent_config_shows_hooks_for_claude_code(jv, capsys):
+    jv("agent", "config", "--client", "claude-code", "--url", "http://v:8787")
+    out = capsys.readouterr().out
+    assert "자동 캡처 훅" in out
+    assert "jv hook session-start" in out
+    assert "`jarvis_commit` 은 호출하지 않는다" in out

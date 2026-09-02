@@ -86,27 +86,50 @@ jv link -t coding            # git remote 와 경로를 프로젝트에 묶습�
 `git@github.com:me/backend.git` 과 `https://github.com/me/backend` 는 같은 것으로
 취급합니다.
 
-### 에이전트 붙이기
+### 에이전트 붙이기 — Claude Code 는 훅으로 (권장)
+
+MCP 도구는 에이전트가 *호출을 선택해야* 동작합니다. 지시문을 잊거나 건너뛰면
+아무것도 기록되지 않습니다. Claude Code 에는 그 선택을 없애는 길이 있습니다:
 
 ```bash
 jv key create laptop         # 외부에 열 거라면 먼저 키를 발급하세요
-jv agent config --client claude-code --url https://viking.example.com --key jv_...
+claude mcp add --transport http myviking https://viking.example.com/mcp
+cd ~/work/backend
+jv agent hooks --install --url https://viking.example.com --key jv_...
 ```
 
-출력된 명령과 **에이전트 지시문**을 그대로 붙이면 됩니다. 도구만 연결하고 언제
-쓸지 알려주지 않으면 에이전트는 대개 쓰지 않으므로, 지시문이 절반입니다.
+`--install` 이 저장소의 `.claude/settings.json` 에 훅 네 개를 병합합니다.
+그 뒤로는 에이전트의 협조 없이도 루프 전체가 돌아갑니다:
+
+| 훅 | 하는 일 |
+|---|---|
+| **SessionStart** | 체크아웃의 git remote 로 프로젝트를 해석하고, 최근 작업·새로 정해진 것·주의·미해결을 대화에 자동 주입 — 새 세션이 곧바로 이전 맥락에서 시작합니다 |
+| **UserPromptSubmit** | 모든 프롬프트를 트레이스로 기록하고(암묵 피드백도 여기서 돌아갑니다), 예산 안의 L0 컨텍스트를 주입합니다 |
+| **Stop** | 대화록에서 방금 끝난 질문·답변을 추출해 자동 commit — Langfuse 처럼, 매 턴이 데이터베이스에 남습니다 |
+| **SessionEnd** | 세션 상태 정리 |
+
+훅은 전부 fail-open 입니다: 서버가 죽어 있어도 코딩 세션은 깨지지 않고,
+그 턴의 기록만 빠집니다.
+
+에이전트 지시문은 두 가지로 줄어듭니다 — 훅이 판단할 수 없는 것들입니다:
 
 ```markdown
-이 저장소에서 작업할 때는 MyViking 을 컨텍스트 원천으로 사용한다.
-1. 작업을 시작하기 전에 jarvis_context 를 호출한다 (repo=git remote URL).
-   반환된 컨텍스트는 이미 확인된 사실이므로 다시 조사하지 않는다.
-   reused=true 로 오면 이전 답변이므로 유효성만 확인하고 재사용한다.
-2. 새로 확정된 규칙·명령·함정은 jarvis_remember 로 남긴다.
-3. 작업을 마치면 jarvis_commit 에 trace_id 와 함께 결과를 기록한다.
-4. 사용자가 만족했거나 수정을 요구했으면 jarvis_score 로 알린다.
+이 저장소는 MyViking 훅이 컨텍스트 주입과 작업 기록을 자동으로 처리한다.
+- 주입된 [MyViking] 블록은 이미 확인된 사실이다. 다시 조사하지 않는다.
+- 작업 중 새로 확정된 규칙·명령·함정은 jarvis_remember 로 남긴다.
+- 사용자가 만족/불만을 표현하면 jarvis_score 로 보고한다 (trace_id 는 블록에 있다).
 ```
 
-`--client cursor` / `--client codex` 도 같은 방식입니다.
+### 훅이 없는 클라이언트 (cursor / codex / 그 외 MCP)
+
+```bash
+jv agent config --client cursor --url https://viking.example.com --key jv_...
+```
+
+출력된 MCP 설정과 **수동 지시문**을 그대로 붙이면 됩니다. 이 경우 도구만
+연결하고 언제 쓸지 알려주지 않으면 에이전트는 대개 쓰지 않으므로, 지시문이
+절반입니다. 수동 지시문은 jarvis_context(시작) → jarvis_remember(작업 중) →
+jarvis_commit(끝) → jarvis_score(평가) 의 전체 루프를 에이전트에게 맡깁니다.
 
 ## 실제로 무엇이 일어나나
 
@@ -151,15 +174,17 @@ MyViking 은 사람이 들어가서 작업하는 서비스가 아닙니다. 코�
 대시보드(`http://localhost:8787/`)를 열면 첫 화면이 프로젝트 목록입니다.
 
 1. **새 프로젝트** — 이름, 메모리 스키마, git remote(선택)를 넣고 만들기.
-2. 카드를 클릭하면 **연결정보**가 나옵니다. 두 블록을 복사하면 끝입니다.
+2. 카드를 클릭하면 **연결정보**가 나옵니다. 블록을 복사하면 끝입니다.
    - `claude mcp add --transport http myviking https://…/mcp` — 도구 연결
+   - **자동 캡처 훅** (claude-code) — `.claude/settings.json` 에 병합.
+     이게 기록을 에이전트의 선의에서 떼어내는 블록입니다.
    - 에이전트 지시문 — 저장소의 `CLAUDE.md` 에 붙여넣기
 
 클라이언트는 드롭다운에서 고릅니다 (claude-code / cursor / codex / 그 외 MCP).
 API 키를 켜 두었다면 입력란에 넣으면 설정에 자동으로 포함됩니다.
 
-**지시문 블록을 빼면 아무 일도 일어나지 않습니다.** 도구는 연결되지만 에이전트가
-호출할 이유를 모르고, 지식은 계속 비어 있습니다.
+훅이 없는 클라이언트에서는 **지시문 블록을 빼면 아무 일도 일어나지 않습니다.**
+도구는 연결되지만 에이전트가 호출할 이유를 모르고, 지식은 계속 비어 있습니다.
 
 ### 그다음부터
 
@@ -167,9 +192,11 @@ API 키를 켜 두었다면 입력란에 넣으면 설정에 자동으로 포함
 
 ```
 당신: "결제 승인 실패 처리 좀 봐줘"
-  → 에이전트가 jarvis_context 호출   (규칙·구조·함정을 이미 알고 시작)
-  → jarvis_remember                 (새로 확정된 것을 기록)
-  → jarvis_commit / jarvis_score    (결과와 평가를 남김)
+  → [훅] 세션 첫 프롬프트면 이전 작업 브리핑 자동 주입
+  → [훅] 관련 규칙·함정 컨텍스트 주입 + 트레이스 기록
+  → 에이전트가 작업, 확정된 것은 jarvis_remember
+  → [훅] 턴이 끝나면 질문·답변 자동 commit → 증류
+  → 다음 프롬프트가 직전 답을 암묵적으로 채점
 ```
 
 ## 저장소가 스스로 정리되는 규칙

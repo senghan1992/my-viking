@@ -430,14 +430,26 @@ async function renderConnection() {
         <span>— ${esc(c.where)}</span></div></div>
       ${copyBlock(c.setup)}
 
-      <div class="step-n"><b>2</b><div><strong>에이전트 지시문</strong>
+      ${c.hooks_setup ? `
+      <div class="step-n"><b>2</b><div><strong>자동 캡처 훅 (권장)</strong>
+        <span>— 저장소의 <span class="mono">.claude/settings.json</span> 에 병합,
+        또는 그 저장소에서 <span class="mono">jv agent hooks --install</span></span></div></div>
+      <div style="color:var(--muted);font-size:12.5px;margin:-2px 0 4px">
+        세션이 시작되면 이전 작업 브리핑이 자동 주입되고, 모든 질문·답변이 자동으로 기록됩니다.
+        에이전트가 도구 호출을 잊어도 기록이 남습니다.
+      </div>
+      ${copyBlock(c.hooks_setup)}` : ""}
+
+      <div class="step-n"><b>${c.hooks_setup ? 3 : 2}</b><div><strong>에이전트 지시문</strong>
         <span>— 저장소의 <span class="mono">${esc(c.instruction_file)}</span> 에 추가</span></div></div>
       <div style="color:var(--muted);font-size:12.5px;margin:-2px 0 4px">
-        이 단계를 빼면 도구는 연결되지만 에이전트가 호출하지 않아 지식이 쌓이지 않습니다.
+        ${c.instructions_hooks
+          ? "훅이 기록을 자동화하므로 지시문은 에이전트만 판단할 수 있는 두 가지(확정된 지식 기록, 결과 평가)만 남습니다. 훅 없이 쓰려면 <span class='mono'>jv agent config</span> 의 수동 지시문을 사용하세요."
+          : "이 단계를 빼면 도구는 연결되지만 에이전트가 호출하지 않아 지식이 쌓이지 않습니다."}
       </div>
-      ${copyBlock(c.instructions)}
+      ${copyBlock(c.instructions_hooks || c.instructions)}
 
-      <div class="step-n"><b>3</b><div><strong>끝</strong>
+      <div class="step-n"><b>${c.hooks_setup ? 4 : 3}</b><div><strong>끝</strong>
         <span>— 이제 그 저장소에서 작업하면 지식이 알아서 쌓이고 정리됩니다</span></div></div>
 
       <div class="panel pad" style="margin-top:12px">

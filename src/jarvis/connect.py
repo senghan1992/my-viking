@@ -16,10 +16,44 @@ not call them, and the knowledge base stays empty.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
 CLIENTS = ("claude-code", "cursor", "codex", "mcp-json")
+
+# Claude Code hook events → `jv hook` subcommands. Hooks are what make capture
+# unconditional: the client runs them whether or not the agent remembers the
+# tools, so every session is recorded even with an empty instruction file.
+HOOK_EVENTS = (
+    ("SessionStart", "session-start"),
+    ("UserPromptSubmit", "user-prompt-submit"),
+    ("Stop", "stop"),
+    ("SessionEnd", "session-end"),
+)
+
+
+def hook_settings(url: str, key: str = "", timeout: int = 15) -> dict[str, Any]:
+    """The ``hooks`` block for Claude Code's ``.claude/settings.json``."""
+
+    def command(event: str) -> str:
+        env = f"MYVIKING_URL={url.rstrip('/')}"
+        if key:
+            env += f" MYVIKING_KEY={key}"
+        return f"{env} jv hook {event}"
+
+    return {
+        "hooks": {
+            event: [
+                {
+                    "hooks": [
+                        {"type": "command", "command": command(cli), "timeout": timeout}
+                    ]
+                }
+            ]
+            for event, cli in HOOK_EVENTS
+        }
+    }
 
 
 @dataclass
@@ -33,6 +67,11 @@ class Connection:
     where: str
     instructions: str
     has_key: bool
+    # Claude Code only: the hooks block that makes capture automatic, and the
+    # lighter instruction set that applies once it is installed.
+    hooks_setup: str = ""
+    hooks_where: str = ""
+    instructions_hooks: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +84,9 @@ class Connection:
             "where": self.where,
             "instructions": self.instructions,
             "has_key": self.has_key,
+            "hooks_setup": self.hooks_setup,
+            "hooks_where": self.hooks_where,
+            "instructions_hooks": self.instructions_hooks,
         }
 
 
@@ -86,6 +128,26 @@ INSTRUCTIONS = """이 저장소에서 작업할 때는 MyViking 을 프로젝트
 
 모르는 것을 추측해서 기록하지 않는다. 확인된 것만 남긴다."""
 
+# What the agent is asked to do once hooks capture the mechanical half.
+# Context arrives injected, every exchange is committed automatically, so the
+# instructions shrink to the two things only the agent can judge: what got
+# *decided* (remember) and how it *went* (score). Shorter instructions are
+# also more likely to be followed.
+INSTRUCTIONS_HOOKS = """이 저장소는 MyViking 훅이 컨텍스트 주입과 작업 기록을 자동으로 처리한다.
+
+- 프롬프트에 [MyViking] 블록이 주입되면 그 내용은 이 프로젝트에서 이미 확인된
+  사실이다. 같은 것을 다시 조사하지 말고 거기서 시작하고, ⚠ 주의 항목을
+  거스르는 제안은 하지 않는다.
+- 작업 중 새로 확정된 규칙·명령·결정·함정은 즉시 `jarvis_remember` 로 남긴다.
+  기록 자체는 자동이지만, 무엇이 '확정'인지는 에이전트만 안다.
+  - 명령·경로·오류 메시지는 원문 그대로. 같은 지식은 항상 같은 title 로.
+  - 사용자 개인 선호(프로젝트와 무관)는 project="global".
+- 사용자가 결과에 만족하거나 수정을 요구하면 `jarvis_score` 로 보고한다
+  (0=틀림, 0.5=보통, 1=도움됨). trace_id 는 주입된 [MyViking] 블록에 있다.
+- 더 깊은 컨텍스트가 필요하면 `jarvis_context`/`jarvis_browse`,
+  과거 작업 기록은 `jarvis_history`.
+- `jarvis_commit` 은 호출하지 않는다 — 훅이 이미 기록한다."""
+
 
 def _auth_flag(key: str) -> str:
     return f' --header "Authorization: Bearer {key}"' if key else ""
@@ -115,9 +177,19 @@ def build(
     mcp_url = f"{base}/mcp"
     proj = project or "<프로젝트>"
 
+    hooks_setup = hooks_where = instructions_hooks = ""
     if client == "claude-code":
         setup = f"claude mcp add --transport http {name} {mcp_url}{_auth_flag(key)}"
         kind, where = "shell", "붙이려는 머신의 터미널에서 실행하세요."
+        hooks_setup = json.dumps(
+            hook_settings(base, key), ensure_ascii=False, indent=2
+        )
+        hooks_where = (
+            "저장소의 .claude/settings.json 에 병합하세요. 그 저장소에서 "
+            "`jv agent hooks --install` 한 번이면 자동으로 병합됩니다 "
+            "(에이전트 머신에 my-viking 코어가 설치되어 있어야 합니다)."
+        )
+        instructions_hooks = INSTRUCTIONS_HOOKS
     elif client == "cursor":
         setup = (
             "{\n"
@@ -153,6 +225,9 @@ def build(
         where=where,
         instructions=INSTRUCTIONS.format(project=proj),
         has_key=bool(key),
+        hooks_setup=hooks_setup,
+        hooks_where=hooks_where,
+        instructions_hooks=instructions_hooks,
     )
 
 
