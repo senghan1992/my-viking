@@ -269,3 +269,70 @@ def test_repeated_question_still_short_circuits_without_session_context(coding):
     prepared = coding.prepare("app", "테스트 어떻게 돌려?")
     assert prepared.cache_hit is not None
     assert prepared.cache_hit.answer == "pytest -q"
+
+
+# ----- blame attribution ---------------------------------------------------
+def test_a_bad_answer_does_not_punish_unrelated_knowledge(coding):
+    """One wrong answer used to drag down every memory that happened to be
+    retrieved alongside it, including ones with nothing to do with the question.
+    """
+    culprit = coding.remember("app", "commands", "배포 명령", "make deploy 로 배포한다")
+    bystander = coding.remember(
+        "app", "pitfalls", "PG 재시도 금지", "승인 응답이 0000 이 아니면 재시도하지 않는다"
+    )
+    prepared = coding.prepare("app", "배포 어떻게 해?", use_cache=False)
+    used = {i.uri for i in prepared.packed.items}
+    assert {str(culprit), str(bystander)} <= used, "두 지식이 모두 검색되어야 전제가 성립합니다"
+
+    # Baseline *after* retrieval: being used reinforces both, which is a
+    # separate signal from being judged. We are measuring the judgement.
+    before = {
+        str(u): coding.store.read_node(u).confidence for u in (culprit, bystander)
+    }
+    res = coding.score(prepared.trace_id, "helpfulness", 0.0, comment="그런 타겟 없음")
+
+    assert str(culprit) in res["memories_adjusted"]
+    assert str(bystander) not in res["memories_adjusted"]
+    assert coding.store.read_node(culprit).confidence < before[str(culprit)]
+    assert coding.store.read_node(bystander).confidence == before[str(bystander)]
+
+
+def test_a_good_answer_credits_everything_it_used_but_by_contribution(coding):
+    coding.remember("app", "commands", "테스트 실행", "pytest -q 로 돌린다")
+    coding.remember("app", "conventions", "한글 문서", "문서는 한글로 쓴다")
+    prepared = coding.prepare("app", "테스트 실행 방법", use_cache=False)
+    res = coding.score(prepared.trace_id, "helpfulness", 1.0)
+
+    adj = {a["uri"]: a for a in res["adjustments"]}
+    assert len(adj) >= 2, "좋은 결과는 쓰인 지식 전반에 반영되어야 합니다"
+    weights = [a["weight"] for a in adj.values()]
+    # Scaled by how strongly each was matched, so the top match gains most.
+    assert max(weights) == 1.0
+    assert min(weights) < 1.0
+    top = max(adj.values(), key=lambda a: a["weight"])
+    assert top["delta"] >= max(a["delta"] for a in adj.values())
+
+
+def test_explicit_attribution_moves_only_the_named_memory(coding):
+    culprit = coding.remember("app", "commands", "배포 명령", "make deploy 로 배포한다")
+    other = coding.remember("app", "commands", "테스트 실행", "pytest -q 로 돌린다")
+    prepared = coding.prepare("app", "배포와 테스트 명령", use_cache=False)
+    res = coding.score(
+        prepared.trace_id, "correctness", 0.0, uris=[str(culprit)]
+    )
+    assert res["memories_adjusted"] == [str(culprit)]
+    assert coding.store.read_node(other).confidence >= 0.8
+
+
+def test_global_preferences_are_not_scored_down_by_a_project_answer(jarvis):
+    """Your standing instructions are not hypotheses a bad answer can erode."""
+    jarvis.remember_about_me("답변은 항상 한글로 작성한다")
+    jarvis.init_project("app", template="coding")
+    jarvis.remember("app", "commands", "배포 명령", "make deploy 로 배포한다")
+
+    prepared = jarvis.prepare("app", "배포 어떻게 해? 한글로 설명해줘", use_cache=False)
+    assert any("global" in i.uri for i in prepared.packed.items)
+    before = jarvis.about_me()[0]["confidence"]
+    jarvis.score(prepared.trace_id, "helpfulness", 0.0)
+
+    assert jarvis.about_me()[0]["confidence"] == before

@@ -122,6 +122,17 @@ DASHBOARD_HTML = r"""<!doctype html>
   .step-n span { color:var(--muted); font-size:12.5px; }
   .copy { position:relative; }
   .copy button { position:absolute; top:10px; right:10px; }
+  details.sess { border-bottom:1px solid var(--line); }
+  details.sess:last-child { border-bottom:none; }
+  details.sess > summary { cursor:pointer; padding:10px 14px; display:flex; gap:8px;
+    align-items:center; flex-wrap:wrap; font-size:13px; }
+  details.sess > summary:hover { background:var(--chip); }
+  details.sess[open] > summary { border-bottom:1px dashed var(--line); }
+  .sess-body { padding:8px 14px 14px; }
+  .qa { padding:8px 0; border-bottom:1px dashed var(--line); }
+  .qa:last-child { border-bottom:none; }
+  .qa .q { font-weight:600; }
+  .qa .a { color:var(--muted); font-size:12.5px; margin-top:2px; white-space:pre-wrap; }
   .tree { display:grid; grid-template-columns:210px 1fr; }
   .tree > .side { border-right:1px solid var(--line); max-height:66vh; overflow:auto; }
   .side a { display:flex; justify-content:space-between; gap:8px; padding:7px 12px;
@@ -204,7 +215,9 @@ DASHBOARD_HTML = r"""<!doctype html>
       <div class="panel"><div class="bars" id="spark"></div></div></section>
     <section><h2>시간이 어디에 쓰이나</h2>
       <div class="panel scroll"><table id="steps"></table></div></section>
-    <section><h2>최근 작업</h2>
+    <section><h2>작업 세션 — 새 세션이 참고하는 이전 작업</h2>
+      <div class="panel" id="sessions"></div></section>
+    <section><h2>개별 요청</h2>
       <div class="panel scroll"><table id="traces"></table></div></section>
     <section><h2>연결된 에이전트</h2>
       <div class="panel scroll"><table id="agents"></table></div></section>
@@ -564,11 +577,12 @@ async function loadActivity() {
   const project = $("a-project").value;
   const days = $("days").value;
   const q = `?project=${encodeURIComponent(project)}&days=${days}`;
-  const [m, ts, traces, agents] = await Promise.all([
+  const [m, ts, traces, agents, sessions] = await Promise.all([
     api("/metrics" + q),
     api(`/timeseries?project=${encodeURIComponent(project)}&days=14`),
     api(`/traces?project=${encodeURIComponent(project)}&limit=60`),
     api("/agents"),
+    api(`/worksessions?project=${encodeURIComponent(project)}&limit=12`),
   ]);
   const avg = m.scores.length
     ? m.scores.reduce((a, s) => a + s.avg * s.count, 0) / m.scores.reduce((a, s) => a + s.count, 0) : null;
@@ -604,6 +618,30 @@ async function loadActivity() {
      { label: "점수", get: (r) => r.avg_score == null ? "—" : `<b class="${scoreClass(r.avg_score)}">${r.avg_score.toFixed(2)}</b>` }],
     traces, openTrace,
     `<b>아직 작업 기록이 없습니다.</b><br>에이전트를 연결하면 호출이 여기에 남습니다.`);
+
+  $("sessions").innerHTML = sessions.length
+    ? sessions.map((sx) => `
+      <details class="sess">
+        <summary>
+          <span class="mono">${esc(when(sx.started))}</span>
+          <b>${esc(sx.agent || "(에이전트 미표기)")}</b>
+          <span class="chip">${sx.traces}건</span>
+          ${sx.reused ? `<span class="chip ok">재사용 ${sx.reused}</span>` : ""}
+          ${sx.avg_score == null ? "" : `<span class="chip ${scoreClass(sx.avg_score)}">평균 ${sx.avg_score}</span>`}
+          <span style="color:var(--muted)">${esc(sx.project)}</span>
+        </summary>
+        <div class="sess-body">
+          ${sx.work.map((w) => `
+            <div class="qa">
+              <div class="q">${w.reused ? "↻ " : ""}${esc(w.question || "")}
+                ${w.score == null ? "" : `<span class="chip ${scoreClass(w.score)}">${w.score}</span>`}</div>
+              <div class="a">${esc((w.answer || "(답변 미기록)").slice(0, 400))}</div>
+            </div>`).join("")}
+        </div>
+      </details>`).join("")
+    : `<div class="empty"><b>아직 작업 세션이 없습니다.</b><br>
+        에이전트가 작업하면 한 자리(세션)씩 묶여 여기에 쌓이고,<br>
+        새 세션의 첫 호출에서 <code>catch_up</code> 으로 전달됩니다.</div>`;
 
   table($("agents"),
     [{ label: "에이전트", get: (r) => `<span class="mono">${esc(r.name)}</span>` },

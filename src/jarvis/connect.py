@@ -53,7 +53,13 @@ class Connection:
 # has to curate anything for the knowledge base to improve.
 INSTRUCTIONS = """이 저장소에서 작업할 때는 MyViking 을 프로젝트 지식의 원천으로 사용한다.
 
-1. 작업을 시작하기 전에 반드시 `jarvis_context` 를 호출한다.
+0. 세션을 시작할 때 먼저 `jarvis_brief` 를 호출해 프로젝트를 파악한다.
+   - project="{project}" (또는 repo 에 git remote URL)
+   - 확립된 지식·주의사항·최근 작업·미해결 사항이 한 번에 나온다.
+     저장소를 처음부터 훑지 말고 여기서 시작한다.
+   - "지난번에 뭘 하다 말았지" 가 필요하면 `jarvis_history` 로 세션 단위 기록을 본다.
+
+1. 개별 작업을 시작하기 전에 `jarvis_context` 를 호출한다.
    - project="{project}" (또는 repo 에 git remote URL)
    - 돌아온 컨텍스트는 이 프로젝트에서 이미 확인된 사실이다. 같은 것을 다시
      조사하지 말고 거기서 시작한다.
@@ -62,6 +68,8 @@ INSTRUCTIONS = """이 저장소에서 작업할 때는 MyViking 을 프로젝트
      확인하고 재사용한다.
    - `from_other_projects` 는 다른 프로젝트에서 온 참고이며 이 프로젝트에서
      검증된 것이 아니다. 쓸 때는 출처를 밝힌다.
+   - `catch_up` 이 들어오면 이 세션의 첫 호출이다. 최근 작업과 새로 정해진 것을
+     먼저 읽는다.
    - 반환된 `trace_id` 를 이후 호출에 그대로 넘긴다.
 
 2. 작업 중 새로 확정된 것은 즉시 `jarvis_remember` 로 남긴다.
@@ -74,6 +82,7 @@ INSTRUCTIONS = """이 저장소에서 작업할 때는 MyViking 을 프로젝트
 
 4. 결과가 어땠는지 `jarvis_score` 로 알린다 (0=틀림, 0.5=보통, 1=도움됨).
    이 값이 사용된 지식의 신뢰도를 조정하므로, 다음 요청의 품질이 실제로 달라진다.
+   어떤 지식이 틀렸는지 알면 `uris` 로 지목한다.
 
 모르는 것을 추측해서 기록하지 않는다. 확인된 것만 남긴다."""
 

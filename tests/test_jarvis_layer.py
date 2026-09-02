@@ -202,3 +202,78 @@ def test_brief_excludes_a_harmful_memory_from_knowledge(coding):
     coding.score(prepared.trace_id, "helpfulness", 0.0, comment="없는 명령")
     b = coding.brief("app")
     assert str(uri) not in {k["uri"] for k in b["know"]}
+
+
+# ----- session handoff ------------------------------------------------------
+def test_first_call_of_a_sitting_gets_a_catch_up(coding):
+    """A new session should start oriented rather than re-deriving the project."""
+    coding.remember("app", "commands", "테스트 실행", "pytest -q 로 돌린다")
+    old = coding.prepare("app", "테스트 어떻게 돌려?", session_id="s1", agent="a@x",
+                         use_cache=False)
+    coding.commit("app", "테스트 어떻게 돌려?", "pytest -q", trace_id=old.trace_id)
+
+    fresh = coding.prepare("app", "배포는?", session_id="s2", agent="a@y", use_cache=False)
+    assert fresh.catch_up is not None
+    threads = fresh.catch_up["recent_threads"]
+    assert threads and "테스트 어떻게 돌려?" in threads[0]["questions"]
+
+    # Subsequent calls in the same sitting must not repeat it.
+    again = coding.prepare("app", "롤백은?", session_id="s2", use_cache=False)
+    assert again.catch_up is None
+
+
+def test_catch_up_excludes_the_asking_session(coding):
+    coding.remember("app", "commands", "테스트", "pytest -q")
+    coding.prepare("app", "첫 질문", session_id="s1", use_cache=False)
+    coding.prepare("app", "두번째 질문", session_id="s1", use_cache=False)
+    fresh = coding.prepare("app", "새 세션 질문", session_id="s2", use_cache=False)
+    asked = [q for t in fresh.catch_up["recent_threads"] for q in t["questions"]]
+    assert "새 세션 질문" not in asked
+    assert "첫 질문" in asked
+
+
+def test_sittings_are_grouped_even_without_a_session_id(coding):
+    """Requiring the agent to invent a session id is a requirement it ignores."""
+    coding.remember("app", "commands", "테스트", "pytest -q")
+    coding.prepare("app", "질문 하나", agent="claude-code@laptop", use_cache=False)
+    coding.prepare("app", "질문 둘", agent="claude-code@laptop", use_cache=False)
+    sessions = coding.work_sessions("app")
+    assert len(sessions) == 1
+    assert sessions[0]["traces"] == 2
+    assert "claude-code@laptop" in sessions[0]["session_id"]
+
+
+def test_history_reads_back_questions_and_outcomes(coding):
+    coding.remember("app", "commands", "테스트", "pytest -q 로 돌린다")
+    p1 = coding.prepare("app", "테스트 어떻게?", session_id="s1", use_cache=False)
+    coding.commit("app", "테스트 어떻게?", "pytest -q 입니다", trace_id=p1.trace_id)
+    coding.score(p1.trace_id, "helpfulness", 1.0)
+
+    sessions = coding.work_sessions("app")
+    work = sessions[0]["work"][0]
+    assert work["question"] == "테스트 어떻게?"
+    assert "pytest" in work["answer"]
+    assert work["score"] == 1.0
+
+
+def test_briefing_reports_decisions_not_the_conversation_log(coding):
+    """The fallback category holds exchanges that matched no rule; a catch-up
+    that replays them buries what was actually decided."""
+    coding.remember("app", "conventions", "한글 문서", "문서는 한글로 쓴다")
+    coding.commit("app", "이 프로젝트 이름이 뭐였지?", "backend 입니다")
+
+    titles = [x["title"] for x in coding.recently_learned("app", established_only=True)]
+    cats = {x["category"] for x in coding.recently_learned("app", established_only=True)}
+    assert "한글 문서" in titles
+    assert "cases" not in cats
+    # Still visible when you ask for everything.
+    assert "cases" in {x["category"] for x in coding.recently_learned("app")}
+
+
+def test_brief_includes_recent_work_and_new_knowledge(coding):
+    coding.remember("app", "commands", "테스트", "pytest -q 로 돌린다")
+    p = coding.prepare("app", "테스트 어떻게?", session_id="s1", agent="a@x", use_cache=False)
+    coding.commit("app", "테스트 어떻게?", "pytest -q", trace_id=p.trace_id)
+    b = coding.brief("app")
+    assert b["recent_work"] and b["recent_work"][0]["work"]
+    assert "테스트" in [x["title"] for x in b["recently_learned"]]

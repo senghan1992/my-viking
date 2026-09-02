@@ -125,6 +125,7 @@ class ScoreBody(BaseModel):
     comment: str = ""
     source: str = "human"
     apply_to_memory: bool = True
+    uris: list[str] | None = None
 
 
 class AliasBody(BaseModel):
@@ -578,6 +579,7 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
                 comment=body.comment,
                 source=body.source,
                 apply_to_memory=body.apply_to_memory,
+                uris=body.uris,
             )
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
@@ -610,6 +612,18 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     @app.get("/projects/{project}/impact")
     def get_impact(project: str, limit: int = 20) -> list[dict[str, Any]]:
         return jarvis.memory_impact(project, limit)
+
+    @app.get("/projects/{project}/brief")
+    def brief(project: str, request: Request, limit: int = 8) -> dict[str, Any]:
+        _guard(request, project)
+        if not jarvis.store.project_exists(project):
+            raise HTTPException(404, f"없는 프로젝트: {project}")
+        return jarvis.brief(project, limit)
+
+    @app.get("/worksessions")
+    def work_sessions(project: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        """Traces grouped into the sittings they belonged to."""
+        return jarvis.work_sessions(project, limit)
 
     @app.get("/agents")
     def list_agents() -> list[dict[str, Any]]:

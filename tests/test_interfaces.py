@@ -47,6 +47,8 @@ def test_mcp_handshake_and_tool_list(home):
     assert out[0]["result"]["serverInfo"]["name"] == "myviking"
     tools = {t["name"] for t in out[1]["result"]["tools"]}
     assert tools == {
+        "jarvis_brief",
+        "jarvis_history",
         "jarvis_context",
         "jarvis_remember",
         "jarvis_commit",

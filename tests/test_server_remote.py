@@ -517,3 +517,48 @@ def test_project_cards_report_what_the_ui_shows(client):
     assert card["memories"] >= 1
     assert card["tasks"] >= 1
     assert card["last_active"]
+
+
+def test_worksessions_endpoint_groups_traces_into_sittings(client):
+    client.post("/projects", json={"project": "app", "template": "coding"})
+    client.post(
+        "/memories",
+        json={"project": "app", "category": "commands", "title": "t", "statement": "pytest -q"},
+    )
+    for q in ("첫 질문", "두번째 질문"):
+        body = client.post(
+            "/prepare",
+            json={"project": "app", "question": q, "session_id": "s1", "agent": "a@x"},
+        ).json()
+        client.post(
+            "/commit",
+            json={"project": "app", "question": q, "answer": "답", "trace_id": body["trace_id"]},
+        )
+    sessions = client.get("/worksessions", params={"project": "app"}).json()
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"] == "s1"
+    assert [w["question"] for w in sessions[0]["work"]] == ["첫 질문", "두번째 질문"]
+
+
+def test_brief_endpoint_serves_the_session_handoff(client):
+    client.post("/projects", json={"project": "app", "template": "coding"})
+    client.post(
+        "/memories",
+        json={
+            "project": "app",
+            "category": "pitfalls",
+            "title": "재시도 금지",
+            "statement": "0000 이 아니면 재시도하지 않는다",
+        },
+    )
+    b = client.get("/projects/app/brief").json()
+    assert [w["title"] for w in b["warnings"]] == ["재시도 금지"]
+    for key in ("know", "warnings", "unresolved", "recent_work", "recently_learned", "totals"):
+        assert key in b, key
+    assert client.get("/projects/ghost/brief").status_code == 404
+
+
+def test_dashboard_shows_the_work_session_view(client):
+    page = client.get("/").text
+    assert 'id="sessions"' in page
+    assert "작업 세션" in page

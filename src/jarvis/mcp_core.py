@@ -55,6 +55,45 @@ def _tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "jarvis_brief",
+            "description": (
+                "이 프로젝트를 빠르게 파악합니다. 새 세션을 시작할 때, 또는 오랜만에 "
+                "돌아온 프로젝트에서 가장 먼저 호출하세요. 확립된 지식, 서 있는 주의사항, "
+                "최근에 무슨 작업을 했고 무엇이 새로 정해졌는지, 아직 미해결인 것을 "
+                "한 번에 돌려줍니다. 저장소를 처음부터 훑는 대신 여기서 시작하면 됩니다."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "repo": {"type": "string", "description": "git remote URL (project 대신)"},
+                    "path": {"type": "string"},
+                    "limit": {"type": "integer", "default": 8},
+                },
+            },
+        },
+        {
+            "name": "jarvis_history",
+            "description": (
+                "이전 작업 기록을 세션 단위로 되짚습니다. '지난번에 뭘 하다 말았지', "
+                "'이 문제 전에 어떻게 처리했지' 를 확인할 때 사용하세요. 각 세션의 "
+                "질문·답변·평가가 시간순으로 나옵니다."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "repo": {"type": "string"},
+                    "path": {"type": "string"},
+                    "limit": {"type": "integer", "default": 8},
+                    "session_id": {
+                        "type": "string",
+                        "description": "특정 세션만 자세히 보려면",
+                    },
+                },
+            },
+        },
+        {
             "name": "jarvis_remember",
             "description": (
                 "다음에도 쓸 지식을 메모리에 기록합니다. category 는 해당 프로젝트 "
@@ -128,6 +167,14 @@ def _tools() -> list[dict[str, Any]]:
                         "description": "0=완전히 틀렸음, 0.5=중립, 1=정확히 도움됨",
                     },
                     "comment": {"type": "string", "description": "무엇이 좋았거나 틀렸는지"},
+                    "uris": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "어떤 지식이 문제였는지 알면 그 uri 만 넘기세요. "
+                            "생략하면 검색 기여도에 따라 자동 배분됩니다."
+                        ),
+                    },
                 },
                 "required": ["trace_id", "value"],
             },
@@ -252,6 +299,9 @@ class Handler:
         return {
             "project": project,
             "trace_id": prepared.trace_id,
+            "session_id": prepared.session_id,
+            # Only on the first call of a sitting.
+            "catch_up": prepared.catch_up,
             "reused": False,
             "context": prepared.context,
             "context_ms": prepared.latency_ms,
@@ -275,10 +325,41 @@ class Handler:
             "references": prepared.references,
             "note": (
                 "위 컨텍스트는 이 프로젝트에 대해 이미 확인된 내용입니다. 다시 조사하지 "
-                "말고 여기서 시작하세요. '주의' 항목이 있으면 그것을 거스르는 제안은 "
+                "말고 여기서 시작하세요. catch_up 이 있으면 이 세션의 첫 호출이라는 "
+                "뜻이니, 최근 작업과 새로 정해진 것을 먼저 읽고 시작하세요. "
+                "'주의' 항목이 있으면 그것을 거스르는 제안은 "
                 "하지 마세요. from_other_projects 는 다른 프로젝트에서 온 참고이며 "
                 "이 프로젝트에서 검증된 것이 아니므로, 쓸 때는 출처를 밝히세요. "
                 "새로 알게 된 것은 jarvis_remember 로 남기세요."
+            ),
+        }
+
+    def jarvis_brief(self, args: dict[str, Any]) -> Any:
+        project = self._project(args, create=False)
+        b = self.j.brief(project, limit=int(args.get("limit", 8)))
+        return {
+            **b,
+            "note": (
+                "이 내용은 이 프로젝트에서 이미 확인된 것입니다. 같은 것을 다시 조사하지 "
+                "말고 여기서 시작하세요. warnings 를 거스르는 제안은 하지 마세요. "
+                "unresolved 는 아직 정해지지 않은 것이니 필요하면 사용자에게 확인하세요."
+            ),
+        }
+
+    def jarvis_history(self, args: dict[str, Any]) -> Any:
+        project = self._project(args, create=False)
+        limit = int(args.get("limit", 8))
+        sessions = self.j.work_sessions(project, limit=limit)
+        wanted = str(args.get("session_id") or "")
+        if wanted:
+            sessions = [s for s in sessions if s["session_id"] == wanted]
+        return {
+            "project": project,
+            "sessions": sessions,
+            "note": (
+                "과거 기록입니다. 당시의 내용이며 현재 규칙이 아닙니다 — 이후에 "
+                "바뀌었을 수 있으니 현재 규칙은 jarvis_brief 나 jarvis_context 로 "
+                "확인하세요."
             ),
         }
 
@@ -289,6 +370,7 @@ class Handler:
             value=float(args["value"]),
             comment=str(args.get("comment") or ""),
             source="agent",
+            uris=[str(u) for u in (args.get("uris") or [])] or None,
         )
 
     def jarvis_remember(self, args: dict[str, Any]) -> Any:

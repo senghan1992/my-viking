@@ -1200,6 +1200,32 @@ def cmd_brief(args, j: Jarvis) -> int:
     return 0
 
 
+def cmd_history(args, j: Jarvis) -> int:
+    """이전 작업을 세션 단위로 되짚습니다."""
+    sessions = j.work_sessions(args.project or "", limit=args.limit)
+    if args.json:
+        _out(sessions, True)
+        return 0
+    if not sessions:
+        print("아직 작업 기록이 없습니다.")
+        return 0
+    for sess in sessions:
+        head = f"{sess['started'][:16].replace('T', ' ')}  {sess['agent'] or '(에이전트 미표기)'}"
+        meta = f"{sess['traces']}건"
+        if sess["reused"]:
+            meta += f" (재사용 {sess['reused']})"
+        if sess["avg_score"] is not None:
+            meta += f" · 평균 {sess['avg_score']}"
+        print(f"\n■ {head}  —  {meta}")
+        for w in sess["work"]:
+            mark = "↻" if w["reused"] else " "
+            score = "" if w["score"] is None else f" [{w['score']}]"
+            print(f"  {mark} Q: {(w['question'] or '')[:78]}{score}")
+            if w["answer"] and args.verbose:
+                print(f"    A: {w['answer'][:150]}")
+    return 0
+
+
 def cmd_digest(args, j: Jarvis) -> int:
     d = j.digest(days=args.days)
     if args.json:
@@ -1532,6 +1558,12 @@ def build_parser() -> argparse.ArgumentParser:
     proj(sp)
     sp.add_argument("--limit", type=int, default=8)
     sp.set_defaults(func=cmd_brief)
+
+    sp = sub.add_parser("history", help="이전 작업을 세션 단위로 되짚기")
+    proj(sp, required=False)
+    sp.add_argument("--limit", type=int, default=8)
+    sp.add_argument("-v", "--verbose", action="store_true", help="답변까지 표시")
+    sp.set_defaults(func=cmd_history)
 
     sp = sub.add_parser("digest", help="전체 프로젝트 요약 (주기적으로 읽기)")
     sp.add_argument("--days", type=int, default=7)

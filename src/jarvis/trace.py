@@ -502,6 +502,78 @@ class Tracer:
         trace["context"] = self.context_of(trace_id)
         return trace
 
+    def work_sessions(
+        self, scope: str = "", limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Traces grouped into the agent sessions they belonged to.
+
+        A trace is one question; a session is a sitting. When you open a new
+        session on a project you left two weeks ago, the useful unit is the
+        sitting — "last time I was here I was chasing the webhook signature
+        thing" — not a flat list of individual questions.
+        """
+        where, params = ["session_id != ''"], []
+        if scope:
+            where.append("scope = ?")
+            params.append(scope)
+        params.append(limit)
+        rows = self.db.query(
+            f"SELECT session_id, scope, MIN(started) AS started, MAX(started) AS ended,"
+            f" COUNT(*) AS traces, SUM(total_ms) AS total_ms,"
+            f" SUM(CASE WHEN cache_hit != '' THEN 1 ELSE 0 END) AS reused,"
+            f" MAX(agent) AS agent FROM traces WHERE {' AND '.join(where)}"
+            f" GROUP BY session_id ORDER BY started DESC LIMIT ?",
+            params,
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            traces = self.db.query(
+                "SELECT t.id, t.input, t.output, t.started, t.cache_hit,"
+                " (SELECT AVG(value) FROM scores s WHERE s.trace_id = t.id) AS avg_score"
+                " FROM traces t WHERE t.session_id = ? ORDER BY t.started",
+                (row["session_id"],),
+            )
+            scored = [t["avg_score"] for t in traces if t["avg_score"] is not None]
+            out.append(
+                {
+                    "session_id": row["session_id"],
+                    "project": row["scope"],
+                    "agent": row["agent"] or "",
+                    "started": row["started"],
+                    "ended": row["ended"],
+                    "traces": row["traces"],
+                    "reused": row["reused"] or 0,
+                    "total_ms": row["total_ms"] or 0,
+                    "avg_score": round(sum(scored) / len(scored), 3) if scored else None,
+                    "work": [
+                        {
+                            "trace_id": t["id"],
+                            "question": t["input"],
+                            "answer": t["output"],
+                            "at": t["started"],
+                            "reused": bool(t["cache_hit"]),
+                            "score": (
+                                round(t["avg_score"], 3)
+                                if t["avg_score"] is not None
+                                else None
+                            ),
+                        }
+                        for t in traces
+                    ],
+                }
+            )
+        return out
+
+    def known_session(self, scope: str, session_id: str) -> bool:
+        """Has this agent session already been seen on this project?"""
+        if not session_id:
+            return False
+        row = self.db.one(
+            "SELECT 1 FROM traces WHERE scope=? AND session_id=? LIMIT 1",
+            (scope, session_id),
+        )
+        return row is not None
+
     def scores_for_uri(self, uri: str) -> dict[str, Any]:
         """How did traces that used this memory turn out?"""
         row = self.db.one(

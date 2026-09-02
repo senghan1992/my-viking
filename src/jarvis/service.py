@@ -42,6 +42,10 @@ _REVIEW_WEIGHT = {
     "fading": 1,
 }
 
+# A negative score only reaches context matched at least this strongly relative
+# to the best match in the same trace. Below it, the item was along for the ride.
+_BLAME_FLOOR = 0.6
+
 SYSTEM_PREFIX = (
     "당신은 이 프로젝트에 대한 누적 컨텍스트를 가진 어시스턴트입니다.\n"
     "아래 컨텍스트는 이 프로젝트의 메모리·프롬프트·과거 세션에서 관련도 순으로 선택된 것입니다.\n"
@@ -71,7 +75,11 @@ class Prepared:
     # Relevant knowledge from *other* projects, always labelled as such.
     from_other_projects: list[dict[str, Any]] = field(default_factory=list)
     trace_id: str = ""
+    session_id: str = ""
     latency_ms: int = 0
+    # Present only on the first call of a sitting: what happened here recently,
+    # so a fresh session starts oriented instead of re-deriving the project.
+    catch_up: dict[str, Any] | None = None
 
     @property
     def messages(self) -> list[dict[str, str]]:
@@ -99,7 +107,9 @@ class Prepared:
             "warnings": self.warnings,
             "from_other_projects": self.from_other_projects,
             "trace_id": self.trace_id,
+            "session_id": self.session_id,
             "latency_ms": self.latency_ms,
+            "catch_up": self.catch_up,
         }
 
 
@@ -395,12 +405,138 @@ class Jarvis:
                 for it in review
                 if it["priority"] >= 4
             ][:limit],
+            "recent_work": self.recent_work(project, limit=4),
+            "recently_learned": self.recently_learned(project, days=14, limit=limit),
             "recent_sessions": self.recent_sessions(project, limit=5),
             "prompts": [
                 {"name": p["name"], "description": p["description"], "uses": p["uses"]}
                 for p in self.list_prompts(project)
             ][:limit],
         }
+
+    def catch_up(
+        self, project: str, limit: int = 3, exclude_session: str = ""
+    ) -> dict[str, Any]:
+        """A compact orientation for the start of a sitting.
+
+        Deliberately small: it rides along on the first request of a session, so
+        it has to be worth its tokens. Last threads, what is new, what is
+        unsettled — enough to stop the agent re-discovering the project.
+        """
+        # The sitting that is asking must not appear in its own catch-up.
+        work = self.recent_work(
+            project, limit=limit, exclude_session=exclude_session
+        )
+        learned = self.recently_learned(
+            project, days=14, limit=5, established_only=True
+        )
+        unresolved = [
+            {"uri": it["uri"], "title": it["title"], "reasons": it["reasons"]}
+            for it in self.review_queue(project, limit=20)
+            if it["priority"] >= 4
+        ][:3]
+        return {
+            "last_worked_on": work[0]["started"] if work else "",
+            "recent_threads": [
+                {
+                    "at": w["started"],
+                    "agent": w["agent"],
+                    "questions": [t["question"] for t in w["work"]][:4],
+                    "score": w["avg_score"],
+                }
+                for w in work
+            ],
+            "new_since_last_time": [
+                {"category": x["category"], "title": x["title"], "abstract": x["abstract"]}
+                for x in learned
+            ],
+            "unsettled": unresolved,
+        }
+
+    def recent_work(
+        self, project: str, limit: int = 4, exclude_session: str = ""
+    ) -> list[dict[str, Any]]:
+        """The last few sittings on this project, condensed.
+
+        This is what "catch me up" means in practice: not every question ever
+        asked, but the recent threads — what was being worked on, what came out
+        of it, and whether it went well.
+        """
+        out = []
+        for sess in self.tracer.work_sessions(project, limit=limit + 1):
+            if exclude_session and sess["session_id"] == exclude_session:
+                continue
+            if len(out) >= limit:
+                break
+            out.append(
+                {
+                    "session_id": sess["session_id"],
+                    "agent": sess["agent"],
+                    "started": sess["started"],
+                    "traces": sess["traces"],
+                    "avg_score": sess["avg_score"],
+                    "work": [
+                        {
+                            "question": (w["question"] or "")[:180],
+                            "answer": (w["answer"] or "")[:280],
+                            "score": w["score"],
+                            "trace_id": w["trace_id"],
+                        }
+                        for w in sess["work"]
+                    ],
+                }
+            )
+        return out
+
+    def recently_learned(
+        self,
+        project: str,
+        days: int = 14,
+        limit: int = 8,
+        established_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Knowledge added or changed lately — what is new since you last looked.
+
+        ``established_only`` drops the project's fallback category, which by
+        definition holds exchanges that matched no rule. A briefing should say
+        what got *decided*, not replay the log — and confidence is the wrong
+        filter for that, since being retrieved often raises it regardless.
+        """
+        rows = self.store.db.query(
+            "SELECT uri, title, category, abstract, confidence, created, updated"
+            " FROM nodes WHERE scope=? AND kind=?"
+            " AND updated >= datetime('now', ?) ORDER BY updated DESC LIMIT ?",
+            (project, KIND_MEMORY, f"-{int(days)} days", limit * 5),
+        )
+        skip = (
+            {self.store.profile(project).fallback_category()}
+            if established_only
+            else set()
+        )
+        out = []
+        for row in rows:
+            uri = Uri.parse(row["uri"])
+            if uri.parts[:1] == ("_archive",):
+                continue
+            if row["category"] in skip:
+                continue
+            out.append(
+                {
+                    "uri": row["uri"],
+                    "title": row["title"],
+                    "category": row["category"],
+                    "abstract": row["abstract"],
+                    "confidence": round(row["confidence"], 3),
+                    "new": (row["created"] or "")[:10] == (row["updated"] or "")[:10],
+                    "updated": row["updated"],
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
+
+    def work_sessions(self, project: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        return self.tracer.work_sessions(project, limit)
 
     def digest(self, days: int = 7) -> dict[str, Any]:
         """Everything that happened across projects, for a periodic read."""
@@ -698,13 +834,24 @@ class Jarvis:
     ) -> Prepared:
         """Assemble the best context available for ``question``, and trace it."""
         self.store.ensure_project(project)
+        # Group work into sittings even when the caller does not track sessions.
+        # Requiring an agent to invent and carry a session id is a requirement it
+        # will quietly ignore, and then "catch me up on last time" has nothing to
+        # group by. One agent's work on one day is a serviceable sitting.
+        derived_session = not session_id
+        sitting = session_id or _derived_session(agent)
+        first_call = not self.tracer.known_session(project, sitting)
         trace_id, t0 = self.tracer.start_trace(
             project,
             "prepare",
             input_text=question,
             agent=agent,
-            session_id=session_id,
-            metadata={"prompt": prompt, "max_tier": max_tier},
+            session_id=sitting,
+            metadata={
+                "prompt": prompt,
+                "max_tier": max_tier,
+                "derived_session": derived_session,
+            },
         )
         if agent:
             self.tracer.touch_agent(agent, project=project)
@@ -735,7 +882,13 @@ class Jarvis:
                     user=question,
                     cache_hit=hit,
                     trace_id=trace_id,
+                    session_id=sitting,
                     latency_ms=latency,
+                    catch_up=(
+                        self.catch_up(project, exclude_session=sitting)
+                        if first_call
+                        else None
+                    ),
                 )
 
         prompt_render: RenderResult | None = None
@@ -789,6 +942,9 @@ class Jarvis:
         )
 
         refs = self._references(project, question, packed)
+        catch_up = (
+            self.catch_up(project, exclude_session=sitting) if first_call else None
+        )
         warnings = self._warnings(project, packed)
         cross = (
             self._cross_project(project, retrieval_query) if cross_project else []
@@ -856,7 +1012,9 @@ class Jarvis:
             warnings=warnings,
             from_other_projects=cross,
             trace_id=trace_id,
+            session_id=sitting,
             latency_ms=latency,
+            catch_up=catch_up,
         )
 
     def _warnings(
@@ -1027,13 +1185,21 @@ class Jarvis:
         comment: str = "",
         source: str = "human",
         apply_to_memory: bool = True,
+        uris: list[str] | None = None,
     ) -> dict[str, Any]:
         """Record a judgement about a trace, and let it move memory confidence.
 
-        This is the difference between monitoring and learning. A score names an
-        outcome; the context that was in the room for that outcome is known, so
-        the same signal that fills a dashboard can also promote the memories that
-        helped and demote the ones that were present when things went wrong.
+        This is the difference between monitoring and learning: the context that
+        was in the room for an outcome is known, so the same signal that fills a
+        dashboard can also promote what helped and demote what did not.
+
+        Blame is *attributed*, not spread. A retrieval hands over a dozen items
+        ranked by relevance; a wrong answer is almost always driven by the ones
+        at the top, and penalising all twelve equally means every unrelated
+        memory that happened to be nearby accumulates damage from failures it had
+        no part in. So each item's adjustment is weighted by how strongly it was
+        matched, and a negative score only reaches items that actually drove the
+        answer. Pass ``uris`` when the caller knows exactly what was at fault.
         """
         row = self.store.db.one("SELECT scope FROM traces WHERE id = ?", (trace_id,))
         if row is None:
@@ -1043,14 +1209,30 @@ class Jarvis:
             scope, name, value, trace_id=trace_id, comment=comment, source=source
         )
 
-        moved: list[str] = []
+        moved: list[dict[str, Any]] = []
         if apply_to_memory:
             used = self.tracer.context_of(trace_id)
-            # Only memories move: sessions and resources are records, not beliefs.
-            delta = self._score_delta(value)
+            named = {u.rstrip("/") for u in (uris or [])}
+            top = max((float(i["score"]) for i in used), default=0.0)
+            base = self._score_delta(value)
+            negative = base < 0
             for item in used:
                 uri = Uri.parse(item["uri"])
-                if uri.kind_dir != "memories":
+                # Only memories move: sessions and resources are records, and
+                # global preferences are your standing instructions, not
+                # hypotheses to be scored down by a bad answer elsewhere.
+                if uri.kind_dir != "memories" or uri.is_global:
+                    continue
+                if named:
+                    if item["uri"] not in named:
+                        continue
+                    weight = 1.0
+                else:
+                    weight = (float(item["score"]) / top) if top > 0 else 1.0
+                    if negative and weight < _BLAME_FLOOR:
+                        continue
+                delta = base * weight
+                if abs(delta) < 0.005:
                     continue
                 node = self.store.read_node(uri)
                 if node is None:
@@ -1059,7 +1241,14 @@ class Jarvis:
                 self.store.write_node(
                     node, regenerate_tiers=False, reinforce_dirs=False
                 )
-                moved.append(item["uri"])
+                moved.append(
+                    {
+                        "uri": item["uri"],
+                        "weight": round(weight, 3),
+                        "delta": round(delta, 4),
+                        "confidence": round(node.confidence, 3),
+                    }
+                )
                 if node.confidence < self.config.learn.archive_below:
                     self.store.archive_node(uri, reason=f"low score ({name})")
         return {
@@ -1067,7 +1256,8 @@ class Jarvis:
             "trace_id": trace_id,
             "name": name,
             "value": value,
-            "memories_adjusted": moved,
+            "memories_adjusted": [m["uri"] for m in moved],
+            "adjustments": moved,
         }
 
     @staticmethod
@@ -1276,3 +1466,11 @@ def _title_of(statement: str, max_chars: int = 40) -> str:
             break
         out.append(word)
     return (" ".join(out) or line[:max_chars]).rstrip("?!.,")
+
+
+def _derived_session(agent: str) -> str:
+    """A sitting id when the caller supplies none: one agent, one day."""
+    from datetime import datetime, timezone
+
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"{agent or 'agent'}@{day}"
