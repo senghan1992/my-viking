@@ -154,6 +154,7 @@ DASHBOARD_HTML = r"""<!doctype html>
 
 <nav>
   <button data-tab="projects" class="on">프로젝트</button>
+  <button data-tab="connections">연결</button>
   <button data-tab="knowledge">지식<span class="n" id="badge" hidden></span></button>
   <button data-tab="activity">활동</button>
 </nav>
@@ -173,7 +174,7 @@ DASHBOARD_HTML = r"""<!doctype html>
         <div class="split">
           <div class="fld"><label>이름 (영문·숫자·하이픈)</label>
             <input id="np-name" placeholder="backend"></div>
-          <div class="fld"><label>메모리 스키마</label><select id="np-template"></select></div>
+          <div class="fld"><label>이 프로젝트 종류 (모르면 coding)</label><select id="np-template"></select></div>
         </div>
         <div class="fld"><label>설명 (선택)</label><input id="np-desc" placeholder="결제 API 서버"></div>
         <div class="fld"><label>git remote (선택) — 넣으면 어느 머신에서든 이 저장소가 자동으로 이 프로젝트로 연결됩니다</label>
@@ -185,6 +186,14 @@ DASHBOARD_HTML = r"""<!doctype html>
     <section>
       <h2>백업 — 볼륨이 사라져도 살아남는 사본</h2>
       <div class="panel pad" id="bk-panel">불러오는 중...</div>
+    </section>
+  </div>
+
+  <!-- ============ 연결 (접속 키 관리) ============ -->
+  <div class="tab" id="tab-connections">
+    <section>
+      <h2>접속 키 — 누가 이 서버에 연결할 수 있나</h2>
+      <div class="panel pad" id="keys-panel">불러오는 중...</div>
     </section>
   </div>
 
@@ -228,7 +237,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       <div class="panel" id="sessions"></div></section>
     <section><h2>개별 요청</h2>
       <div class="panel scroll"><table id="traces"></table></div></section>
-    <section><h2>연결된 에이전트</h2>
+    <section><h2>활동 중인 에이전트 (기록 기준)</h2>
       <div class="panel scroll"><table id="agents"></table></div></section>
   </div>
 </main>
@@ -410,8 +419,10 @@ $("np-create").onclick = async () => {
 
 // ---------------- 연결정보 ----------------
 let connProject = null;
-async function openConnection(project) {
+let connEmbedKey = null;  // 특정 키(팀원용으로 방금 발급한 것)를 심을 때만 설정
+async function openConnection(project, embedKey) {
   connProject = project;
+  connEmbedKey = embedKey || null;
   $("conn-title").textContent = project + " — 연결정보";
   $("conn-body").innerHTML = "불러오는 중...";
   $("conn").showModal();
@@ -421,19 +432,28 @@ async function openConnection(project) {
 async function renderConnection() {
   const client = $("conn-client").value || "claude-code";
   try {
-    const key = keyBox.value.trim();
-    const c = await api(`/projects/${encodeURIComponent(connProject)}/connection`
-      + `?client=${encodeURIComponent(client)}&key=${encodeURIComponent(key)}`
-      + `&base_url=${encodeURIComponent(location.origin)}`);
+    // 심을 키는 URL 이 아니라 본문으로 보낸다 (프록시·브라우저 기록에 안 남게).
+    const embed = connEmbedKey || keyBox.value.trim();
+    const c = await api(`/projects/${encodeURIComponent(connProject)}/connection`, {
+      method: "POST",
+      body: JSON.stringify({ client, key: embed, base_url: location.origin }),
+    });
     if (!$("conn-client").options.length) {
       $("conn-client").innerHTML = c.clients.map((x) =>
         `<option ${x === client ? "selected" : ""}>${esc(x)}</option>`).join("");
     }
     const needKey = c.auth_required && !c.has_key;
+    const installCmd = `jv agent hooks --install --url ${location.origin}`
+      + (embed ? ` --key ${embed}` : "");
     $("conn-body").innerHTML = `
-      ${needKey ? `<div class="why">이 서버는 API 키를 요구합니다. 위 입력란에 키를 넣으면
-        아래 설정에 자동으로 포함됩니다. 키가 없으면 <span class="mono">jv key create &lt;이름&gt;</span>
-        으로 발급하세요.</div>` : ""}
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;line-height:1.7">
+        아래를 위에서부터 복사해 붙이면 됩니다. ① 에이전트에 도구를 연결하고
+        ② 자동 기록을 켜고 ③ 언제 쓸지 알려줍니다. 전부 <b>이 프로젝트 저장소 폴더 안</b>에서 합니다.
+      </div>
+      ${connEmbedKey ? `<div class="why">이 설정에는 방금 발급한 <b>전용 키</b>가 들어 있습니다 —
+        이 사람(또는 이 기기)에게 그대로 전달하세요.</div>` : ""}
+      ${needKey ? `<div class="why">이 서버는 API 키를 요구합니다. 화면 오른쪽 위 칸에 키를 넣으면
+        아래 설정에 자동으로 포함됩니다. 키가 없으면 <b>연결</b> 탭에서 새로 발급하세요.</div>` : ""}
 
       <div class="step-n"><b>1</b><div><strong>MCP 서버 등록</strong>
         <span>— ${esc(c.where)}</span></div></div>
@@ -441,13 +461,19 @@ async function renderConnection() {
 
       ${c.hooks_setup ? `
       <div class="step-n"><b>2</b><div><strong>자동 캡처 훅 (권장)</strong>
-        <span>— 저장소의 <span class="mono">.claude/settings.json</span> 에 병합,
-        또는 그 저장소에서 <span class="mono">jv agent hooks --install</span></span></div></div>
-      <div style="color:var(--muted);font-size:12.5px;margin:-2px 0 4px">
+        <span>— 이걸 켜야 '자동으로' 기록됩니다</span></div></div>
+      <div style="color:var(--muted);font-size:12.5px;margin:-2px 0 6px">
         세션이 시작되면 이전 작업 브리핑이 자동 주입되고, 모든 질문·답변이 자동으로 기록됩니다.
         에이전트가 도구 호출을 잊어도 기록이 남습니다.
       </div>
-      ${copyBlock(c.hooks_setup)}` : ""}
+      <div style="font-size:12.5px;margin:0 0 4px"><b>권장:</b> 그 저장소 폴더에서 아래 한 줄 실행
+        <span style="color:var(--muted)">(에이전트 머신에 <span class="mono">pip install my-viking</span> 이 되어 있어야 합니다)</span></div>
+      ${copyBlock(installCmd)}
+      <details style="margin:6px 0"><summary style="cursor:pointer;font-size:12.5px;color:var(--muted)">직접 병합하려면 (JSON)</summary>
+        <div style="color:var(--muted);font-size:12px;margin:4px 0">저장소의 <span class="mono">.claude/settings.json</span> 을 열어
+          — 파일이 없으면 새로 만들고, 이미 있으면 <span class="mono">hooks</span> 항목만 추가하세요.</div>
+        ${copyBlock(c.hooks_setup)}
+      </details>` : ""}
 
       <div class="step-n"><b>${c.hooks_setup ? 3 : 2}</b><div><strong>에이전트 지시문</strong>
         <span>— 저장소의 <span class="mono">${esc(c.instruction_file)}</span> 에 추가</span></div></div>
@@ -632,7 +658,8 @@ async function loadActivity() {
     api("/metrics" + q),
     api(`/timeseries?project=${encodeURIComponent(project)}&days=14`),
     api(`/traces?project=${encodeURIComponent(project)}&limit=60`),
-    api("/agents"),
+    // /agents 는 전체 집계라 스코프 키에는 403 — 그 한 칸만 비우고 나머지는 살린다.
+    api("/agents").catch(() => []),
     api(`/worksessions?project=${encodeURIComponent(project)}&limit=12`),
   ]);
   const avg = m.scores.length
@@ -707,7 +734,7 @@ async function loadActivity() {
      { label: "호출", get: (r) => r.calls },
      { label: "최근", get: (r) => esc(when(r.last_seen)), cls: "mono" }],
     agents, null,
-    `<b>연결된 에이전트가 없습니다.</b><br>프로젝트 탭에서 연결정보를 복사해 넣으세요.`);
+    `<b>아직 기록된 에이전트 활동이 없습니다.</b><br>연결 후 첫 작업이 들어오면 여기에 나타납니다.`);
 }
 
 let currentTrace = null;
@@ -756,6 +783,146 @@ document.querySelectorAll("[data-score]").forEach((b) => b.onclick = async () =>
   } catch (e) { $("dlg-body").insertAdjacentHTML("afterbegin", `<div class="err">${esc(e.message)}</div>`); }
 });
 $("dlg-close").onclick = () => $("dlg").close();
+
+// ---------------- 연결 (접속 키 관리) ----------------
+// A self-hosted server holds every project's context; once it leaves localhost
+// it needs per-person, per-machine, individually revocable keys. That whole
+// lifecycle used to be CLI-only — this is the GUI for it.
+function authHelpPanel() {
+  return `<div class="panel pad">
+    <div style="font-size:13px"><b>이 서버는 API 키가 필요합니다.</b></div>
+    <div style="color:var(--muted);font-size:12.5px;margin:6px 0;line-height:1.7">
+      서버를 <span class="mono">--public</span> 으로 처음 켰을 때 터미널에 출력된
+      <span class="mono">jv_…</span> 키를 오른쪽 위 칸에 붙여넣으세요.
+      잃어버렸다면 서버에서 아래 명령으로 새로 발급합니다:
+    </div>
+    ${copyBlock("docker compose exec myviking jv key create default")}
+  </div>`;
+}
+const isAuthErr = (e) => String((e && e.message) || "").startsWith("401");
+
+function keyStateChip(k) {
+  if (k.revoked) return `<span class="chip bad">폐기됨</span>`;
+  if (!k.last_used) return `<span class="chip warn">미사용</span>`;
+  return `<span class="chip ok">활성</span>`;
+}
+function keyScopeChip(projects) {
+  if (!projects || projects === "*") return `<span class="chip">전체 접근</span>`;
+  return projects.split(",").filter(Boolean).map((p) =>
+    `<span class="chip mono">${esc(p)}</span>`).join(" ");
+}
+
+async function loadKeys() {
+  const box = $("keys-panel");
+  try {
+    await api("/keys");  // 접근 가능한지 먼저 확인 (스코프 키는 403)
+  } catch (e) {
+    if (isAuthErr(e)) { box.innerHTML = authHelpPanel(); return; }
+    if (String(e.message).startsWith("403")) {
+      box.innerHTML = `<div class="why">접속 키는 <b>전체 접근(관리자) 키</b>로만 관리할 수 있습니다.
+        오른쪽 위 칸에 관리자 키를 넣으세요 — 서버를 처음 연 사람이 받은 키입니다.</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+    return;
+  }
+  const projOpts = PROJECTS.map((p) =>
+    `<option value="${esc(p.project)}">${esc(p.project)}</option>`).join("");
+  box.innerHTML = `
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;line-height:1.7">
+      사람마다·기기마다 <b>따로</b> 키를 발급하세요. 그래야 한 사람이 떠나거나 키가 새면
+      그 키만 폐기하고 나머지는 그대로 둘 수 있습니다. 범위를 좁히면 그 키는 지정한
+      프로젝트에만 닿습니다 (최소 권한).
+    </div>
+    <div class="split">
+      <div class="fld"><label>이름 (누구/어느 기기인지)</label>
+        <input id="nk-name" placeholder="예: 지훈-노트북"></div>
+      <div class="fld"><label>범위</label>
+        <label style="text-transform:none;font-size:12.5px;color:var(--ink);display:block;margin-bottom:4px">
+          <input type="checkbox" id="nk-all" style="width:auto"> 전체 접근 (모든 프로젝트)</label>
+        <select id="nk-projects" multiple size="3" style="width:100%">${projOpts}</select>
+        <div style="color:var(--muted);font-size:11.5px;margin-top:3px">여러 개는 Ctrl/⌘ 로 다중 선택</div>
+      </div>
+    </div>
+    <div class="row"><button class="primary" id="nk-create">키 발급</button>
+      <span id="nk-msg" style="color:var(--muted)"></span></div>
+    <div id="nk-result"></div>
+    <div class="scroll" style="margin-top:14px"><table id="keys-table"></table></div>`;
+
+  $("nk-all").onchange = () => { $("nk-projects").disabled = $("nk-all").checked; };
+  $("nk-create").onclick = async () => {
+    const name = $("nk-name").value.trim();
+    if (!name) { $("nk-msg").textContent = "이름을 입력하세요."; return; }
+    const all = $("nk-all").checked;
+    const projects = all ? ["*"] : [...$("nk-projects").selectedOptions].map((o) => o.value);
+    if (!all && !projects.length) { $("nk-msg").textContent = "범위를 고르거나 '전체 접근'을 켜세요."; return; }
+    $("nk-msg").textContent = "발급 중...";
+    try {
+      const r = await api("/keys", { method: "POST", body: JSON.stringify({ name, projects })});
+      $("nk-msg").textContent = ""; $("nk-name").value = "";
+      renderNewKey(r, all ? [] : projects);
+      await loadKeysTable();
+    } catch (e) { $("nk-msg").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  };
+  await loadKeysTable();
+}
+
+function renderNewKey(r, projects) {
+  const scopeList = projects.length ? projects : PROJECTS.map((p) => p.project);
+  const pick = scopeList.length
+    ? `<div class="row" style="margin-top:8px">
+        <span style="font-size:12.5px;color:var(--muted)">이 키로 연결 설정 만들기:</span>
+        <select id="nk-conn-proj">${scopeList.map((p) => `<option>${esc(p)}</option>`).join("")}</select>
+        <button class="small" id="nk-conn-go">연결 설정 보기</button></div>`
+    : "";
+  $("nk-result").innerHTML = `
+    <div class="panel pad" style="margin-top:10px;border-color:var(--accent)">
+      <div style="font-size:13px"><b>${esc(r.name)}</b> 키를 발급했습니다.</div>
+      <div style="color:var(--warn);font-size:12.5px;margin:4px 0 6px">
+        이 값은 다시 볼 수 없습니다. 지금 복사해 전달하세요.</div>
+      ${copyBlock(r.key)}
+      ${pick}
+    </div>`;
+  const go = $("nk-conn-go");
+  if (go) go.onclick = () => openConnection($("nk-conn-proj").value, r.key);
+}
+
+async function loadKeysTable() {
+  const keys = await api("/keys");
+  table($("keys-table"),
+    [{ label: "이름", get: (r) => `<b>${esc(r.name)}</b>` },
+     { label: "범위", get: (r) => keyScopeChip(r.projects) },
+     { label: "사용", get: (r) => r.calls },
+     { label: "마지막 사용", get: (r) => esc(when(r.last_used)), cls: "mono" },
+     { label: "상태", get: (r) => keyStateChip(r) },
+     { label: "", get: (r) => r.revoked ? "" : `<button class="small" data-revoke="${esc(r.id)}">폐기</button>` }],
+    keys, null,
+    `<b>아직 발급된 키가 없습니다.</b><br>위에서 사람·기기별로 하나씩 발급하세요.`);
+  $("keys-table").querySelectorAll("[data-revoke]").forEach((b) => b.onclick = async () => {
+    if (!confirm("이 키를 폐기하면 즉시 접속이 막힙니다. 계속할까요?")) return;
+    try {
+      await api("/keys/" + encodeURIComponent(b.dataset.revoke), { method: "DELETE" });
+      await loadKeysTable();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+// 평문 HTTP 로 루프백 아닌 곳에 접속하면 키가 그대로 노출된다 — 배너로 경고.
+function renderInsecureWarning() {
+  const host = location.hostname;
+  const loopback = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(host);
+  let el = $("insecure");
+  if (location.protocol === "http:" && !loopback) {
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "insecure"; el.className = "err";
+      el.style.cssText = "background:var(--chip);border-radius:8px;margin-bottom:12px";
+      document.querySelector("main").prepend(el);
+    }
+    el.innerHTML = `⚠ 평문 HTTP 로 접속 중입니다 (<span class="mono">${esc(location.host)}</span>).
+      여기 넣는 API 키와 복사한 설정이 네트워크에 그대로 노출됩니다 — HTTPS(TLS)로 접속하세요.`;
+  } else if (el) { el.remove(); }
+}
 
 // ---------------- boot ----------------
 function fillProjectSelects() {
@@ -1032,21 +1199,31 @@ function renderQuality(q) {
 
 async function load() {
   $("error").innerHTML = "";
+  let h;
+  try { h = await api("/health"); }
+  catch (e) { $("error").innerHTML = `<div class="err">서버에 닿지 못했습니다: ${esc(e.message)}</div>`; return; }
+  $("ver").textContent = "v" + h.version;
+  $("status").textContent = h.auth_required ? "인증 필요" : "인증 없음";
+  renderQuality(h.quality);
+  renderInsecureWarning();
+  // 인증이 켜진 서버에 키 없이 들어오면 boot() 부터 401 로 죽는다 — 날 오류 대신 안내.
+  if (h.auth_required && !keyBox.value.trim()) { $("error").innerHTML = authHelpPanel(); return; }
   try {
-    const h = await api("/health");
-    $("ver").textContent = "v" + h.version;
-    $("status").textContent = h.auth_required ? "인증 필요" : "인증 없음";
-    renderQuality(h.quality);
     await boot();
     if (tab === "projects") { renderProjects(); await loadBackup(); }
+    else if (tab === "connections") await loadKeys();
     else if (tab === "knowledge") await loadKnowledge();
     else await loadActivity();
-    if (tab !== "knowledge") {
+  } catch (e) {
+    if (isAuthErr(e)) { $("error").innerHTML = authHelpPanel(); return; }
+    $("error").innerHTML = `<div class="err">불러오지 못했습니다: ${esc(e.message)}</div>`;
+    return;
+  }
+  if (tab !== "knowledge") {
+    try {
       const s = await api("/review/summary");
       $("badge").hidden = !s.total; $("badge").textContent = s.total;
-    }
-  } catch (e) {
-    $("error").innerHTML = `<div class="err">불러오지 못했습니다: ${esc(e.message)}</div>`;
+    } catch (e) { $("badge").hidden = true; }  // 스코프 키는 전체 집계 불가 — 배지 숨김
   }
 }
 $("refresh").onclick = load;

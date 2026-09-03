@@ -648,9 +648,9 @@ def test_dashboard_lands_on_project_setup(client):
 # --------------------------------------------------------------------------
 def test_connection_gives_setup_and_instructions(client):
     client.post("/projects", json={"project": "backend", "template": "coding"})
-    c = client.get(
+    c = client.post(
         "/projects/backend/connection",
-        params={"client": "claude-code", "base_url": "https://viking.example.com"},
+        json={"client": "claude-code", "base_url": "https://viking.example.com"},
     ).json()
 
     assert c["mcp_url"] == "https://viking.example.com/mcp"
@@ -665,12 +665,20 @@ def test_connection_gives_setup_and_instructions(client):
 
 def test_connection_embeds_the_key_when_given(client):
     client.post("/projects", json={"project": "backend"})
-    c = client.get(
+    c = client.post(
         "/projects/backend/connection",
-        params={"client": "claude-code", "key": "jv_TEST", "base_url": "http://h:1"},
+        json={"client": "claude-code", "key": "jv_TEST", "base_url": "http://h:1"},
     ).json()
     assert "Authorization: Bearer jv_TEST" in c["setup"]
     assert c["has_key"] is True
+
+
+def test_connection_takes_the_embed_key_from_the_body_not_the_url(client):
+    """임베드 키는 쿼리스트링이 아니라 본문으로만 받는다 — 프록시/접속 로그에
+    키가 남지 않게. (advanced 리뷰 지적)"""
+    client.post("/projects", json={"project": "backend"})
+    # GET 은 더 이상 이 경로를 제공하지 않는다 (키 유출 경로 제거).
+    assert client.get("/projects/backend/connection").status_code == 405
 
 
 def test_connection_covers_every_supported_client(client):
@@ -678,9 +686,9 @@ def test_connection_covers_every_supported_client(client):
 
     client.post("/projects", json={"project": "backend"})
     for name in CLIENTS:
-        c = client.get(
+        c = client.post(
             "/projects/backend/connection",
-            params={"client": name, "base_url": "http://h:1"},
+            json={"client": name, "base_url": "http://h:1"},
         ).json()
         assert c["mcp_url"] == "http://h:1/mcp", name
         assert c["setup"].strip(), name
@@ -690,25 +698,25 @@ def test_connection_covers_every_supported_client(client):
 def test_connection_uses_the_browsed_address_not_the_bind_address(client):
     """An agent on another machine cannot dial the address the server bound to."""
     client.post("/projects", json={"project": "backend"})
-    c = client.get(
+    c = client.post(
         "/projects/backend/connection",
-        params={"base_url": "https://viking.example.com:8443"},
+        json={"base_url": "https://viking.example.com:8443"},
     ).json()
     assert c["mcp_url"] == "https://viking.example.com:8443/mcp"
 
 
 def test_connection_rejects_unknown_client_and_project(client):
     client.post("/projects", json={"project": "backend"})
-    assert client.get(
-        "/projects/backend/connection", params={"client": "nope"}
+    assert client.post(
+        "/projects/backend/connection", json={"client": "nope"}
     ).status_code == 400
-    assert client.get("/projects/ghost/connection").status_code == 404
+    assert client.post("/projects/ghost/connection", json={}).status_code == 404
 
 
 def test_connection_reports_bound_repos(client):
     client.post("/projects", json={"project": "backend"})
     client.post("/aliases", json={"alias": "git@github.com:me/backend.git", "project": "backend"})
-    c = client.get("/projects/backend/connection").json()
+    c = client.post("/projects/backend/connection", json={}).json()
     # Stored in the canonical form lookups use, so ssh- and https-form remotes
     # both resolve. Storing the raw string meant an alias could fail to match
     # even the exact remote it was created from.

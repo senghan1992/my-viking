@@ -155,6 +155,16 @@ class KeyBody(BaseModel):
     projects: list[str] = Field(default_factory=lambda: ["*"])
 
 
+class ConnectionBody(BaseModel):
+    # The key to *embed* in the generated snippet travels in the POST body, not
+    # a URL query string, so it never lands in proxy/access logs or browser
+    # history. It is distinct from the Authorization header used to *auth. the
+    # request — an admin can mint a scoped key for a teammate and embed that.
+    client: str = "claude-code"
+    base_url: str = ""
+    key: str = ""
+
+
 class FeedbackBody(BaseModel):
     project: str
     uri: str
@@ -718,31 +728,33 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         )
 
     # ----- connection info (what a person actually comes here for) ------
-    @app.get("/projects/{project}/connection")
+    @app.post("/projects/{project}/connection")
     def connection(
         project: str,
         request: Request,
-        client: str = "claude-code",
-        key: str = "",
-        base_url: str = "",
+        body: ConnectionBody | None = None,
     ) -> dict[str, Any]:
         """Everything needed to point a coding agent at this project.
+
+        POST, not GET, because the key to embed rides in the body — a secret in
+        a query string leaks into proxy/access logs and browser history.
 
         ``base_url`` matters: the server sees the address it was bound to, not
         the one an agent on another machine has to dial. The dashboard passes
         the address you are browsing, which is right far more often than
         anything the process could infer about itself.
         """
+        body = body or ConnectionBody()
         _guard(request, project)
         if not jarvis.store.project_exists(project):
             raise HTTPException(404, f"없는 프로젝트: {project}")
-        url = (base_url or str(request.base_url)).rstrip("/")
+        url = (body.base_url or str(request.base_url)).rstrip("/")
         try:
-            conn = build_connection(client, url, project, key)
+            conn = build_connection(body.client, url, project, body.key)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         data = conn.to_dict()
-        data["instruction_file"] = instruction_file(client)
+        data["instruction_file"] = instruction_file(body.client)
         data["auth_required"] = keys.any_active()
         data["clients"] = list(CLIENTS)
         data["aliases"] = jarvis.aliases(project)
