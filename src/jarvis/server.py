@@ -904,6 +904,31 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         _confine(request, project)
         return jarvis.aliases(project)
 
+    @app.delete("/aliases")
+    def remove_alias(alias: str, request: Request) -> dict[str, Any]:
+        # The alias's *current owner* decides who may unbind it — a scoped key
+        # must not be able to detach another project's repo (that would silently
+        # redirect its captures). A remote URL is not a secret, so the query
+        # string is fine here (unlike the embed key on /connection).
+        owner = jarvis.alias_owner(alias)
+        if not owner:
+            raise HTTPException(404, f"등록되지 않은 별칭: {alias}")
+        _guard(request, owner)
+        return {"alias": alias, "project": owner, "removed": jarvis.unbind_alias(alias)}
+
+    # ----- identity -----------------------------------------------------
+    @app.get("/me")
+    def whoami(request: Request) -> dict[str, Any]:
+        """What the caller's key can do. The dashboard renders the answer as a
+        header chip so a scoped user sees their fence — and an admin notices
+        when they are about to hand out their own all-access key."""
+        info = getattr(request.state, "key", None)
+        if info is None:
+            return {"auth_required": keys.any_active(), "admin": True,
+                    "name": None, "projects": ["*"]}
+        return {"auth_required": True, "admin": info.allows("*"),
+                "id": info.id, "name": info.name, "projects": info.projects}
+
     # ----- keys --------------------------------------------------------
     @app.get("/keys")
     def list_keys(request: Request) -> list[dict[str, Any]]:

@@ -431,6 +431,47 @@ def test_resolve_reports_candidates_when_it_cannot_decide(client):
     assert "alpha" in got["candidates"]
 
 
+def test_alias_can_be_removed_in_any_url_form(client):
+    """대시보드의 별칭 삭제: 등록한 형태와 달라도(ssh/https) 같은 remote 면 풀린다."""
+    client.post("/projects", json={"project": "backend"})
+    client.post("/aliases", json={"alias": "github.com/me/backend", "project": "backend"})
+    r = client.delete("/aliases", params={"alias": "git@github.com:me/backend.git"})
+    assert r.status_code == 200 and r.json()["removed"] is True
+    assert client.get("/aliases", params={"project": "backend"}).json() == []
+    assert client.delete("/aliases", params={"alias": "github.com/me/backend"}).status_code == 404
+
+
+def test_scoped_key_cannot_unbind_another_projects_alias(client):
+    """다른 프로젝트의 remote 를 떼어내면 그 프로젝트의 캡처가 조용히 끊긴다 —
+    별칭의 현재 소유 프로젝트 기준으로 스코프를 본다."""
+    for p in ("a", "b"):
+        client.post("/projects", json={"project": p})
+    client.post("/aliases", json={"alias": "github.com/me/b", "project": "b"})
+    admin = {"authorization": "Bearer " + client.post("/keys", json={"name": "admin"}).json()["key"]}
+    key = client.post("/keys", json={"name": "only-a", "projects": ["a"]}, headers=admin).json()["key"]
+    hdr = {"authorization": f"Bearer {key}"}
+    assert client.delete("/aliases", params={"alias": "github.com/me/b"}, headers=hdr).status_code == 403
+    # 자기 범위 안의 별칭은 등록·삭제 모두 가능
+    client.post("/aliases", json={"alias": "github.com/me/a", "project": "a"}, headers=hdr)
+    assert client.delete("/aliases", params={"alias": "github.com/me/a"}, headers=hdr).status_code == 200
+    # b 의 별칭은 그대로 남아 있다
+    assert [a["alias"] for a in client.get("/aliases", headers=admin).json()] == ["github.com/me/b"]
+
+
+def test_me_tells_the_caller_what_their_key_can_do(client):
+    """헤더 칩의 근거: 열린 서버 → 전체, 관리자 키 → admin, 스코프 키 → 프로젝트 목록."""
+    open_ = client.get("/me").json()
+    assert open_ == {"auth_required": False, "admin": True, "name": None, "projects": ["*"]}
+    admin = client.post("/keys", json={"name": "admin"}).json()
+    hdr = {"authorization": f"Bearer {admin['key']}"}
+    me = client.get("/me", headers=hdr).json()
+    assert me["admin"] is True and me["name"] == "admin" and me["auth_required"] is True
+    scoped = client.post("/keys", json={"name": "지훈-노트북", "projects": ["a"]}, headers=hdr).json()
+    me = client.get("/me", headers={"authorization": f"Bearer {scoped['key']}"}).json()
+    assert me["admin"] is False and me["projects"] == ["a"] and me["name"] == "지훈-노트북"
+    assert client.get("/me").status_code == 401
+
+
 def test_prepare_creates_and_binds_on_first_contact(client):
     body = client.post(
         "/prepare",

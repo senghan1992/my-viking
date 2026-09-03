@@ -92,6 +92,8 @@ DASHBOARD_HTML = r"""<!doctype html>
   .chip.bad { border-color:var(--bad); color:var(--bad); }
   .chip.warn { border-color:var(--warn); color:var(--warn); }
   .chip.ok { border-color:var(--accent); color:var(--accent); }
+  .chip .x { background:none; border:none; padding:0 0 0 4px; color:var(--muted); font-size:13px; line-height:1; cursor:pointer; }
+  .chip .x:hover { color:var(--bad); }
   .ok { color:var(--accent); } .mid { color:var(--warn); } .bad { color:var(--bad); }
   .bars { display:flex; align-items:flex-end; gap:3px; height:56px; padding:12px; }
   .bars div { flex:1; background:var(--accent); opacity:.75; border-radius:2px 2px 0 0; min-height:2px; }
@@ -148,6 +150,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   <button id="refresh" class="small">새로고침</button>
   <span class="grow"></span>
   <input id="key" type="password" placeholder="API 키 (필요한 경우)" size="16">
+  <span id="me" class="chip" title="" hidden></span>
   <span id="quality" class="chip" title=""></span>
   <span id="status" class="chip"></span>
 </header>
@@ -177,11 +180,15 @@ DASHBOARD_HTML = r"""<!doctype html>
           <div class="fld"><label>이 프로젝트 종류 (모르면 coding)</label><select id="np-template"></select></div>
         </div>
         <div class="fld"><label>설명 (선택)</label><input id="np-desc" placeholder="결제 API 서버"></div>
-        <div class="fld"><label>git remote (선택) — 넣으면 어느 머신에서든 이 저장소가 자동으로 이 프로젝트로 연결됩니다</label>
+        <div class="fld"><label>이 프로젝트의 git 주소 (GitHub 등, 선택) — 넣으면 어느 머신에서든 이 저장소가 자동으로 이 프로젝트로 연결됩니다</label>
           <input id="np-repo" placeholder="git@github.com:me/backend.git"></div>
         <div class="row"><button class="primary" id="np-create">만들기</button>
           <span id="np-msg" style="color:var(--muted)"></span></div>
       </div>
+    </section>
+    <section id="aliases-section" hidden>
+      <h2>저장소 연결 — 어느 git 주소가 어느 프로젝트로 가나</h2>
+      <div class="panel pad" id="aliases-panel">불러오는 중...</div>
     </section>
     <section>
       <h2>백업 — 볼륨이 사라져도 살아남는 사본</h2>
@@ -390,7 +397,7 @@ function renderProjects() {
         ${p.tasks
           ? `<span class="chip">캡처 중 · 최근 ${esc(when(p.last_active))}</span>`
           : (p.aliases.length
-              ? `<span class="chip warn">캡처 없음 — 훅 확인 (jv agent hooks --check)</span>`
+              ? `<span class="chip warn">캡처 없음 — 카드를 열어 ②훅 단계를 다시 확인</span>`
               : "")}
       </div>
     </button>`).join("");
@@ -454,10 +461,20 @@ async function renderConnection() {
         이 사람(또는 이 기기)에게 그대로 전달하세요.</div>` : ""}
       ${needKey ? `<div class="why">이 서버는 API 키를 요구합니다. 화면 오른쪽 위 칸에 키를 넣으면
         아래 설정에 자동으로 포함됩니다. 키가 없으면 <b>연결</b> 탭에서 새로 발급하세요.</div>` : ""}
+      ${(!connEmbedKey && c.has_key && ME && ME.admin && ME.name) ? `
+      <div class="why">지금 아래 설정에는 <b>이 브라우저의 키(${esc(ME.name)} · 전체 접근)</b>가 들어갑니다.
+        내 기기용이면 그대로 쓰세요. <b>다른 사람이나 다른 기기에 줄 설정</b>이면 그 사람 전용 키로 만드세요 —
+        나중에 그 키만 폐기할 수 있습니다.
+        <div class="row" style="margin-top:6px">
+          <input id="cn-key-name" placeholder="예: 지훈-노트북" style="flex:1;min-width:160px">
+          <button class="small" id="cn-key-mint">이 프로젝트 전용 키 발급 → 설정 만들기</button>
+        </div></div>` : ""}
 
       <div class="step-n"><b>1</b><div><strong>MCP 서버 등록</strong>
         <span>— ${esc(c.where)}</span></div></div>
       ${copyBlock(c.setup)}
+      ${c.has_key ? `<div style="color:var(--muted);font-size:11.5px;margin:-4px 0 8px">
+        ⚠ 아래 설정들에는 실제 키가 들어 있습니다 — 공개 저장소에 커밋하거나 채팅에 붙이지 마세요.</div>` : ""}
 
       ${c.hooks_setup ? `
       <div class="step-n"><b>2</b><div><strong>자동 캡처 훅 (권장)</strong>
@@ -500,7 +517,8 @@ async function renderConnection() {
         </div>
         <div class="row" style="margin-top:8px">
           ${c.aliases.length
-            ? c.aliases.map((a) => `<span class="chip mono">${esc(a.alias)}</span>`).join("")
+            ? c.aliases.map((a) => `<span class="chip mono">${esc(a.alias)}
+                <button class="x" data-unbind="${esc(a.alias)}" title="이 연결 해제">×</button></span>`).join("")
             : `<span style="color:var(--muted);font-size:12.5px">아직 등록된 remote 가 없습니다.</span>`}
         </div>
       </div>
@@ -513,6 +531,22 @@ async function renderConnection() {
       if (!alias) return;
       await api("/aliases", { method: "POST", body: JSON.stringify({ alias, project: connProject })});
       await boot(); await renderConnection();
+    };
+    $("conn-body").querySelectorAll("[data-unbind]").forEach((b) => b.onclick = async () => {
+      if (!confirm(`'${b.dataset.unbind}' 연결을 해제할까요? 그 저장소에서의 작업이 더는 이 프로젝트로 오지 않습니다.`)) return;
+      await api("/aliases?alias=" + encodeURIComponent(b.dataset.unbind), { method: "DELETE" });
+      await boot(); await renderConnection();
+    });
+    const mint = $("cn-key-mint");
+    if (mint) mint.onclick = async () => {
+      const name = $("cn-key-name").value.trim();
+      if (!name) { $("cn-key-name").focus(); return; }
+      mint.disabled = true; mint.textContent = "발급 중...";
+      try {
+        const r = await api("/keys", { method: "POST",
+          body: JSON.stringify({ name, projects: [connProject] })});
+        await openConnection(connProject, r.key);  // 그 사람 키가 들어간 설정으로 다시 그림
+      } catch (e) { alert(e.message); mint.disabled = false; mint.textContent = "이 프로젝트 전용 키 발급 → 설정 만들기"; }
     };
   } catch (e) { $("conn-body").innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 }
@@ -907,6 +941,58 @@ async function loadKeysTable() {
   });
 }
 
+// ---------------- 내 키 (헤더 칩) ----------------
+// 스코프 사용자는 자기 울타리를 보고, 관리자는 자기가 전체 접근 키로 들어와
+// 있음을 의식한다 (그 키를 남에게 나눠주기 전에).
+let ME = null;
+async function loadMe() {
+  const chip = $("me");
+  try { ME = await api("/me"); } catch (e) { ME = null; chip.hidden = true; return; }
+  if (!ME.auth_required || !ME.name) { chip.hidden = true; return; }
+  chip.hidden = false;
+  if (ME.admin) {
+    chip.textContent = `${ME.name} · 전체 접근`;
+    chip.className = "chip ok";
+    chip.title = "이 브라우저의 키는 모든 프로젝트와 키 관리에 접근할 수 있습니다";
+  } else {
+    chip.textContent = `${ME.name} · ${ME.projects.join(", ")}`;
+    chip.className = "chip";
+    chip.title = "이 키가 닿을 수 있는 프로젝트만 보입니다";
+  }
+}
+
+// ---------------- 저장소 연결 전체 보기 ----------------
+// 프로젝트별 다이얼로그를 하나씩 여는 대신 '어느 remote 가 어느 프로젝트로 가나'를
+// 한 표로. 전체 목록은 전체 접근 키만 볼 수 있으므로 스코프 키에겐 섹션을 숨긴다.
+async function loadAliases() {
+  const sec = $("aliases-section");
+  let rows;
+  try { rows = await api("/aliases"); } catch (e) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const box = $("aliases-panel");
+  box.innerHTML = `
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;line-height:1.7">
+      에이전트는 작업 중인 저장소의 git 주소로 프로젝트를 찾습니다. 여기 없는 저장소는
+      이름이 같은 프로젝트로 추측하거나 새 프로젝트를 만듭니다 — 의도와 다르면 각 프로젝트
+      카드를 열어 '저장소 연결'에서 등록하세요.
+    </div>
+    <div class="scroll"><table id="aliases-table"></table></div>`;
+  table($("aliases-table"),
+    [{ label: "git 주소 / 경로", get: (r) => esc(r.alias), cls: "mono" },
+     { label: "종류", get: (r) => `<span class="chip">${esc(r.kind || "repo")}</span>` },
+     { label: "프로젝트", get: (r) => `<b>${esc(r.project)}</b>` },
+     { label: "", get: (r) => `<button class="small" data-unbind="${esc(r.alias)}">해제</button>` }],
+    rows, null,
+    `<b>아직 연결된 저장소가 없습니다.</b><br>프로젝트 카드를 열어 git 주소를 등록하면 여기 모입니다.`);
+  $("aliases-table").querySelectorAll("[data-unbind]").forEach((b) => b.onclick = async () => {
+    if (!confirm(`'${b.dataset.unbind}' 연결을 해제할까요?`)) return;
+    try {
+      await api("/aliases?alias=" + encodeURIComponent(b.dataset.unbind), { method: "DELETE" });
+      await boot(); renderProjects(); await loadAliases();
+    } catch (e) { alert(e.message); }
+  });
+}
+
 // 평문 HTTP 로 루프백 아닌 곳에 접속하면 키가 그대로 노출된다 — 배너로 경고.
 function renderInsecureWarning() {
   const host = location.hostname;
@@ -927,9 +1013,12 @@ function renderInsecureWarning() {
 // ---------------- boot ----------------
 function fillProjectSelects() {
   const opts = PROJECTS.map((p) => `<option>${esc(p.project)}</option>`).join("");
+  // '전체' 집계는 전체 접근 키만 가능 — 스코프 사용자에겐 그 선택지를 아예 안 보인다
+  // (보이면 기본값이 되어 활동 탭이 403 으로 열리지도 못한다).
+  const allOk = !ME || ME.admin;
   for (const id of ["k-project", "a-project"]) {
     const el = $(id), prev = el.value;
-    el.innerHTML = (id === "a-project" ? `<option value="">전체</option>` : "") + opts;
+    el.innerHTML = (id === "a-project" && allOk ? `<option value="">전체</option>` : "") + opts;
     if (prev && [...el.options].some((o) => o.value === prev)) el.value = prev;
   }
 }
@@ -1209,8 +1298,9 @@ async function load() {
   // 인증이 켜진 서버에 키 없이 들어오면 boot() 부터 401 로 죽는다 — 날 오류 대신 안내.
   if (h.auth_required && !keyBox.value.trim()) { $("error").innerHTML = authHelpPanel(); return; }
   try {
+    await loadMe();
     await boot();
-    if (tab === "projects") { renderProjects(); await loadBackup(); }
+    if (tab === "projects") { renderProjects(); await loadAliases(); await loadBackup(); }
     else if (tab === "connections") await loadKeys();
     else if (tab === "knowledge") await loadKnowledge();
     else await loadActivity();

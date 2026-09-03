@@ -1511,6 +1511,16 @@ class Jarvis:
         self.store.ensure_project(project)
         self.tracer.bind_alias(_normalise_alias(alias), project, kind)
 
+    @_locked
+    def unbind_alias(self, alias: str) -> bool:
+        """Remove one repo/path → project binding. Returns whether it existed.
+        Same normalisation as bind, so any URL form of the remote unbinds it."""
+        return self.tracer.unbind_alias(_normalise_alias(alias))
+
+    def alias_owner(self, alias: str) -> str:
+        """Which project an alias currently points at ('' if unbound)."""
+        return self.tracer.resolve_alias(_normalise_alias(alias))
+
     def aliases(self, project: str = "") -> list[dict[str, Any]]:
         return self.tracer.aliases(project)
 

@@ -558,6 +558,13 @@ class Tracer:
         )
         self.db.commit()
 
+    def unbind_alias(self, alias: str) -> bool:
+        cur = self.db.execute(
+            "DELETE FROM project_aliases WHERE alias=?", (alias.strip(),)
+        )
+        self.db.commit()
+        return bool(cur.rowcount)
+
     def resolve_alias(self, alias: str) -> str:
         row = self.db.one(
             "SELECT project FROM project_aliases WHERE alias=?", (alias.strip(),)
