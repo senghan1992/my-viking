@@ -48,7 +48,8 @@ L0/L1/L2 티어 로딩, 세션에서 장기 메모리 증류.
 ## 빠른 시작 — 명령 세 개
 
 필요한 것은 서버 머신의 **Docker** 하나입니다. 그 외에는 호스트에 아무것도 설치하지
-않습니다.
+않습니다. 어디에 띄울지(같은 노트북 / 집 서버 / EC2)에 따라 달라지는 부분은
+[어디에 띄우나](#어디에-띄우나--시나리오별-가이드) 절에 따로 정리했습니다.
 
 ### 1. 서버 띄우기 (서버가 될 머신에서, 한 번)
 
@@ -58,59 +59,72 @@ bash deploy/up.sh                              # 이 머신에서만 쓸 때 (12
 ```
 
 밖에서도 붙을 거면 둘 중 하나로 띄우세요. 둘 다 **관리자 API 키를 먼저 발급한 뒤에만**
-바깥에 열고, 키를 한 번 출력합니다(다시 볼 수 없으니 저장).
+바깥에 열고, 키를 한 번 출력합니다(다시 볼 수 없으니 저장). 다시 실행해도 키를 새로
+만들지 않습니다.
 
 ```bash
 bash deploy/up.sh --domain viking.duckdns.org  # HTTPS (권장) — Caddy 가 인증서를 자동 발급
 bash deploy/up.sh --public                     # 평문 HTTP — 같은 집/사무실 네트워크 안에서만
 ```
 
-`--domain` 은 공유기에서 80/443 만 이 머신으로 포워딩하면 됩니다. 도메인이 없으면
-[DuckDNS](https://www.duckdns.org) 같은 무료 DDNS 로 하나 받으세요. 선택한 모드는
-`deploy/.env` 에 남아, 이후 `git pull && bash deploy/up.sh` 가 같은 모드로 업데이트합니다.
+끝나면 **대시보드 주소**와 다음 할 일이 출력됩니다. `--domain` 은 포트포워딩(또는
+보안 그룹)과 DNS 가 끝나야 열립니다 — 그 순서는 시나리오 절에 있습니다.
 
-끝나면 **대시보드 주소**가 출력됩니다. 열리면 성공입니다.
+### 2. 대시보드 열어 보기 (브라우저)
 
-### 2. 대시보드에서 프로젝트 만들기 (브라우저)
-
-1. 오른쪽 위 칸에 관리자 키를 넣습니다 (로컬 전용이면 필요 없음).
-2. **새 프로젝트** — 이름과 git 주소(선택)를 넣고 만들기.
-3. 카드를 클릭하면 **연결정보**가 나옵니다. 위에서부터 복사하면 됩니다.
+주소를 열고 오른쪽 위 칸에 관리자 키를 넣으면 빈 프로젝트 목록이 보입니다. **여기서
+프로젝트를 만들 필요는 없습니다** — 3단계에서 저장소의 git 주소로 자동 생성됩니다.
+이름을 직접 정하고 싶을 때만 **새 프로젝트**로 만드세요.
 
 <p align="center"><img src="docs/img/dashboard.png" alt="대시보드 첫 화면 — 프로젝트 카드, 새 프로젝트, 저장소 연결" width="92%"></p>
 
-카드를 클릭하면 나오는 연결정보입니다. 복사 버튼 세 번이면 끝납니다.
-
-<p align="center"><img src="docs/img/connect.png" alt="연결정보 — MCP 등록, 자동 캡처 훅, 에이전트 지시문을 복사 버튼으로" width="92%"></p>
-
-다른 사람이나 다른 기기에 줄 설정이면, 연결정보 안의 **"이 프로젝트 전용 키 발급"**
-으로 그 사람 키가 들어간 설정을 만드세요. 나중에 그 키만 폐기할 수 있습니다.
-키 전체는 **연결** 탭에서 봅니다(범위 · 사용 횟수 · 마지막 사용 · 폐기).
+다른 사람·다른 기기가 붙을 거면 **연결** 탭에서 그 사람 이름으로 키를 따로 발급하세요.
+관리자 키를 나눠주면 나중에 한 사람만 끊을 수 없습니다.
 
 ### 3. 에이전트 머신에서 자동 기록 켜기 (그 저장소 폴더에서, 한 번)
 
 ```bash
-pip install git+https://github.com/senghan1992/my-viking.git   # 얇은 CLI 하나 (의존성 PyYAML)
+pipx install git+https://github.com/senghan1992/my-viking.git   # 얇은 CLI 하나. pipx 가 없으면 pip install --user
 cd ~/work/my-project
 jv agent hooks --install --url https://viking.duckdns.org --key jv_...
 ```
 
-이 한 줄이 저장소의 `.claude/settings.json` 에 훅을 심습니다. 이제 그 폴더에서
-Claude Code 를 열고 하던 대로 일하면 첫 질문부터 기록이 쌓이고, 다음 세션은 "지난번에
-뭘 했는지" 브리핑을 받고 시작합니다. 프로젝트는 git remote 로 서버가 자동으로 만들고
-연결하므로 따로 등록할 게 없습니다.
+마지막 줄에 **`✓ 서버 확인: … 키 '이름' (범위)`** 가 나오면 끝입니다. 주소나 키가 틀리면
+그 자리에서 `⚠ 서버 확인 실패` 로 멈추니, 몇 주 뒤에 "왜 아무것도 안 쌓였지"가 되지
+않습니다. 훅은 `.claude/settings.local.json`(개인 파일, Claude Code 가 기본으로 gitignore)
+에 들어가므로 키가 저장소에 커밋되지 않습니다.
+
+이제 그 폴더에서 Claude Code 를 열고 하던 대로 일하면 첫 질문부터 기록이 쌓이고, 다음
+세션은 "지난번에 뭘 했는지" 브리핑을 받고 시작합니다. 프로젝트는 git remote 로 서버가
+자동으로 만들고 연결합니다. 에이전트가 도구로 지식을 직접 남기게 하려면 MCP 도 한 줄
+붙이세요(대시보드 연결정보 ①번, 선택):
 
 ```bash
-jv agent hooks --check --url https://viking.duckdns.org --key jv_...   # (선택) 잘 붙었는지
+claude mcp add --transport http myviking https://viking.duckdns.org/mcp --header "Authorization: Bearer jv_..."
 ```
 
 다음 세션의 에이전트가 첫 프롬프트 전에 받는 것입니다. 이미 밟은 함정이 맨 위에 옵니다.
 
 <p align="center"><img src="docs/img/briefing.png" alt="세션 시작 시 자동 주입되는 브리핑 — 주의 항목, 확립된 지식, 최근 작업" width="86%"></p>
 
+뭔가 이상하면 언제든:
+
+```bash
+jv agent hooks --check --url https://viking.duckdns.org --key jv_...
+```
+
+훅 설치 여부 · 서버 연결 · **키가 실제로 받아들여지는지** · 마지막 성공 · 최근 실패를
+한 화면에 보여 줍니다. 훅은 실패해도 코딩 세션을 깨지 않지만(fail-open), 키가 거부되면
+Claude Code 화면에 한 세션당 한 번 `[MyViking] 서버가 요청을 거부했습니다` 가 뜹니다.
+실패 기록은 `~/.myviking/hook-state/errors.log` 에 남습니다.
+
 > Cursor·Codex 등 **훅이 없는 MCP 클라이언트**나 **MCP 자체가 없는 에이전트**는
 > 연결정보 드롭다운에서 그 클라이언트를 고르면 됩니다 — 자세한 건
 > [에이전트 붙이기](#에이전트-붙이기--claude-code-는-훅으로-권장) 절.
+
+카드를 클릭하면 나오는 연결정보입니다. 복사 버튼 세 번이면 끝납니다.
+
+<p align="center"><img src="docs/img/connect.png" alt="연결정보 — MCP 등록, 자동 캡처 훅, 에이전트 지시문을 복사 버튼으로" width="92%"></p>
 
 ### 그다음 (권장 순서)
 
@@ -118,7 +132,7 @@ jv agent hooks --check --url https://viking.duckdns.org --key jv_...   # (선택
    또는 [백업 절](#백업--볼륨이-사라져도-살아남는-사본).
 2. **품질 올리기** — `deploy/.env` 에 `ANTHROPIC_API_KEY` 를 넣으면 요약·증류가
    좋아집니다. [LLM 붙이기](#llm-붙이기-선택)
-3. **외부 노출 점검** — [포트포워딩 체크리스트](#집-서버를-밖으로-여는-체크리스트-포트포워딩)
+3. **문제가 생기면** — [증상별 대응](#문제가-생기면--증상별-대응) 절.
 
 ---
 
@@ -162,10 +176,10 @@ cp .env.example .env                        # LLM 키 등 선택 설정
 ### Docker 없이
 
 ```bash
-uv venv --python 3.12 .venv
-uv pip install --python .venv -e ".[all,dev]"
+python3 -m venv .venv && .venv/bin/pip install -e ".[all]"     # (uv 가 있으면: uv venv && uv pip install -e ".[all]")
 export PATH="$PWD/.venv/bin:$PATH"
-jv serve
+jv key create admin          # 밖에 열 거면 먼저. 데이터는 JARVIS_HOME (기본 ~/.jarvis) 에
+jv serve                     # 127.0.0.1:8787. 밖에 열려면 --host 0.0.0.0 + 앞에 Caddy
 ```
 
 `deploy/` 에 systemd 유닛과 Caddyfile(자동 TLS)도 있습니다. 코어는 PyYAML 하나만
@@ -231,33 +245,103 @@ jv backup restore --file /data/pre-restore/myviking-....tar.gz --yes  # 실행 �
 `jv backup config --provider local --path /backups` 로 바꾸고 compose 에 그
 경로를 볼륨으로 추가하면 됩니다.
 
-### 집 서버를 밖으로 여는 체크리스트 (포트포워딩)
+## 어디에 띄우나 — 시나리오별 가이드
 
-"집에 서버를 두고 회사·카페 어디서든 붙는다"가 이 서비스의 표준 시나리오라서,
-그 순서를 그대로 적어둡니다.
+세 가지 배포 형태를 초보·중급·고수 세 사람이 실제로 수행해 보고, 막힌 곳을 고친 뒤 그
+순서대로 적었습니다. 공통 원칙은 하나입니다 — **키 먼저, 노출은 나중.**
 
-1. **키 먼저, 노출은 나중** — `up.sh --domain`/`--public` 은 관리자 API 키를 확인한
-   뒤에만 외부로 엽니다. 키가 생기는 순간 전 API 가 인증을 요구하고,
-   틀린 키를 반복하는 IP 는 자동으로 차단됩니다(분당 10회 초과 시 429).
-2. **공유기 포트포워딩** — TLS 를 쓸 거면 80/443 만, 아니면 8787 을 이 머신으로.
-3. **TLS (강력 권장)** — 평문 HTTP 로 열면 API 키와 프로젝트 지식이 그대로
-   지나갑니다. 도메인이 없어도 DuckDNS 같은 무료 DDNS 면 됩니다:
+### A. 서버와 에이전트가 같은 노트북
+
+```bash
+bash deploy/up.sh
+jv agent hooks --install --url http://127.0.0.1:8787     # 키 없음 (루프백은 인증 없이 열림)
+```
+
+Docker 없이 더 가볍게 띄우려면 [Docker 없이](#docker-없이). 이 형태에서는 키도 TLS 도
+필요 없습니다.
+
+### B. 집 서버 + 공유기 포트포워딩 (회사·카페에서 붙기)
+
+순서가 중요합니다. 인증서는 DNS 와 포워딩이 끝난 **다음에** 발급됩니다.
+
+1. **도메인 하나** — 없으면 [DuckDNS](https://www.duckdns.org) 에서 무료로 만듭니다
+   (예: `viking.duckdns.org`). 페이지의 **token** 을 복사해 두세요.
+2. **집 IP 가 바뀌어도 따라가게** — `deploy/.env` 에 `DUCKDNS_TOKEN=<토큰>` 한 줄.
+   `up.sh --domain` 이 갱신 컨테이너를 함께 띄웁니다. (공유기에 DDNS 메뉴가 있으면
+   거기서 해도 됩니다. 둘 다 안 하면 며칠 뒤 IP 가 바뀌는 순간 밖에서 끊깁니다.)
+3. **서버의 LAN IP 고정** — 공유기 관리 페이지에서 서버 MAC 에 DHCP 고정(예약). `hostname -I`
+   가 그 IP 입니다.
+4. **포트포워딩** — 외부 **80, 443** → 서버 LAN IP 의 80, 443. **8787 은 열지 마세요.**
+   (ISP 가 80 을 막는 경우도 있습니다 — 443 만 열려도 Caddy 는 TLS-ALPN 으로 발급합니다.)
+5. **띄우기**
    ```bash
    bash deploy/up.sh --domain viking.duckdns.org
    ```
-   Caddy 가 인증서를 자동 발급/갱신하고, 에이전트는
-   `https://viking.duckdns.org/mcp` 로 붙습니다. 8787 은 포워딩하지 마세요.
-   이 모드는 `MYVIKING_TRUST_PROXY=1` 도 함께 켭니다 — 프록시 뒤에서는 모든 요청이
-   프록시 IP 로 보이므로, 틀린 키 차단이 실제 클라이언트별로 동작하려면 `X-Forwarded-For`
-   를 믿어야 합니다. 프록시 없이 직접 노출(`--public`)할 땐 자동으로 꺼집니다 —
-   헤더를 위조당할 수 있기 때문입니다.
-4. **키는 사람·기기별로** — 대시보드 **연결** 탭에서 이름과 범위(전체 / 특정
-   프로젝트)를 정해 발급하고, 마지막 사용 시각을 보고, 안 쓰는 키는 폐기합니다.
-   프로젝트 스코프를 걸어 두면 키 하나가 새어도 그 프로젝트 밖은 못 봅니다.
-   터미널이 편하면 `jv key create 회사노트북 --project backend` / `jv key list` /
-   `jv key revoke` 도 같은 일을 합니다.
-5. **백업 연결** — 위의 [백업](#백업--볼륨이-사라져도-살아남는-사본) 절 참고.
-   외부에 열린 서버라면 더더욱.
+   관리자 키가 출력됩니다. 저장하세요.
+6. **확인** — 밖에서(휴대폰 LTE 등) `curl -I https://viking.duckdns.org/health` 가 200 이면
+   끝. 첫 접속 후 인증서 발급에 수십 초 걸릴 수 있습니다. 안 되면
+   `cd deploy && docker compose logs caddy` — DNS 가 아직 이 IP 를 안 가리키거나 80/443 이
+   막혀 있으면 여기 이유가 나옵니다.
+7. **집 안에서** 도메인으로 접속이 안 되면 공유기가 NAT 루프백(헤어핀)을 지원하지 않는
+   것입니다. 집 안에서는 `http://<LAN IP>:8787` 대신 — 그건 로컬에만 바인딩돼 있으니 —
+   서버에서 직접, 또는 그냥 밖에서 쓰는 주소를 유지하고 집에서는 LAN 접속을 포기하세요.
+   (원한다면 공유기 DNS 에 `viking.duckdns.org → LAN IP` 를 등록하면 해결됩니다.)
+
+이후 에이전트 머신에서는 [빠른 시작 3단계](#3-에이전트-머신에서-자동-기록-켜기-그-저장소-폴더에서-한-번)
+그대로, `--url https://viking.duckdns.org --key <그 기기 키>` 입니다.
+
+### C. EC2 · VPS (클라우드)
+
+1. **고정 IP** — EC2 는 Elastic IP 를 붙이세요. 재부팅으로 IP 가 바뀌면 DNS 가 깨집니다.
+2. **DNS** — 도메인의 A 레코드 → 그 IP. (DuckDNS 도 됩니다.)
+3. **보안 그룹 / 방화벽** — 인바운드 **80, 443** 만. 8787 은 열지 않습니다(컨테이너는
+   루프백에만 바인딩됩니다).
+4. **띄우기**
+   ```bash
+   bash deploy/up.sh --domain viking.example.com
+   ```
+   `--public` 도 되지만 평문이고, 완료 메시지의 주소가 **사설 IP**(172.31.x.x) 로 나옵니다 —
+   클라우드에서는 `--public --url http://<퍼블릭 IP>:8787` 처럼 안내에 쓸 주소를 직접
+   주거나, 그냥 `--domain` 을 쓰세요.
+5. **Docker 없이(systemd)** 가려면 `deploy/myviking.service` 머리말의 순서를 지키세요:
+   `JARVIS_HOME=/var/lib/myviking` 을 만들고, **같은 JARVIS_HOME 으로** `jv key create admin`
+   을 한 뒤 유닛을 켭니다. 다른 홈에 키를 만들면 서비스는 인증 없이 0.0.0.0 에 열립니다.
+   TLS 는 Caddy 를 패키지로 설치해 `deploy/Caddyfile` 을 쓰면 됩니다.
+
+### D. 팀으로 쓸 때 (2~5명)
+
+- **사람·기기마다 키 하나.** 대시보드 **연결** 탭에서 이름 + 범위(그 사람 프로젝트만)로
+  발급합니다. 연결정보 다이얼로그의 "이 프로젝트 전용 키 발급"을 누르면 그 사람 키가 들어간
+  붙이기 패키지가 바로 만들어집니다. 관리자 키는 나눠주지 마세요.
+- **에이전트가 달라도 됩니다.** Claude Code 는 훅(`jv agent hooks --install`), Cursor·Codex 는
+  MCP 설정 + 지시문, MCP 가 없는 에이전트는 셸 브리지(`export` 두 줄 + `jv remote …`).
+  전부 같은 창고에 기록됩니다.
+- **한 사람을 끊을 때는 두 곳.** 서버에서 키 폐기 **그리고** 그 사람 클라이언트의 설정
+  제거. 폐기된 키로 계속 두드리는 Cursor 는 그 IP 에 429 백오프를 걸지만, 같은 사무실의
+  다른 사람 **유효한** 키는 영향받지 않습니다(차단은 실패한 시도에만 걸립니다).
+- **업그레이드 전 백업 한 번**: `docker compose exec myviking jv backup run`. 그다음
+  `git pull && bash deploy/up.sh` — 스키마 변경은 기동 시 자동 적용되고 수 초 멈춥니다.
+- **감시**는 `/health` 의 `degraded` 필드 하나면 됩니다(백업 실패·유지보수 실패·키 DB 유실·
+  색인 손상이면 `true`, 사유는 `problems`). UptimeRobot 같은 데서 그 값을 보세요.
+
+## 문제가 생기면 — 증상별 대응
+
+| 증상 | 원인 | 확인·해결 |
+|---|---|---|
+| 일했는데 대시보드에 아무것도 안 쌓임 | 훅 미설치 / 주소·키 오류 / 서버 다운 | 그 저장소에서 `jv agent hooks --check --url … --key …`. 네 줄(훅 설치·서버·키·마지막 성공) 중 어디가 빨간지 보면 됩니다 |
+| Claude Code 에 `[MyViking] 서버가 요청을 거부했습니다` | 키가 틀림·폐기됨·범위 밖 | 대시보드 연결 탭에서 그 키 상태 확인 → 새 키로 `--install` 다시 |
+| `429 인증 실패가 너무 잦습니다` | 같은 IP 에서 틀린 키 10회/분 | 틀린 키를 쓰는 클라이언트를 고치면 약 60초 뒤 풀림. 올바른 키는 그 사이에도 통과합니다 |
+| 대시보드가 "API 키가 필요합니다" 만 보임 | 키 미입력 또는 오타 | 오른쪽 위 칸에 관리자 키. 잃었으면 서버에서 `docker compose exec myviking jv key create admin` |
+| `https://<도메인>` 이 안 열림 | DNS·포워딩·보안그룹 | `curl -I https://<도메인>/health`, `docker compose logs caddy`. 위 B/C 순서 재확인 |
+| 집 안에서만 도메인 접속 불가 | NAT 루프백 미지원 | 공유기 DNS 에 도메인 → LAN IP 등록, 또는 밖에서만 사용 |
+| 프롬프트마다 몇 초 멈춤 | 서버에 닿지 못해 훅이 타임아웃 | 직전 실패 뒤엔 1초로 줄여 재시도합니다. `--check` 로 서버 상태 확인 |
+| 서버 로그에 `색인 DB 가 손상되어 옆으로 치웠습니다` | index.db 손상 | 메모리는 파일에서 자동 재색인. 키·작업 이력은 `jv backup restore` 로 |
+| 모든 요청이 503 "API 키 DB 가 없습니다" | index.db 가 지워짐(인증이 켜져 있던 서버) | 백업 복원, 또는 서버에서 `jv key create admin` 으로 다시 잠금 |
+| `pip install` 이 거부됨 (`externally-managed-environment`) | 시스템 파이썬 보호 | `pipx install git+…` 또는 `pip install --user git+…` 후 `~/.local/bin` 을 PATH 에 |
+
+## 에이전트 붙이기 — 클라이언트별
+
+어떤 에이전트든 붙습니다. 훅이 있으면 훅으로(가장 자동), MCP 만 있으면 MCP 로, 둘 다 없으면 셸로.
 
 ### 저장소를 프로젝트에 연결
 
@@ -293,7 +377,7 @@ cd ~/work/backend
 jv agent hooks --install --url https://viking.example.com --key jv_...
 ```
 
-`--install` 이 저장소의 `.claude/settings.json` 에 훅 네 개를 병합합니다.
+`--install` 이 저장소의 `.claude/settings.local.json`(개인 파일 — 키가 커밋되지 않음) 에 훅 네 개를 병합하고, 끝에 서버와 키를 실제로 확인합니다.
 그 뒤로는 에이전트의 협조 없이도 루프 전체가 돌아갑니다:
 
 | 훅 | 하는 일 |
@@ -726,6 +810,24 @@ jv key revoke key_a1b2c3
   헤더 칩이 지금 브라우저 키의 이름과 범위를 보여줍니다. `/me` 가 그 근거입니다.
 - `--host 0.0.0.0` 으로 열면서 키가 없으면 `jv serve` 가 경고합니다.
 - 외부 노출은 `deploy/Caddyfile` 로 TLS 를 앞에 두는 것을 권합니다.
+- 스코프 키가 넘지 못하는 선: 다른 프로젝트의 읽기·쓰기, 프로젝트 생성, 별칭(remote) 바꾸기,
+  키 관리, **백업 설정·실행**, 전체 재색인. 전부 403 이고 테스트로 고정돼 있습니다
+  (`tests/test_deploy_hardening.py`).
+- 틀린 키 10회/분이면 그 IP 의 **실패한 시도**가 60초 429 를 받습니다. 올바른 키는 같은 IP
+  에서도 통과합니다(사무실 NAT 에서 한 사람이 모두를 잠그지 않게). 실패는 서버 로그에
+  `auth_failed ip=… path=… key=jv_xxxx…` 한 줄로 남습니다.
+- 프록시 뒤(`up.sh --domain`)에서는 `MYVIKING_TRUST_PROXY=1` 로 `X-Forwarded-For` 의
+  **마지막 홉**을 클라이언트 IP 로 봅니다. 함께 배포되는 Caddy 는 들어오는 헤더를 덮어쓰므로
+  안전하고, 접근 로그(실제 IP)는 `docker compose logs caddy` 에 JSON 으로 남습니다.
+  다른 프록시(nginx 등)를 쓰면 그 프록시가 헤더를 덮어쓰도록 설정하고, 8787 은 프록시
+  외에는 닿지 못하게 두세요. 프록시 없이 직접 노출할 땐 켜지 마세요.
+- **`index.db` 에 키·작업 이력·별칭이 있습니다.** 지우면 메모리는 파일에서 다시 색인되지만
+  키는 돌아오지 않습니다. 인증이 켜졌던 서버는 그 흔적(`auth.enabled`)을 보고 키 없이
+  열리는 대신 503 으로 멈추며, 백업 복원 또는 서버에서 `jv key create` 로 풉니다.
+- `/health`, `/docs`, `/openapi.json` 은 키 없이 열립니다. `/health` 는 버전·프로젝트 수·백업
+  상태 같은 운영 정보를 주되, 저장 경로는 키가 있을 때만 보입니다.
+- 훅 명령줄에 키가 들어가므로(`MYVIKING_KEY=…`), 훅이 실행되는 순간 `ps` 에 잠시 보입니다.
+  같은 머신을 남과 공유한다면 그 기기용 스코프 키를 쓰세요.
 
 ## 새 세션이 프로젝트를 빠르게 파악하는 방법
 
@@ -790,7 +892,7 @@ claude mcp add myviking -- /경로/.venv/bin/python -m jarvis.mcp_server
 ```
 $JARVIS_HOME/                      # 기본 ~/.jarvis
 ├── jarvis.yaml                    # 설정
-├── index.db                       # SQLite: 색인 + 추적 + 키 (jv reindex 로 재생성)
+├── index.db                       # SQLite: 색인 + 작업 이력 + API 키 + 별칭 (색인만 재생성 가능)
 ├── global/                        # 모든 프로젝트에 적용되는 선호
 └── projects/backend/
     ├── profile.yaml               # 이 프로젝트의 메모리 스키마
@@ -802,7 +904,7 @@ $JARVIS_HOME/                      # 기본 ~/.jarvis
 ```
 
 **파일이 진실의 원천입니다.** 왜 그렇게 답했는지 궁금하면 파일을 열면 됩니다.
-`index.db` 는 언제든 버리고 `jv reindex` 로 다시 만들 수 있습니다.
+`index.db` 의 **색인**은 파일에서 다시 만들 수 있고(비어 있으면 기동 시 자동), **키·작업 이력·별칭**은 아닙니다 — 지우지 말고 백업하세요. 손상되면 서버가 옆으로 치우고 새로 만든 뒤 `/health` 에 알립니다.
 
 ## Python / HTTP API
 

@@ -56,9 +56,29 @@ class KeyStore:
         self.db.conn.executescript(KEY_SCHEMA)
         self.db.commit()
 
+    # Keys live in index.db. If that file is lost (deleted, corrupted, wrong
+    # volume) the server would come back *open* — on a port-forwarded box that
+    # is the worst failure mode there is. So the first key also drops a marker
+    # next to the DB; marker-without-keys means "auth was on, the DB is gone".
+    MARKER = "auth.enabled"
+
+    def _marker(self):
+        return self.db.path.with_name(self.MARKER)
+
+    def auth_lost(self) -> bool:
+        """Auth used to be on, but no active key exists any more."""
+        try:
+            return self._marker().exists() and not self.any_active()
+        except Exception:
+            return False
+
     def create(self, name: str, projects: list[str] | None = None) -> tuple[str, str]:
         """Return ``(key_id, plaintext_key)``. The plaintext is not stored."""
         raw = PREFIX + secrets.token_urlsafe(32)
+        try:
+            self._marker().touch()
+        except OSError:
+            pass
         kid = "key_" + secrets.token_hex(6)
         self.db.execute(
             "INSERT INTO api_keys (id, name, key_hash, projects, created)"

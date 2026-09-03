@@ -70,7 +70,7 @@ def _jv_command() -> str:
 
 
 def hook_settings(url: str, key: str = "", timeout: int = 15) -> dict[str, Any]:
-    """The ``hooks`` block for Claude Code's ``.claude/settings.json``."""
+    """The ``hooks`` block for Claude Code's ``.claude/settings.local.json``."""
     jv = _jv_command()
 
     def command(event: str) -> str:
@@ -254,8 +254,8 @@ def build(
             hook_settings(base, key), ensure_ascii=False, indent=2
         )
         hooks_where = (
-            "저장소의 .claude/settings.json 에 병합하세요. 그 저장소에서 "
-            "`jv agent hooks --install` 한 번이면 자동으로 병합됩니다 "
+            "저장소의 .claude/settings.local.json 에 병합하세요 (개인 파일 — 키가 커밋되지 않습니다). "
+            "그 저장소에서 `jv agent hooks --install` 한 번이면 자동으로 병합됩니다 "
             "(에이전트 머신에 my-viking 코어가 설치되어 있어야 합니다)."
         )
         instructions_hooks = INSTRUCTIONS_HOOKS

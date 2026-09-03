@@ -487,7 +487,7 @@ async function renderConnection() {
         <span style="color:var(--muted)">(에이전트 머신에 먼저 <span class="mono">${esc(c.install_cmd)}</span>)</span></div>
       ${copyBlock(installCmd)}
       <details style="margin:6px 0"><summary style="cursor:pointer;font-size:12.5px;color:var(--muted)">직접 병합하려면 (JSON)</summary>
-        <div style="color:var(--muted);font-size:12px;margin:4px 0">저장소의 <span class="mono">.claude/settings.json</span> 을 열어
+        <div style="color:var(--muted);font-size:12px;margin:4px 0">저장소의 <span class="mono">.claude/settings.local.json</span> 을 열어 (개인 파일 — 키가 커밋되지 않습니다)
           — 파일이 없으면 새로 만들고, 이미 있으면 <span class="mono">hooks</span> 항목만 추가하세요.</div>
         ${copyBlock(c.hooks_setup)}
       </details>` : ""}
@@ -826,11 +826,12 @@ function authHelpPanel() {
   return `<div class="panel pad">
     <div style="font-size:13px"><b>이 서버는 API 키가 필요합니다.</b></div>
     <div style="color:var(--muted);font-size:12.5px;margin:6px 0;line-height:1.7">
-      서버를 <span class="mono">--public</span> 으로 처음 켰을 때 터미널에 출력된
-      <span class="mono">jv_…</span> 키를 오른쪽 위 칸에 붙여넣으세요.
-      잃어버렸다면 서버에서 아래 명령으로 새로 발급합니다:
+      서버를 처음 열었을 때(<span class="mono">up.sh --domain</span> / <span class="mono">--public</span>,
+      또는 <span class="mono">jv key create</span>) 터미널에 출력된 <span class="mono">jv_…</span> 키를
+      오른쪽 위 칸에 붙여넣으세요. 키가 틀리면 같은 안내가 나옵니다.
+      잃어버렸다면 <b>서버 머신에서</b> 새로 발급합니다 (Docker 가 아니면 <span class="mono">jv key create admin</span>):
     </div>
-    ${copyBlock("docker compose exec myviking jv key create default")}
+    ${copyBlock("docker compose exec myviking jv key create admin")}
   </div>`;
 }
 const isAuthErr = (e) => String((e && e.message) || "").startsWith("401");

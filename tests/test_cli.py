@@ -380,27 +380,71 @@ def test_agent_hooks_install_is_idempotent_and_preserves_others(jv, tmp_path, ca
     import json as _json
 
     repo = tmp_path / "repo"
-    settings = repo / ".claude" / "settings.json"
-    settings.parent.mkdir(parents=True)
-    settings.write_text(_json.dumps({
+    shared = repo / ".claude" / "settings.json"        # 팀 공유·커밋되는 파일
+    local = repo / ".claude" / "settings.local.json"   # 개인 파일 — 키는 여기로
+    shared.parent.mkdir(parents=True)
+    shared.write_text(_json.dumps({
         "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]},
         "model": "opus",
     }), encoding="utf-8")
+    local.write_text(_json.dumps({
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo local-mine"}]}]},
+    }), encoding="utf-8")
 
-    jv("agent", "hooks", "--install", "--path", str(repo), "--url", "http://v:8787", "--key", "jv_k")
-    jv("agent", "hooks", "--install", "--path", str(repo), "--url", "http://v:8787", "--key", "jv_k")
-    capsys.readouterr()
+    # 서버가 닿지 않으면 설치는 되지만 "이 상태로는 기록되지 않는다" 를 exit 1 로 알린다.
+    jv("agent", "hooks", "--install", "--path", str(repo), "--url", "http://127.0.0.1:1", "--key", "jv_k",
+       expect=1)
+    jv("agent", "hooks", "--install", "--path", str(repo), "--url", "http://127.0.0.1:1", "--key", "jv_k",
+       expect=1)
+    out = capsys.readouterr().out
+    assert "서버 확인 실패" in out and "settings.local.json" in out
 
-    data = _json.loads(settings.read_text(encoding="utf-8"))
-    assert data["model"] == "opus"  # untouched
+    # 공유 파일은 손대지 않는다 — 키가 커밋되는 경로를 만들지 않는다.
+    assert _json.loads(shared.read_text(encoding="utf-8")) == {
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]},
+        "model": "opus",
+    }
+    data = _json.loads(local.read_text(encoding="utf-8"))
     stop_cmds = [h["command"] for m in data["hooks"]["Stop"] for h in m["hooks"]]
-    assert stop_cmds.count("echo mine") == 1
+    assert stop_cmds.count("echo local-mine") == 1
     assert sum("jv hook stop" in c for c in stop_cmds) == 1  # not duplicated
     assert set(data["hooks"]) == {"Stop", "SessionStart", "UserPromptSubmit", "SessionEnd"}
+    assert "MYVIKING_KEY=jv_k" in stop_cmds[-1]
+
+
+def test_agent_hooks_install_moves_key_out_of_the_shared_settings(jv, tmp_path, capsys):
+    """이전 버전이 settings.json(커밋되는 파일)에 심은 훅+키는 local 로 옮기고, 남의 훅은 남긴다."""
+    import json as _json
+
+    repo = tmp_path / "repo"
+    shared = repo / ".claude" / "settings.json"
+    shared.parent.mkdir(parents=True)
+    shared.write_text(_json.dumps({"hooks": {
+        "Stop": [{"hooks": [{"type": "command", "command": "MYVIKING_KEY=jv_old jv hook stop"}]},
+                 {"hooks": [{"type": "command", "command": "echo mine"}]}],
+        "SessionStart": [{"hooks": [{"type": "command", "command": "MYVIKING_KEY=jv_old jv hook session-start"}]}],
+    }}), encoding="utf-8")
+
+    jv("agent", "hooks", "--install", "--path", str(repo), "--url", "http://127.0.0.1:1", "--key", "jv_new",
+       expect=1)
+    out = capsys.readouterr().out
+    assert "옮겼습니다" in out
+    shared_text = shared.read_text(encoding="utf-8")
+    assert "jv_old" not in shared_text and "echo mine" in shared_text
+    assert "SessionStart" not in _json.loads(shared_text)["hooks"]
+    local = _json.loads((repo / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert all("jv_new" in h["command"] for m in local["hooks"]["Stop"] for h in m["hooks"])
+
+
+def test_agent_hooks_install_requires_a_url(jv, tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("MYVIKING_URL", raising=False)
+    jv("agent", "hooks", "--install", "--path", str(tmp_path), expect=1)
+    assert "--url" in capsys.readouterr().err
+    assert not (tmp_path / ".claude").exists()
 
 
 def test_agent_config_shows_hooks_for_claude_code(jv, capsys):
-    jv("agent", "config", "--client", "claude-code", "--url", "http://v:8787")
+    jv("agent", "config", "--client", "claude-code", "--url", "http://127.0.0.1:1")
     out = capsys.readouterr().out
     assert "자동 캡처 훅" in out
     assert "jv hook session-start" in out

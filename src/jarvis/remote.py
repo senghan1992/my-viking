@@ -112,8 +112,14 @@ class RemoteClient:
     def health(self) -> dict[str, Any]:
         """Is the server reachable, and is this key accepted? The one call an
         agent can run before anything else to tell a down server from a bad key
-        from a working setup."""
-        return self.t.request("GET", "/health")
+        from a working setup. /health is public, so the key is checked with /me."""
+        h = self.t.request("GET", "/health") or {}
+        if h.get("auth_required") and getattr(self.t, "key", ""):
+            try:
+                h["me"] = self.t.request("GET", "/me")
+            except Exception as exc:
+                h["key_error"] = str(exc)
+        return h
 
     # ----- the loop ------------------------------------------------------
     def brief(self, project: str, limit: int = 8) -> dict[str, Any]:

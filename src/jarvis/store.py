@@ -66,6 +66,18 @@ class Store:
         # The model matters as much as the provider: switching openai
         # small→large keeps provider and dim identical while making every
         # stored vector incomparable with new ones.
+        # An index with no nodes while memory files exist on disk means the DB
+        # was lost or replaced (see Database corruption recovery). The files are
+        # the source of truth, so rebuild instead of serving an empty store.
+        if not self.db.one("SELECT 1 FROM nodes LIMIT 1"):
+            home = self.config.home
+            has_files = any(
+                True for d in (home / "projects", home / "global")
+                if d.exists() for _ in d.rglob("*.md")
+            )
+            if has_files:
+                print("[myviking] 색인이 비어 있어 파일에서 다시 만듭니다", flush=True)
+                self.reindex()
         want = (
             f"{self.config.embed.provider}:{self.config.embed.model}"
             f":{self.config.embed.dim}:{FEATURE_VERSION}"

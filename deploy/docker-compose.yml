@@ -77,6 +77,19 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # DuckDNS 사용자용 (선택): 집 IP 가 바뀌어도 도메인이 따라갑니다. .env 에 DUCKDNS_TOKEN= 을
+  # 넣으면 up.sh --domain 이 함께 띄웁니다. 공유기에 DDNS 메뉴가 있으면 그걸 써도 됩니다.
+  duckdns:
+    image: lscr.io/linuxserver/duckdns:latest
+    profiles: ["duckdns"]
+    restart: unless-stopped
+    environment:
+      SUBDOMAINS: ${DUCKDNS_SUBDOMAIN:-}
+      TOKEN: ${DUCKDNS_TOKEN:-}
+      UPDATE_IP: ipv4
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   myviking-data:
   caddy-data:

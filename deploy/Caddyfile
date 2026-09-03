@@ -14,6 +14,15 @@
 {$MYVIKING_DOMAIN} {
 	reverse_proxy {$MYVIKING_UPSTREAM:127.0.0.1:8787}
 
+	# 실제 클라이언트 IP 가 남는 접근 로그 — `docker compose logs caddy` 로 보고,
+	# fail2ban/loki 를 붙일 때 읽는 것도 이 로그입니다. (앱 로그의 IP 는 프록시 IP)
+	log {
+		output stdout
+		format json
+	}
+	# 한 번 HTTPS 로 접속한 브라우저는 이후 평문으로 내려가지 않게.
+	header Strict-Transport-Security "max-age=31536000"
+
 	# MCP 응답은 스트리밍이 아니지만, 대시보드 폴링과 함께
 	# 버퍼링 없이 흘려보내는 편이 응답 지연이 낮습니다.
 	encode gzip

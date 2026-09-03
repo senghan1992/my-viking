@@ -5,8 +5,11 @@
 #   sudo systemctl enable --now myviking
 #   journalctl -u myviking -f
 #
-# User/경로는 환경에 맞게 바꾸세요. --host 0.0.0.0 으로 열기 전에
-# `jv key create <이름>` 으로 API 키를 먼저 발급하세요.
+# 먼저 (User/경로는 배포판에 맞게 — Ubuntu 는 ubuntu, Amazon Linux 는 ec2-user):
+#   sudo mkdir -p /var/lib/myviking && sudo chown ec2-user /var/lib/myviking
+#   JARVIS_HOME=/var/lib/myviking jv key create admin     ← 유닛과 *같은* JARVIS_HOME 이어야 합니다.
+#      (기본 ~/.jarvis 에 키를 만들면 서비스는 /var/lib/myviking 을 보므로 인증 없이 열립니다)
+# 그 다음 위 명령으로 유닛을 켜세요. TLS 는 Caddy 를 패키지로 설치해 deploy/Caddyfile 을 쓰면 됩니다.
 
 [Unit]
 Description=MyViking context server for coding agents

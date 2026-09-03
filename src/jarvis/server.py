@@ -11,6 +11,7 @@ pydantic); the rest of MyViking does not.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from urllib.parse import unquote
 
@@ -186,6 +187,7 @@ class BackupConnectBody(BaseModel):
 
 
 PROTOCOL_VERSION = "2024-11-05"
+_log = logging.getLogger("myviking.auth")
 
 
 def _new_session_id() -> str:
@@ -286,7 +288,10 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         if TRUST_PROXY:
             fwd = request.headers.get("x-forwarded-for", "")
             if fwd:
-                return fwd.split(",")[0].strip()
+                # The *last* hop is the one our own proxy appended; anything
+                # before it was supplied by the client and is free to forge.
+                # (The bundled Caddy sends a single value, so both agree there.)
+                return fwd.split(",")[-1].strip()
         return request.client.host if request.client else "?"
 
     def _auth_blocked(ip: str) -> bool:
@@ -326,22 +331,40 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         ):
             return await call_next(request)
         if not keys.any_active():
+            if keys.auth_lost():
+                # Auth was on and the key table is gone (index.db lost/replaced).
+                # Refusing is the only safe answer on an exposed host; the fix is
+                # a restore, or a fresh `jv key create` on the server itself.
+                return JSONResponse(
+                    {"detail": "인증이 켜져 있던 서버인데 API 키 DB 가 없습니다. 백업에서 복원하거나 "
+                               "서버에서 `jv key create <이름>` 으로 새 키를 만드세요."},
+                    status_code=503,
+                )
             return await call_next(request)
 
         ip = _client_ip(request)
-        if _auth_blocked(ip):
-            return JSONResponse(
-                {"detail": "인증 실패가 너무 잦습니다. 잠시 후 다시 시도하세요."},
-                status_code=429,
-                headers={"Retry-After": str(int(AUTH_WINDOW))},
-            )
-
         header = request.headers.get("authorization", "")
         raw = header[7:].strip() if header.lower().startswith("bearer ") else ""
         raw = raw or request.headers.get("x-api-key", "")
         info = keys.verify(raw)
         if info is None:
+            # The backoff only ever answers *failed* attempts. A valid key from
+            # the same address must keep working — otherwise one teammate's
+            # revoked key (or a hook with a typo) locks the whole office NAT out,
+            # and the admin cannot even get in to fix it.
+            if _auth_blocked(ip):
+                return JSONResponse(
+                    {"detail": f"인증 실패가 너무 잦습니다. 약 {int(AUTH_WINDOW)}초 후 다시 시도하세요."},
+                    status_code=429,
+                    headers={"Retry-After": str(int(AUTH_WINDOW))},
+                )
             _auth_failed(ip)
+            # One structured line per failure, so a fail2ban/loki rule has
+            # something to read — the in-memory counter alone is invisible.
+            _log.warning(
+                "auth_failed ip=%s path=%s key=%s", ip, path,
+                (raw[:7] + "…") if raw else "(none)",
+            )
             return JSONResponse(
                 {"detail": "유효한 API 키가 필요합니다 (Authorization: Bearer jv_...)"},
                 status_code=401,
@@ -379,11 +402,10 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     def _guard_uri(request: Request, uri: str) -> None:
         """Guard a route addressed by a memory uri, whose scope is the project."""
         try:
-            _guard(request, Uri.parse(uri).scope)
-        except HTTPException:
-            raise
-        except Exception:
-            pass
+            parsed = Uri.parse(uri)
+        except Exception as exc:  # "jarvis://" and friends: a 400, not a traceback
+            raise HTTPException(400, f"잘못된 URI: {uri} ({exc})") from exc
+        _guard(request, parsed.scope)
 
     def _guard_trace(request: Request, trace_id: str) -> None:
         info = getattr(request.state, "key", None)
@@ -450,7 +472,7 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
 
     # ----- meta -------------------------------------------------------
     @app.get("/health")
-    def health() -> dict[str, Any]:
+    def health(request: Request) -> dict[str, Any]:
         llm = jarvis.store.llm
         embed = jarvis.config.embed
         # A store on the offline fallbacks still works, but its distillation is
@@ -476,10 +498,26 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
             backup = {"provider": "none"}
         if backup.get("last_status", "").startswith("error"):
             notes.append(f"백업 실패 — {backup['last_status']}")
+        # Problems that need a human, not just a note: an external monitor
+        # can alert on `degraded` instead of parsing Korean strings.
+        problems = []
+        if keys.auth_lost():
+            problems.append("API 키 DB 유실 — 요청을 거부하는 중 (백업 복원 또는 jv key create)")
+        if getattr(jarvis.store.db, "recovered_from", ""):
+            problems.append(f"색인 DB 손상 → 새로 만듦 ({jarvis.store.db.recovered_from})")
+        if maintenance.get("status") == "error":
+            problems.append("유지보수 스윕 실패")
+        if backup.get("last_status", "").startswith("error"):
+            problems.append("백업 실패")
+        notes.extend(p for p in problems if p not in notes)
+        # The absolute home path is operational detail; only a key holder sees it.
+        authed = getattr(request.state, "key", None) is not None or not keys.any_active()
         return {
             "ok": True,
+            "degraded": bool(problems),
+            "problems": problems,
             "version": __version__,
-            "home": str(jarvis.config.home),
+            "home": str(jarvis.config.home) if authed else "",
             "llm": llm.available,
             "embed": embed.provider,
             "projects": len(jarvis.store.projects()),
@@ -577,7 +615,10 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return rows
 
     @app.post("/projects")
-    def init_project(body: InitBody) -> dict[str, Any]:
+    def init_project(body: InitBody, request: Request) -> dict[str, Any]:
+        # The project lives in the body, where the middleware cannot see it — a
+        # scoped key must not conjure projects outside its fence.
+        _guard(request, body.project)
         profile = jarvis.init_project(
             body.project, body.template, body.description, body.stack
         )
@@ -896,6 +937,12 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
     @app.post("/aliases")
     def add_alias(body: AliasBody, request: Request) -> dict[str, Any]:
         _guard(request, body.project)
+        # Re-pointing a repo that already belongs to another project would
+        # redirect that project's future captures into this one — the alias's
+        # *current* owner has to be inside the caller's scope as well.
+        owner = jarvis.alias_owner(body.alias)
+        if owner and owner != body.project:
+            _guard(request, owner)
         jarvis.bind_alias(body.alias, body.project, body.kind)
         return {"alias": body.alias, "project": body.project}
 
@@ -1015,20 +1062,24 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return jarvis.recent_sessions(project, limit)
 
     @app.post("/reindex")
-    def reindex(project: str | None = None) -> dict[str, int]:
+    def reindex(request: Request, project: str | None = None) -> dict[str, int]:
+        _confine(request, project or "")
         return jarvis.reindex(project)
 
     # ----- backup ------------------------------------------------------
-    # Everything here sits behind the same key middleware as the rest: the
-    # config file holds OAuth secrets and the archives hold every project.
+    # Admin only, every route. The archive holds *every* project and the config
+    # holds the OAuth secrets — a project-scoped key that could point the backup
+    # at its own Drive (or a local path) would walk off with the whole store.
     backups = BackupManager(home)
 
     @app.get("/backup/status")
-    def backup_status() -> dict[str, Any]:
+    def backup_status(request: Request) -> dict[str, Any]:
+        _require_admin(request)
         return backups.status()
 
     @app.post("/backup/config")
-    def backup_config(body: BackupConfigBody) -> dict[str, Any]:
+    def backup_config(body: BackupConfigBody, request: Request) -> dict[str, Any]:
+        _require_admin(request)
         backups.configure(
             provider=body.provider,
             every_hours=body.every_hours,
@@ -1039,29 +1090,34 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return backups.status()
 
     @app.post("/backup/connect/start")
-    def backup_connect_start(body: BackupConnectBody) -> dict[str, Any]:
+    def backup_connect_start(body: BackupConnectBody, request: Request) -> dict[str, Any]:
+        _require_admin(request)
         try:
             return backups.connect_start(body.client_id, body.client_secret)
         except RuntimeError as exc:
             raise HTTPException(400, str(exc)) from exc
 
     @app.post("/backup/connect/poll")
-    def backup_connect_poll() -> dict[str, Any]:
+    def backup_connect_poll(request: Request) -> dict[str, Any]:
+        _require_admin(request)
         return backups.connect_poll()
 
     @app.post("/backup/disconnect")
-    def backup_disconnect() -> dict[str, Any]:
+    def backup_disconnect(request: Request) -> dict[str, Any]:
+        _require_admin(request)
         return backups.disconnect()
 
     @app.post("/backup/run")
-    def backup_run() -> dict[str, Any]:
+    def backup_run(request: Request) -> dict[str, Any]:
+        _require_admin(request)
         try:
             return backups.run()
         except RuntimeError as exc:
             raise HTTPException(400, str(exc)) from exc
 
     @app.get("/backup/list")
-    def backup_list() -> list[dict[str, Any]]:
+    def backup_list(request: Request) -> list[dict[str, Any]]:
+        _require_admin(request)
         try:
             return backups.list_remote()
         except RuntimeError as exc:

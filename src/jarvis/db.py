@@ -103,7 +103,34 @@ class Database:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        # A corrupt file (half-written volume, bad disk) raises on the first
+        # statement. Under `restart: unless-stopped` that is a crash loop nobody
+        # sees, so move it aside and start fresh instead — memories are rebuilt
+        # from the files; keys/traces come back from the backup. Say so loudly.
+        self.recovered_from: str = ""
+        try:
+            self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
+            self.conn.execute("PRAGMA quick_check").fetchone()
+        except sqlite3.DatabaseError as exc:
+            from datetime import datetime, timezone
+
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            aside = self.path.with_name(f"{self.path.name}.corrupt-{stamp}")
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            for suffix in ("", "-wal", "-shm"):
+                p = self.path.with_name(self.path.name + suffix)
+                if p.exists():
+                    p.rename(aside.with_name(aside.name + suffix))
+            self.recovered_from = str(aside)
+            print(
+                f"[myviking] 색인 DB 가 손상되어 옆으로 치웠습니다 ({aside.name}): {exc}\n"
+                "           메모리는 파일에서 다시 색인됩니다. API 키·작업 이력은 백업에서 복원하세요.",
+                flush=True,
+            )
+            self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         # One connection is shared across the server's request threads. The
         # sqlite3 module serialises individual statements (threadsafety 3),

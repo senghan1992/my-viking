@@ -38,6 +38,11 @@ from typing import Any
 DEFAULT_URL = "http://127.0.0.1:8787"
 DEFAULT_STATE_DIR = Path.home() / ".myviking" / "hook-state"
 _STATE_TTL = 7 * 24 * 3600
+# Where `jv agent hooks --install` writes. Claude Code reads settings.local.json
+# alongside settings.json and gitignores it by default — the right home for a
+# hook line that carries a personal API key. settings.json is the shared,
+# committed file: a key there ships to the git remote on the first `git add -A`.
+HOOKS_FILE = "settings.local.json"
 # Injected context is capped hard: it rides on *every* prompt, so it competes
 # with the user's own words for attention. L0 abstracts fit comfortably.
 _MAX_QUESTION_CHARS = 4000
@@ -48,7 +53,7 @@ class HttpTransport:
     """Minimal stdlib HTTP client: hook machines need nothing installed
     beyond the core package."""
 
-    def __init__(self, url: str = DEFAULT_URL, key: str = "", timeout: float = 6.0):
+    def __init__(self, url: str = DEFAULT_URL, key: str = "", timeout: float = 4.0):
         self.base = (url or DEFAULT_URL).rstrip("/")
         self.key = key
         self.timeout = timeout
@@ -171,13 +176,21 @@ def _resolve(transport: Any, cwd: str, state: dict[str, Any]) -> str:
         {"project": "", "repo": repo, "path": cwd, "create": True, "template": "coding"},
     )
     project = str((res or {}).get("project") or "")
-    if project:
-        state["project"] = project
-        state["repo"] = repo
-        # A brand-new project born from a guessed name is worth announcing once:
-        # a typo'd directory or an unbound checkout otherwise silently spawns a
-        # parallel project and the user never learns why their history is empty.
-        state["created"] = bool((res or {}).get("created"))
+    if not project:
+        # A scoped key outside its fence, or a server that may not create
+        # projects, lands here. Returning "" would stamp last-ok and record
+        # nothing — exactly the silent loss `--check` exists to catch.
+        raise RuntimeError(
+            f"프로젝트를 정하지 못했습니다 (repo={repo or '-'}, cwd={cwd}). "
+            "키의 범위 밖이거나 서버가 프로젝트를 만들 수 없습니다 — "
+            "`jv remote link <프로젝트>` 로 묶거나 관리자에게 범위를 요청하세요."
+        )
+    state["project"] = project
+    state["repo"] = repo
+    # A brand-new project born from a guessed name is worth announcing once:
+    # a typo'd directory or an unbound checkout otherwise silently spawns a
+    # parallel project and the user never learns why their history is empty.
+    state["created"] = bool((res or {}).get("created"))
     return project
 
 
@@ -330,18 +343,88 @@ def run(
     if handler is None:
         return None
     sdir = Path(state_dir) if state_dir else DEFAULT_STATE_DIR
+    if _server_down_recently(sdir) and hasattr(transport, "timeout"):
+        # The server was unreachable a moment ago. Still try (a blip must not
+        # cost minutes of capture), but fail fast: otherwise every prompt blocks
+        # for the full timeout twice while the laptop is off the home network.
+        transport.timeout = min(float(transport.timeout), 1.0)
     try:
         result = handler(payload or {}, transport, sdir)
         _mark_ok(sdir, event)
+        _clear_server_down(sdir)
         return result
     except Exception as exc:
         _log_failure(sdir, event, exc)
-        return None
+        if _is_unreachable(exc):
+            _note_server_down(sdir)
+        return _auth_refused_message(exc, payload or {}, sdir)
 
 
 _ERRORS_FILE = "errors.log"
 _LAST_OK_FILE = "last-ok"
+_DOWN_FILE = "server-down"
+_DOWN_SKIP_SECONDS = 120
 _MAX_ERROR_LINES = 50
+
+
+def _is_unreachable(exc: Exception) -> bool:
+    """Connection-level failures (server off, DNS, firewall) — not HTTP refusals."""
+    import socket
+
+    return isinstance(exc, (urllib.error.URLError, socket.timeout, OSError)) and not isinstance(
+        exc, urllib.error.HTTPError
+    )
+
+
+def _note_server_down(state_dir: Path) -> None:
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / _DOWN_FILE).write_text(str(int(time.time())), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_server_down(state_dir: Path) -> None:
+    try:
+        (state_dir / _DOWN_FILE).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _server_down_recently(state_dir: Path) -> bool:
+    try:
+        stamp = int((state_dir / _DOWN_FILE).read_text(encoding="utf-8").strip() or 0)
+    except Exception:
+        return False
+    return (time.time() - stamp) < _DOWN_SKIP_SECONDS
+
+
+def _auth_refused_message(
+    exc: Exception, payload: dict[str, Any], state_dir: Path
+) -> dict[str, Any] | None:
+    """A 401/403/429 is a *configuration* error, not a transient one: the key
+    is wrong, revoked, or out of scope, and nothing will be recorded until a
+    human fixes it. Fail-open still applies (the session goes on), but say so
+    once per session via Claude Code's ``systemMessage`` — otherwise the only
+    trace is a log file nobody knows exists."""
+    msg = str(exc)
+    if not any(f"MyViking {code}" in msg for code in ("401", "403", "429")):
+        return None
+    sid = str(payload.get("session_id") or "")
+    try:
+        state = _load_state(state_dir, sid)
+        if state.get("auth_warned"):
+            return None
+        state["auth_warned"] = True
+        _save_state(state_dir, sid, state)
+    except Exception:
+        pass
+    return {
+        "systemMessage": (
+            f"[MyViking] 서버가 요청을 거부했습니다 — {msg}. 이 세션은 기록되지 않습니다. "
+            "`jv agent hooks --check --url <서버> --key <키>` 로 확인하세요."
+        )
+    }
 
 
 def _mark_ok(state_dir: Path, event: str) -> None:
@@ -380,13 +463,32 @@ def health_check(transport: Any, state_dir: Path | str | None = None) -> dict[st
     last successful hook, and the recent failure breadcrumbs.
     """
     sdir = Path(state_dir) if state_dir else DEFAULT_STATE_DIR
-    out: dict[str, Any] = {"server_ok": False, "server": {}, "last_ok": "", "recent_failures": []}
+    out: dict[str, Any] = {
+        "server_ok": False, "server": {}, "last_ok": "", "recent_failures": [],
+        "key_ok": None, "key_error": "", "me": {},
+    }
     try:
         health = transport.request("GET", "/health")
         out["server_ok"] = bool((health or {}).get("ok"))
         out["server"] = health or {}
     except Exception as exc:
         out["server_error"] = f"{type(exc).__name__}: {exc}"
+    # /health is public, so it says nothing about *this* key. A wrong or revoked
+    # key used to pass --check green and then fail every hook silently.
+    if out["server_ok"] and out["server"].get("auth_required"):
+        if not getattr(transport, "key", ""):
+            out["key_ok"] = False
+            out["key_error"] = "키 없음 — 이 서버는 API 키를 요구합니다 (--key 또는 MYVIKING_KEY)"
+        else:
+            try:
+                me = transport.request("GET", "/me") or {}
+                out["me"] = me
+                out["key_ok"] = True
+            except Exception as exc:
+                out["key_ok"] = False
+                out["key_error"] = f"키 거부됨 — {exc}"
+    elif out["server_ok"]:
+        out["key_ok"] = True  # open server: nothing to verify
     try:
         out["last_ok"] = (sdir / _LAST_OK_FILE).read_text(encoding="utf-8").strip()
     except Exception:
@@ -407,26 +509,42 @@ def installed_events(project_path: Path | str = ".") -> dict[str, Any]:
     capture silently never starts. This closes that gap for ``--check``."""
     from .connect import HOOK_EVENTS
 
-    settings_path = Path(project_path) / ".claude" / "settings.json"
+    claude_dir = Path(project_path) / ".claude"
+    local_path = claude_dir / HOOKS_FILE
+    shared_path = claude_dir / "settings.json"
     out: dict[str, Any] = {
-        "path": str(settings_path),
-        "exists": settings_path.exists(),
+        "path": str(local_path),
+        "exists": False,
         "installed": [],
         "missing": [event for event, _ in HOOK_EVENTS],
+        "key_in_shared_file": False,
     }
-    if not settings_path.exists():
-        return out
-    try:
-        data = json.loads(settings_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        out["error"] = "settings.json 을 읽지 못했습니다 (JSON 오류)"
-        return out
-    hooks = (data or {}).get("hooks", {}) or {}
-    installed = [
-        event
-        for event, _ in HOOK_EVENTS
-        if "jv hook" in json.dumps(hooks.get(event, []))
-    ]
+
+    def _jv_hooks(path: Path) -> list[str] | None:
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            out["error"] = f"{path.name} 을 읽지 못했습니다 (JSON 오류)"
+            return []
+        hooks = (data or {}).get("hooks", {}) or {}
+        return [e for e, _ in HOOK_EVENTS if "jv hook" in json.dumps(hooks.get(e, []))]
+
+    installed: list[str] = []
+    for path in (local_path, shared_path):
+        found = _jv_hooks(path)
+        if found is None:
+            continue
+        if found:
+            out["exists"] = True
+            out["path"] = str(path)
+            installed = found
+            # The shared settings.json is the committed one — a key in there
+            # is on its way to the git remote.
+            if path == shared_path and "MYVIKING_KEY=" in path.read_text(encoding="utf-8"):
+                out["key_in_shared_file"] = True
+            break
     out["installed"] = installed
     out["missing"] = [event for event, _ in HOOK_EVENTS if event not in installed]
     return out

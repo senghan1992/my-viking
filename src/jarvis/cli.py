@@ -841,7 +841,7 @@ def cmd_agent_hooks(args, j: Jarvis | None = None) -> int:
         from .connect import HOOK_EVENTS
         from .hooks import HttpTransport, health_check, installed_events
 
-        url = os.environ.get("MYVIKING_URL", "") or args.url
+        url = args.url or os.environ.get("MYVIKING_URL", "") or "http://127.0.0.1:8787"
         key = args.key or os.environ.get("MYVIKING_KEY", "")
         res = health_check(HttpTransport(url, key), state_dir=args.state_dir or None)
         res["hooks"] = installed_events(args.path or ".")
@@ -855,49 +855,137 @@ def cmd_agent_hooks(args, j: Jarvis | None = None) -> int:
             print(f"훅 설치    일부 ({len(hk['installed'])}/{len(HOOK_EVENTS)}) — 누락: {', '.join(hk['missing'])}")
         else:
             print(f"훅 설치    완료 (이벤트 {len(hk['installed'])}개 모두)")
+        if hk.get("key_in_shared_file"):
+            print("⚠ 키 위치   .claude/settings.json 에 API 키가 있습니다 — 이 파일은 보통 커밋됩니다."
+                  " `jv agent hooks --install` 을 다시 실행하면 settings.local.json 으로 옮깁니다.")
         if res["server_ok"]:
             srv = res["server"]
             print(f"서버       연결됨 ({url} · v{srv.get('version')} · 프로젝트 {srv.get('projects')}개)")
         else:
             print(f"서버       연결 실패 ({url}): {res.get('server_error', '?')}")
             print("           훅은 fail-open 이라 코딩 세션은 정상이지만, 기록이 쌓이지 않는 상태입니다.")
-        print(f"마지막 성공 {res['last_ok'] or '기록 없음'}")
+        if res["server_ok"]:
+            if res["key_ok"] is False:
+                print(f"키         거부 — {res['key_error']}")
+                print("           훅이 매번 401 을 받아 아무것도 기록되지 않습니다. 대시보드 연결 탭에서 키를 확인하세요.")
+            elif res.get("me", {}).get("name"):
+                me = res["me"]
+                scope = "전체 접근" if me.get("admin") else ", ".join(me.get("projects") or [])
+                print(f"키         확인됨 — {me['name']} ({scope})")
+            else:
+                print("키         불필요 (인증이 꺼진 서버)")
+        if res["last_ok"]:
+            print(f"마지막 성공 {res['last_ok']}")
+        elif hk["exists"] and not hk["missing"]:
+            print("마지막 성공 아직 없음 — 설치는 됐지만 훅이 한 번도 실행되지 않았습니다 (이 폴더에서 Claude Code 세션을 열어 보세요)")
+        else:
+            print("마지막 성공 기록 없음")
         if res["recent_failures"]:
             print(f"최근 실패  {len(res['recent_failures'])}건 (최신순 아래)")
             for line in res["recent_failures"]:
                 print(f"  {line}")
         else:
             print("최근 실패  없음")
-        return 0 if res["server_ok"] else 1
+        ok = res["server_ok"] and res["key_ok"] is not False and not hk.get("key_in_shared_file")
+        return 0 if ok else 1
 
-    settings = hook_settings(args.url, args.key or "")
+    from .hooks import HOOKS_FILE, HttpTransport, _git_remote
+
+    url = args.url or os.environ.get("MYVIKING_URL", "")
+    key = args.key or os.environ.get("MYVIKING_KEY", "")
     if not args.install:
+        settings = hook_settings(url or "http://127.0.0.1:8787", key)
         text = json.dumps(settings, ensure_ascii=False, indent=2)
         if args.json:
             print(text)
             return 0
-        print("# 저장소의 .claude/settings.json 에 병합하세요 (또는 --install)\n")
+        print(f"# 저장소의 .claude/{HOOKS_FILE} 에 병합하세요 (또는 --install)\n")
         print(text)
         return 0
 
-    target = Path(args.path or ".").resolve() / ".claude" / "settings.json"
-    existing: dict[str, Any] = {}
-    if target.exists():
+    # A remote server with an empty URL bakes `MYVIKING_URL=` into every hook,
+    # which then quietly talks to localhost forever. Refuse rather than guess.
+    if not url:
+        print("오류: --url <서버 주소> 가 필요합니다 (예: --url https://viking.duckdns.org). "
+              "MYVIKING_URL 환경변수로도 줄 수 있습니다.", file=sys.stderr)
+        return 1
+    settings = hook_settings(url, key)
+
+    repo_dir = Path(args.path or ".").resolve()
+    claude_dir = repo_dir / ".claude"
+    target = claude_dir / HOOKS_FILE
+    shared = claude_dir / "settings.json"
+
+    def _load(p: Path) -> dict[str, Any] | None:
+        if not p.exists():
+            return {}
         try:
-            existing = json.loads(target.read_text(encoding="utf-8"))
+            return json.loads(p.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            print(f"오류: {target} 가 올바른 JSON 이 아닙니다. 직접 병합하세요.", file=sys.stderr)
-            return 1
+            print(f"오류: {p} 가 올바른 JSON 이 아닙니다. 직접 병합하세요.", file=sys.stderr)
+            return None
+
+    existing = _load(target)
+    if existing is None:
+        return 1
     hooks = existing.setdefault("hooks", {})
     for event, matchers in settings["hooks"].items():
         # Replace our previous entries (idempotent install), keep everyone else's.
         kept = [m for m in hooks.get(event, []) if "jv hook" not in json.dumps(m)]
         hooks[event] = kept + matchers
-    target.parent.mkdir(parents=True, exist_ok=True)
+    claude_dir.mkdir(parents=True, exist_ok=True)
     target.write_text(
         json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+
+    # Earlier versions wrote into the shared, committed settings.json — with the
+    # key in it. Move our entries out so the key stops travelling with the repo.
+    moved = False
+    shared_data = _load(shared) if shared.exists() else {}
+    if shared_data:
+        shooks = shared_data.get("hooks") or {}
+        for event in list(shooks):
+            kept = [m for m in shooks[event] if "jv hook" not in json.dumps(m)]
+            if len(kept) != len(shooks[event]):
+                moved = True
+                if kept:
+                    shooks[event] = kept
+                else:
+                    del shooks[event]
+        if moved:
+            if not shooks:
+                shared_data.pop("hooks", None)
+            shared.write_text(json.dumps(shared_data, ensure_ascii=False, indent=2) + "\n",
+                              encoding="utf-8")
+
     print(f"{target} 에 훅을 설치했습니다.")
+    if moved:
+        print(f"  (이전에 {shared.name} 에 있던 MyViking 훅은 이 파일로 옮겼습니다 — 그 파일은 커밋되는 파일입니다.)")
+    if key:
+        print(f"  이 파일에는 API 키가 들어 있습니다. Claude Code 는 {HOOKS_FILE} 을 기본으로 gitignore 처리하지만,"
+              " 저장소의 .gitignore 도 한 번 확인하세요.")
+    if not _git_remote(str(repo_dir)):
+        print(f"⚠ 이 폴더에 git remote 가 없어 서버는 폴더 이름 '{repo_dir.name}' 으로 프로젝트를 만듭니다."
+              " 다른 이름을 원하면 `jv remote link <프로젝트>` 로 먼저 묶으세요.")
+
+    # Prove the setup right now, while the person is still looking: a wrong
+    # key or URL otherwise surfaces weeks later as an empty history.
+    t = HttpTransport(url, key)
+    try:
+        h = t.request("GET", "/health") or {}
+        if h.get("auth_required"):
+            if not key:
+                print("⚠ 서버 확인: 인증이 켜져 있는데 --key 가 없습니다 — 훅이 전부 401 을 받아 기록되지 않습니다.")
+                return 1
+            me = t.request("GET", "/me") or {}
+            scope = "전체 접근" if me.get("admin") else ", ".join(me.get("projects") or [])
+            print(f"✓ 서버 확인: {url} — 키 '{me.get('name')}' ({scope})")
+        else:
+            print(f"✓ 서버 확인: {url} (인증 없음)")
+    except Exception as exc:
+        print(f"⚠ 서버 확인 실패: {exc}")
+        print("  설치는 됐지만 이 상태로는 기록되지 않습니다. 주소·키를 확인하고 다시 실행하세요.")
+        return 1
     print("이제 이 저장소의 Claude Code 세션은 자동으로 기록되고, 시작할 때 이전 작업을 브리핑받습니다.")
     return 0
 
@@ -1165,10 +1253,18 @@ def cmd_remote_health(args, j: Jarvis | None = None) -> int:
     key = args.key or os.environ.get("MYVIKING_KEY", "")
     if h.get("auth_required") and not key:
         print(
-            "주의     인증이 켜져 있는데 키가 없습니다. --key 또는 MYVIKING_KEY 를"
-            " 설정하지 않으면 모든 호출이 401 로 막힙니다.",
+            "키         없음 — 인증이 켜져 있어 모든 호출이 401 로 막힙니다."
+            " --key 또는 MYVIKING_KEY 를 설정하세요.",
             file=sys.stderr,
         )
+        return 1
+    me = h.get("me")
+    if me is not None:
+        scope = "전체 접근" if me.get("admin") else ", ".join(me.get("projects") or [])
+        print(f"키         확인됨 — {me.get('name')} ({scope})")
+    elif h.get("key_error"):
+        print(f"키         거부 — {h['key_error']}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -2109,9 +2205,10 @@ def build_parser() -> argparse.ArgumentParser:
     s2.add_argument("-p", "--project", help="지시문에 넣을 프로젝트 이름")
     s2.set_defaults(func=cmd_agent_config)
     s2 = asub.add_parser("hooks", help="Claude Code 자동 캡처 훅 설정 생성/설치/점검")
-    s2.add_argument("--url", default="http://127.0.0.1:8787", help="MyViking 서버 주소")
-    s2.add_argument("--key", help="API 키 (인증을 켰다면 필요)")
-    s2.add_argument("--install", action="store_true", help=".claude/settings.json 에 병합")
+    s2.add_argument("--url", default="", help="MyViking 서버 주소 (기본 $MYVIKING_URL; --install 에는 필수)")
+    s2.add_argument("--key", help="API 키 (인증을 켰다면 필요; 기본 $MYVIKING_KEY)")
+    s2.add_argument("--install", action="store_true",
+                    help=".claude/settings.local.json 에 병합 (개인 파일 — 키가 커밋되지 않음)")
     s2.add_argument("--path", help="설치할 저장소 경로 (기본 현재 디렉터리)")
     s2.add_argument(
         "--check",

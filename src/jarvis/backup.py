@@ -42,6 +42,8 @@ import yaml
 from .config import jarvis_home
 
 SETTINGS_NAME = "backup.yaml"
+KeyStoreMarker = "auth.enabled"  # see auth.KeyStore.MARKER — restored with the DB
+
 SNAPSHOT_PREFIX = "myviking-"
 
 GOOGLE_DEVICE_URL = "https://oauth2.googleapis.com/device/code"
@@ -204,7 +206,9 @@ def make_snapshot(home: Path, dest_dir: Path) -> Path:
         with tarfile.open(dest, "w:gz") as tar:
             if db_copy.exists():
                 tar.add(db_copy, arcname="index.db")
-            for item in ("jarvis.yaml", SETTINGS_NAME, "projects"):
+            # global/ holds the cross-project preferences — a restore without
+            # it leaves ghost index rows pointing at files that no longer exist.
+            for item in ("jarvis.yaml", SETTINGS_NAME, KeyStoreMarker, "projects", "global"):
                 p = home / item
                 if p.exists():
                     tar.add(p, arcname=item)
@@ -229,13 +233,14 @@ def restore_snapshot(archive: Path, home: Path) -> None:
             raise ValueError("index.db 가 없는 아카이브입니다 — MyViking 백업이 아닙니다")
         for stale in ("index.db-wal", "index.db-shm"):
             (home / stale).unlink(missing_ok=True)
-        for item in ("index.db", "jarvis.yaml", SETTINGS_NAME):
+        for item in ("index.db", "jarvis.yaml", SETTINGS_NAME, KeyStoreMarker):
             src = staging / item
             if src.exists():
                 shutil.move(str(src), str(home / item))
-        if (staging / "projects").exists():
-            shutil.rmtree(home / "projects", ignore_errors=True)
-            shutil.move(str(staging / "projects"), str(home / "projects"))
+        for tree in ("projects", "global"):
+            if (staging / tree).exists():
+                shutil.rmtree(home / tree, ignore_errors=True)
+                shutil.move(str(staging / tree), str(home / tree))
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -648,7 +653,9 @@ class BackupManager:
         if isinstance(remote, GoogleDrive):
             remote.ensure_folder(s.folder)
         try:
-            with tempfile.TemporaryDirectory() as td:
+            # Inside the volume, not /tmp: in the container /tmp is a tmpfs, and
+            # a full SQLite copy + tarball of a large store would live in RAM.
+            with tempfile.TemporaryDirectory(dir=self.home, prefix="_backup-tmp-") as td:
                 snap = make_snapshot(self.home, Path(td))
                 size = snap.stat().st_size
                 remote.upload(snap, snap.name)
