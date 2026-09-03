@@ -12,6 +12,13 @@ from jarvis import Config, Jarvis  # noqa: E402
 def home(tmp_path, monkeypatch):
     h = tmp_path / "jarvis"
     monkeypatch.setenv("JARVIS_HOME", str(h))
+    # Config.load honours provider variables; a developer's shell must not
+    # switch the suite onto a paid model or a remote embedding endpoint.
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ARK_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    for var in list(__import__("os").environ):
+        if var.startswith(("JARVIS_LLM_", "JARVIS_EMBED_")):
+            monkeypatch.delenv(var, raising=False)
     return h
 
 

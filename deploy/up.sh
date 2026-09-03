@@ -203,6 +203,20 @@ echo "       pipx install git+https://github.com/senghan1992/my-viking.git   # �
 echo "       jv agent hooks --install --url $URL --key <그 사람 키>"
 echo "     설치 끝에 '✓ 서버 확인' 이 나와야 합니다. 프로젝트는 git remote 로 자동 생성됩니다."
 echo "  3) (권장) 백업 — 볼륨을 잃어도 지식은 남습니다: 대시보드 첫 화면의 백업 패널"
+# 품질 상태: 기본값은 오프라인 폴백(규칙 기반 증류 + 해시 임베딩)이라 동작은 하지만
+# 동의어·다른 표현의 회상이 약합니다. 지금 어느 수준인지 서버에게 물어 그대로 알려 줍니다.
+# After a --public --bind <IP> rebind, loopback is no longer bound — ask the final address.
+QUALITY=$(curl -s "$URL/health" 2>/dev/null || curl -s "http://127.0.0.1:${PORT}/health" 2>/dev/null || true)
+if [[ "$QUALITY" == *'"full_quality": true'* || "$QUALITY" == *'"full_quality":true'* ]]; then
+  echo "  4) 품질: LLM + 의미 임베딩 모두 켜져 있습니다 (최상)"
+else
+  echo "  4) (권장) 품질 올리기 — 지금은 오프라인 폴백입니다:"
+  [[ "$QUALITY" == *'"llm_ready": true'* || "$QUALITY" == *'"llm_ready":true'* ]] \
+    || echo "       · 요약·증류:  deploy/.env 에  ANTHROPIC_API_KEY=sk-ant-...   (규칙 기반 → LLM 증류)"
+  [[ "$QUALITY" == *'"embed_semantic": true'* || "$QUALITY" == *'"embed_semantic":true'* ]] \
+    || echo "       · 의미 회상:  deploy/.env 에  JARVIS_EMBED_PROVIDER=openai + OPENAI_API_KEY=sk-...   (또는 =ollama, .env.example 참고)"
+  echo "     넣은 뒤  bash deploy/up.sh  를 다시 실행하면 적용되고, 색인은 스스로 다시 만듭니다."
+fi
 echo
 echo "업데이트:  git pull && bash deploy/up.sh      중지:  (cd deploy && docker compose down)"
 echo "키를 잃었을 때:  (cd deploy && docker compose exec myviking jv key create admin)"

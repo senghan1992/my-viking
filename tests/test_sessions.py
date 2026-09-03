@@ -69,3 +69,42 @@ def test_recent_sessions_newest_first(coding):
     coding.commit("app", "나중에 물어본 것", "답2", distill=False)
     recent = coding.recent_sessions("app")
     assert len(recent) == 2
+
+
+def test_work_orders_and_deictic_prompts_are_not_cached_or_served(coding):
+    """A live run served "함수를 3개로 분리했습니다 — 재사용하세요" for the next
+    "이 함수 리팩터링해줘". Work must be redone; pointers name a new target."""
+    from jarvis.sessions import reusable_question
+
+    for q in ("이 함수 리팩터링해줘", "로그인 API 만들어줘", "CSS 버튼 색상을 파란색으로 바꿔줘",
+              "결제 재시도 로직 다시 봐줘", "hello", "hi", "고마워", "이거 왜 안 돼?"):
+        assert not reusable_question(q), q
+        coding.commit("app", q, "했습니다.", agent="a")
+        assert coding.sessions.cache_lookup("app", q) is None, q
+    for q in ("테스트 어떻게 돌려?", "결제 승인 실패하면 재시도해야 해?", "커밋 메시지 규칙이 뭐야",
+              "Store.all 이 파일 없을 때 뭐 돌려줘", "테스트 실행 방법", "질문", "배포 파이프라인 리전 설정은?"):
+        assert reusable_question(q), q
+    coding.commit("app", "결제 승인 실패하면 재시도해야 해?", "재시도하지 않습니다.", agent="a")
+    assert coding.sessions.cache_lookup("app", "결제 승인 실패하면 재시도해야 해?") is not None
+
+
+def test_reusable_question_matrix():
+    """From the adversarial review: work orders with a question noun were cached,
+    knowledge questions with "it"/"here" were not."""
+    from jarvis.sessions import reusable_question
+
+    not_reusable = [
+        "로그인 방법 바꿔줘", "린트 규칙 추가해줘", "테스트 좀 돌려줄래?", "Could you refactor the payment module",
+        "Add a retry when payment fails", "이 함수 리팩터링해줘", "이거 정리해줘", "결제 로직 수정해 주세요",
+        "please fix the flaky test", "hello", "응", "네", "고마워요",
+    ]
+    reusable = [
+        "Is it safe to retry payments after a timeout?", "Where do logs live here?", "Note that the DB is Postgres 15",
+        "테스트 어떻게 돌려?", "Store.all 이 파일 없을 때 뭐 돌려줘", "테스트 실행 방법", "배포 파이프라인 리전 설정은?",
+        "응답 코드 0000 의 의미가 뭐야", "네트워크 응답이 느린 이유는?", "결제 실패 시 재시도해도 될까?",
+        "How do I deploy to staging?", "what does make deploy do", "커밋 메시지 규칙",
+    ]
+    for q in not_reusable:
+        assert not reusable_question(q), q
+    for q in reusable:
+        assert reusable_question(q), q

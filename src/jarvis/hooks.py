@@ -163,11 +163,38 @@ def _agent_name() -> str:
     return f"claude-code@{host or 'unknown'}"
 
 
+class NoProjectError(RuntimeError):
+    """The checkout has no git remote and no explicit project: nothing to
+    file the session under. Guessing a name from the directory ("tmp",
+    "Desktop") silently spawned junk projects in a live audit."""
+
+
 def _resolve(transport: Any, cwd: str, state: dict[str, Any]) -> str:
     """The project this checkout belongs to, remembered for the session."""
     if state.get("project"):
         return str(state["project"])
     repo = _git_remote(cwd)
+    # `jv agent hooks --install --project <name>` bakes MYVIKING_PROJECT into
+    # the hook command for checkouts without a remote (or to pin a name).
+    explicit = os.environ.get("MYVIKING_PROJECT", "").strip()
+    # A git checkout without a remote may still be named after its folder —
+    # that is what the person called it. A plain directory (/tmp, ~) may not.
+    is_git = (Path(cwd) / ".git").exists()
+    if not repo and not explicit and not is_git:
+        # Still ask: a path alias registered on the server counts.
+        res = transport.request(
+            "POST", "/resolve", {"project": "", "repo": "", "path": cwd, "create": False}
+        )
+        project = str((res or {}).get("project") or "")
+        if not project:
+            raise NoProjectError(
+                f"git 저장소가 아닌 폴더입니다 ({cwd}). 프로젝트를 정하지 못해 이 세션은 "
+                "기록되지 않습니다 — 저장소 폴더에서 열거나, "
+                "`jv agent hooks --install --project <이름> ...` 으로 이름을 지정하세요."
+            )
+        state["project"] = project
+        state["repo"] = ""
+        return project
     res = transport.request(
         "POST",
         "/resolve",
@@ -175,7 +202,7 @@ def _resolve(transport: Any, cwd: str, state: dict[str, Any]) -> str:
         # here must carry the coding categories (commands/conventions/pitfalls/
         # decisions) — the default template lacks them and the agent's
         # remember('pitfalls', ...) calls would silently vanish.
-        {"project": "", "repo": repo, "path": cwd, "create": True, "template": "coding"},
+        {"project": explicit, "repo": repo, "path": cwd, "create": True, "template": "coding"},
     )
     project = str((res or {}).get("project") or "")
     if not project:
@@ -358,6 +385,11 @@ def run(
         _mark_ok(sdir, event)
         _clear_server_down(sdir)
         return result
+    except NoProjectError as exc:
+        # Not a server fault and not transient: breadcrumb for --check, and
+        # say it once on screen so the person learns why nothing is recorded.
+        _log_failure(sdir, event, exc)
+        return _once_per_session_message(f"[MyViking] {exc}", payload or {}, sdir, "noproject_warned")
     except Exception as exc:
         _log_failure(sdir, event, exc)
         if _is_unreachable(exc):
@@ -415,21 +447,26 @@ def _auth_refused_message(
     msg = str(exc)
     if not any(f"MyViking {code}" in msg for code in ("401", "403", "429")):
         return None
+    return _once_per_session_message(
+        f"[MyViking] 서버가 요청을 거부했습니다 — {msg}. 이 세션은 기록되지 않습니다. "
+        "`jv agent hooks --check --url <서버> --key <키>` 로 확인하세요.",
+        payload, state_dir, "auth_warned",
+    )
+
+
+def _once_per_session_message(
+    text: str, payload: dict[str, Any], state_dir: Path, flag: str
+) -> dict[str, Any] | None:
     sid = str(payload.get("session_id") or "")
     try:
         state = _load_state(state_dir, sid)
-        if state.get("auth_warned"):
+        if state.get(flag):
             return None
-        state["auth_warned"] = True
+        state[flag] = True
         _save_state(state_dir, sid, state)
     except Exception:
         pass
-    return {
-        "systemMessage": (
-            f"[MyViking] 서버가 요청을 거부했습니다 — {msg}. 이 세션은 기록되지 않습니다. "
-            "`jv agent hooks --check --url <서버> --key <키>` 로 확인하세요."
-        )
-    }
+    return {"systemMessage": text}
 
 
 def _mark_ok(state_dir: Path, event: str) -> None:
@@ -574,14 +611,18 @@ def _text_of(content: Any) -> str:
 _EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Update"}
 _MAX_FILES = 20
 
+# Text the harness puts in the user's seat that no person typed. Verified
+# against real Claude Code transcripts: the compaction summary ("This session
+# is being continued…", 17k chars) would otherwise be committed as the
+# question, and an interrupted turn as a question with no answer.
+_HARNESS_USER_PREFIXES = (
+    "<",  # <command-name>, <local-command-stdout>, <task-notification>, <system-reminder>
+    "[Request interrupted",
+    "This session is being continued from a previous conversation",
+)
 
-def _touched_files(path: Path) -> list[str]:
-    """Files the assistant wrote to while answering the last question.
 
-    Reads the same tool calls the editor already ran, so "what was worked on"
-    is recorded as concretely as "what was asked" — a returning session then
-    knows which files last time's work touched, not just the topic.
-    """
+def _read_entries(path: Path) -> list[dict[str, Any]]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except Exception:
@@ -595,20 +636,53 @@ def _touched_files(path: Path) -> list[str]:
             e = json.loads(line)
         except Exception:
             continue
-        if isinstance(e, dict):
+        # Subagent turns share the file in some versions; they are not the
+        # person's conversation.
+        if isinstance(e, dict) and not e.get("isSidechain"):
             entries.append(e)
+    return entries
 
+
+def _is_person_prompt(e: dict[str, Any]) -> str:
+    """The text of a user entry a person actually typed, else ''."""
+    if e.get("type") != "user" or e.get("isMeta"):
+        return ""
+    # Task notifications and other harness-originated turns carry this mark.
+    if e.get("promptSource") == "system":
+        return ""
+    text = _text_of((e.get("message") or {}).get("content"))
+    if not text or text.startswith(_HARNESS_USER_PREFIXES):
+        return ""
+    return text
+
+
+def _is_real_answer(e: dict[str, Any]) -> bool:
+    """Assistant entries that are model output, not an API error placeholder
+    ("API Error: Server error mid-response…", model "<synthetic>")."""
+    if e.get("type") != "assistant" or e.get("isApiErrorMessage"):
+        return False
+    model = str((e.get("message") or {}).get("model") or "")
+    return model != "<synthetic>"
+
+
+def _touched_files(path: Path) -> list[str]:
+    """Files the assistant wrote to while answering the last question.
+
+    Reads the same tool calls the editor already ran, so "what was worked on"
+    is recorded as concretely as "what was asked" — a returning session then
+    knows which files last time's work touched, not just the topic.
+    """
+    entries = _read_entries(path)
     q_index = -1
     for i, e in enumerate(entries):
-        if e.get("type") != "user" or e.get("isMeta"):
-            continue
-        text = _text_of((e.get("message") or {}).get("content"))
-        if text and not text.startswith("<"):
+        if _is_person_prompt(e):
             q_index = i
+    if q_index < 0:
+        return []
 
     files: list[str] = []
     for e in entries[q_index + 1 :]:
-        if e.get("type") != "assistant":
+        if not _is_real_answer(e):
             continue
         content = (e.get("message") or {}).get("content")
         if not isinstance(content, list):
@@ -634,30 +708,12 @@ def _last_exchange(path: Path) -> tuple[str, str, str]:
     wrappers, meta records) as angle-bracketed text; neither is a question, so
     both are skipped when looking for what the person actually asked.
     """
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except Exception:
-        return "", "", ""
-    entries: list[dict[str, Any]] = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            e = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(e, dict):
-            entries.append(e)
-
+    entries = _read_entries(path)
     question, q_index = "", -1
     for i, e in enumerate(entries):
-        if e.get("type") != "user" or e.get("isMeta"):
-            continue
-        text = _text_of((e.get("message") or {}).get("content"))
-        if not text or text.startswith("<"):
-            continue
-        question, q_index = text, i
+        text = _is_person_prompt(e)
+        if text:
+            question, q_index = text, i
 
     if q_index < 0:
         return "", "", ""
@@ -665,7 +721,7 @@ def _last_exchange(path: Path) -> tuple[str, str, str]:
     answer_parts: list[str] = []
     model = ""
     for e in entries[q_index + 1 :]:
-        if e.get("type") != "assistant":
+        if not _is_real_answer(e):
             continue
         msg = e.get("message") or {}
         model = str(msg.get("model") or model)
@@ -755,7 +811,9 @@ def _orientation(project: str, brief: dict[str, Any], tail: str = "") -> str:
                 f" {_clip(m.get('abstract'), 90)}{_trust_tag(m)}"
             )
 
-    warnings = brief.get("warnings") or []
+    # A pitfall learned this week already appeared under "최근에 정해진 것";
+    # the warning section is for the ones that did not.
+    warnings = [m for m in (brief.get("warnings") or []) if m.get("uri") not in learned_uris]
     if warnings:
         lines.append("■ ⚠ 주의 — 이 프로젝트에서 이미 밟은 함정")
         for m in warnings[:4]:

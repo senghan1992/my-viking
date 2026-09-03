@@ -43,6 +43,9 @@ class Candidate:
     vec_score: float = 0.0
     fts_score: float = 0.0
     dir_score: float = 0.0
+    # The part of ``score`` that says "this matches the question" — without
+    # the confidence/recency/priority priors every node gets for free.
+    relevance: float = 0.0
 
 
 @dataclass
@@ -54,6 +57,10 @@ class PackedItem:
     tier: int
     tokens: int
     score: float
+    # Match evidence alone (see Candidate.relevance) — what min_relevance
+    # gates on, exposed so a threshold can be tuned against real queries
+    # after switching embedding providers.
+    relevance: float = 0.0
 
 
 @dataclass
@@ -105,6 +112,7 @@ class PackedContext:
                     "tier": TIER_NAMES[i.tier],
                     "tokens": i.tokens,
                     "score": round(i.score, 4),
+                    "relevance": round(i.relevance, 4),
                 }
                 for i in self.items
             ],
@@ -161,7 +169,8 @@ class Retriever:
                 pack_vector(_normalize(unpack_vector(row["vector"])))
                 for row, _d in keep
             ]
-            for (row, d), score in zip(keep, batch_cosine(qvec, centroids)):
+            sims = self.embedder.calibrate_many(batch_cosine(qvec, centroids))
+            for (row, d), score in zip(keep, sims):
                 # Prefer deeper directories at equal similarity: they are more
                 # specific, so drilling into them reads fewer irrelevant nodes.
                 dir_scores[row["uri"]] = score + 0.01 * len(d.parts)
@@ -202,7 +211,19 @@ class Retriever:
                 {"step": "rank", "considered": 0, "selected": 0, "lexical_hits": len(fts)}
             )
             return [], trace
-        vec_scores = batch_cosine(qvec, [r["vector"] for r in rows])
+        vec_scores = self.embedder.calibrate_many(
+            batch_cosine(qvec, [r["vector"] for r in rows])
+        )
+        # Evidence for the relevance gate is measured against the crowd. A real
+        # model scores every "coding request" somewhat like every coding memory
+        # (e5: "CSS 버튼 색 바꿔줘" ~0.25 against deploy/test/payment notes alike);
+        # what says an item is *about this question* is how far it stands above
+        # the others. The raw score still orders the results.
+        crowd = 0.0
+        if len(vec_scores) >= 3:
+            ordered = sorted(vec_scores)
+            mid = len(ordered) // 2
+            crowd = max(0.0, ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2)
         entered_parsed = [(Uri.parse(d), dir_scores.get(d, 0.0)) for d in entered_uris]
         for row, vec_score in zip(rows, vec_scores):
             uri = Uri.parse(row["uri"])
@@ -216,6 +237,9 @@ class Retriever:
             recency = _recency_bonus(row["updated"], now)
             priority = self._priority(project, row["kind"], row["category"])
 
+            # The directory score is routing (which folder to read), shared by
+            # every node in the folder — not evidence about this node.
+            relevance = 0.42 * max(0.0, vec_score - crowd) + 0.26 * fts_score
             score = (
                 0.42 * vec_score
                 + 0.26 * fts_score
@@ -242,6 +266,7 @@ class Retriever:
                 vec_score=vec_score,
                 fts_score=fts_score,
                 dir_score=dir_score,
+                relevance=relevance,
             )
 
         candidates = sorted(seen.values(), key=lambda c: -c.score)[:limit]
@@ -450,6 +475,7 @@ class Retriever:
                 tier=tier,
                 tokens=cand.tokens.get(tier, estimate_tokens(text)),
                 score=cand.score,
+                relevance=cand.relevance,
             )
             for cand, tier, text, _full in resolved
         ]
@@ -531,6 +557,9 @@ def _focus(
     "테스트" lesson re-learned six times. Three rules, in order:
 
     * one item per (kind, category, title) — the best-scoring survives;
+    * nothing with no evidence of matching the question at all
+      (``min_relevance``) — so an unrelated prompt gets an empty pack and the
+      agent simply works as it would without a store;
     * nothing that scores far below the best match, unless it is a warning
       that lexically matched the question (warnings earn their place);
     * at most ``max_items`` in total, warnings first.
@@ -552,9 +581,16 @@ def _focus(
         # instructions that ride into every project regardless of the question.
         return (c.category in warn_cats and c.fts_score > 0) or c.uri.is_global
 
-    # A small store is not the problem: two or three items are read either way,
-    # and a bystander must stay retrievable so blame attribution has something
-    # to *not* blame. The gate only bites when there is more than fits anyway.
+    # Absolute gate first. The score carries ~0.1 of priors (confidence,
+    # recency, priority) that every node earns without matching anything, so
+    # a small store used to ride along whole on every prompt — "hello" got the
+    # payment rule, the test command and the README fix. Only evidence counts
+    # here; the priors still order what survives.
+    if cfg.min_relevance > 0:
+        kept = [c for c in kept if c.relevance >= cfg.min_relevance or warned(c)]
+
+    # The relative gate only bites when there is more than fits anyway: two
+    # or three genuinely related items are read either way.
     over = cfg.max_items > 0 and len(kept) > cfg.max_items
     if over and cfg.min_relative_score > 0:
         floor = kept[0].score * cfg.min_relative_score

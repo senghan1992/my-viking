@@ -32,11 +32,25 @@ services:
     # 값은 이 폴더의 .env 에서 읽습니다 (.env.example 참고). 없어도 동작합니다.
     environment:
       JARVIS_HOME: /data
-      # 요약·증류 품질을 올리려면 (없어도 완전히 동작합니다)
+      # 요약·증류 품질을 올리려면 (없어도 완전히 동작합니다). 키만 넣으면 anthropic 이 켜집니다.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      JARVIS_LLM_PROVIDER: ${JARVIS_LLM_PROVIDER:-}
+      JARVIS_LLM_MODEL: ${JARVIS_LLM_MODEL:-}
+      # 의미 기반 회상(동의어·다른 표현). 비우면 오프라인 해시 임베딩.
+      #   openai: JARVIS_EMBED_PROVIDER=openai + OPENAI_API_KEY
+      #   ollama: JARVIS_EMBED_PROVIDER=ollama + JARVIS_EMBED_BASE_URL=http://host.docker.internal:11434/v1
+      JARVIS_EMBED_PROVIDER: ${JARVIS_EMBED_PROVIDER:-}
+      JARVIS_EMBED_MODEL: ${JARVIS_EMBED_MODEL:-}
+      JARVIS_EMBED_BASE_URL: ${JARVIS_EMBED_BASE_URL:-}
+      JARVIS_EMBED_DIM: ${JARVIS_EMBED_DIM:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ARK_API_KEY: ${ARK_API_KEY:-}
       # Caddy(tls 프로필) 뒤에 있을 때만 1 — 틀린 키 차단이 실제 클라이언트 IP 기준이 됩니다.
       # up.sh --domain 이 자동으로 켭니다. 프록시 없이 직접 노출할 땐 켜지 마세요.
       MYVIKING_TRUST_PROXY: ${MYVIKING_TRUST_PROXY:-}
+    # 호스트에서 도는 Ollama 를 컨테이너에서 host.docker.internal 로 부를 수 있게 (Linux 필요, Mac/Win 은 기본).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
       test:

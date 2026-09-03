@@ -66,6 +66,14 @@ class BudgetConfig:
     # Warning-category items with a lexical hit are always kept. 0 disables.
     max_items: int = 8
     min_relative_score: float = 0.45
+    # Absolute floor on *relevance evidence* (the vector/lexical/directory part
+    # of the score, without the confidence/recency/priority priors). The
+    # relative gate above only bites once a store outgrows max_items; below
+    # that every memory rode along on every prompt — "hello" got five payment
+    # and test notes. With nothing that actually matches, the pack is empty
+    # and the agent works exactly as it would without MyViking. Warnings with
+    # a lexical hit and global preferences are exempt. 0 disables.
+    min_relevance: float = 0.12
     # Ceiling on candidates scored per query. Directory-first retrieval keeps
     # L0 reads proportional to depth, but a single flat category can still hold
     # thousands of files — and then every query pays for all of them. Beyond
@@ -227,14 +235,51 @@ class Config:
         return cls(home=home, **kwargs)
 
     @classmethod
-    def load(cls, home: Path | str | None = None) -> "Config":
+    def load(cls, home: Path | str | None = None, env: bool = True) -> "Config":
+        """``env=False`` returns exactly what the file says — what ``jv config
+        --set`` must edit, or an environment-only provider would be baked into
+        the file and survive the variable being removed."""
         base = Path(home).expanduser() if home else jarvis_home()
         path = base / CONFIG_NAME
         if path.exists():
             raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             raw["home"] = str(base)
-            return cls.from_dict(raw)
-        return cls(home=base)
+            cfg = cls.from_dict(raw)
+        else:
+            cfg = cls(home=base)
+        if env:
+            cfg.apply_env()
+        return cfg
+
+    def apply_env(self) -> "Config":
+        """Environment overrides for the provider settings.
+
+        A Docker deployment has no ``jv config`` step: the operator edits
+        ``deploy/.env`` and re-runs ``up.sh``. So the model/embedding choice
+        must be settable with variables, and the /health note that said
+        "JARVIS_EMBED_PROVIDER 권장" has to name something that exists.
+
+        ``ANTHROPIC_API_KEY`` alone turns the LLM on (provider anthropic) —
+        the README and .env.example have promised that all along.
+        """
+        env = os.environ
+        for section, prefix in ((self.llm, "JARVIS_LLM_"), (self.embed, "JARVIS_EMBED_")):
+            for field_name in ("provider", "model", "api_key_env", "base_url"):
+                val = env.get(prefix + field_name.upper(), "")
+                if val:
+                    setattr(section, field_name, val.strip())
+        dim = env.get("JARVIS_EMBED_DIM", "")
+        if dim.strip().isdigit() and int(dim) > 0:
+            self.embed.dim = int(dim)
+        if (
+            self.llm.provider in ("", "none")
+            and not env.get("JARVIS_LLM_PROVIDER")
+            and env.get("ANTHROPIC_API_KEY")
+        ):
+            self.llm.provider = "anthropic"
+            self.llm.api_key_env = "ANTHROPIC_API_KEY"
+        _fill_provider_defaults(self)
+        return self
 
     def save(self) -> Path:
         self.home.mkdir(parents=True, exist_ok=True)
@@ -247,3 +292,42 @@ class Config:
     def api_key(self, which: str = "llm") -> str:
         env = self.llm.api_key_env if which == "llm" else self.embed.api_key_env
         return os.environ.get(env, "") if env else ""
+
+
+# Sensible per-provider defaults so `JARVIS_EMBED_PROVIDER=openai` is enough.
+# The vector dimension must match the model: stored vectors are compared by
+# length, and a wrong ``dim`` silently scores every node zero.
+_EMBED_KEY_ENV = {"openai": "OPENAI_API_KEY", "volcengine": "ARK_API_KEY", "ollama": ""}
+_EMBED_DEFAULT_MODEL = {"openai": "text-embedding-3-small", "ollama": "bge-m3"}
+EMBED_MODEL_DIMS = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
+    "bge-m3": 1024,
+    "multilingual-e5-small": 384,
+    "multilingual-e5-base": 768,
+    "multilingual-e5-large": 1024,
+    "nomic-embed-text": 768,
+    "mxbai-embed-large": 1024,
+    "snowflake-arctic-embed": 1024,
+    "all-minilm": 384,
+}
+_LLM_KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "volcengine": "ARK_API_KEY"}
+
+
+def _fill_provider_defaults(cfg: "Config") -> None:
+    e = cfg.embed
+    if e.provider not in ("", "hashing"):
+        if not e.model and e.provider in _EMBED_DEFAULT_MODEL:
+            e.model = _EMBED_DEFAULT_MODEL[e.provider]
+        if not e.api_key_env and e.provider in _EMBED_KEY_ENV:
+            e.api_key_env = _EMBED_KEY_ENV[e.provider]
+        # ``dim`` is only ever the hashing default (512) when a real model has
+        # been named without one, so a known model's size takes over.
+        known = EMBED_MODEL_DIMS.get(e.model.split(":")[0].lower())
+        if known and e.dim == 512:
+            e.dim = known
+    l = cfg.llm
+    if l.provider not in ("", "none") and l.provider in _LLM_KEY_ENV:
+        if l.api_key_env == "ANTHROPIC_API_KEY" and l.provider != "anthropic":
+            l.api_key_env = _LLM_KEY_ENV[l.provider]

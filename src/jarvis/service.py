@@ -24,7 +24,7 @@ from .budget import UsageReport, usage_report
 import re
 
 from .config import BudgetConfig, Config
-from .learn import DistillReport, Learner, MemoryCandidate
+from .learn import DistillReport, Learner, MemoryCandidate, _is_chatter
 from .models import KIND_MEMORY, KIND_PROMPT, KIND_SESSION, Node, Uri, now_iso, slugify
 from .profiles import MemoryProfile, builtin, template_summary
 from .prompts import PromptLibrary, RenderResult
@@ -1478,6 +1478,14 @@ class Jarvis:
             # clients send exchanges too, and what is stored here is re-injected
             # into every later session on this project.
             question, answer = redact(question), redact(answer)
+        if _is_chatter(question, answer) and not files:
+            # "안녕" → "안녕하세요" is not work: recorded as a session it showed up
+            # in the next briefing as "최근 작업: 안녕" and counted as a solved task.
+            if trace_id:
+                self.tracer.event(trace_id, "generation", model or "generation",
+                                  output_text=answer, latency_ms=latency_ms,
+                                  metadata={"skipped": "chatter"})
+            return {"session": "", "trace_id": trace_id, "skipped": "chatter"}
         if trace_id:
             self.tracer.event(
                 trace_id,

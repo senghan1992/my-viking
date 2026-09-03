@@ -467,3 +467,61 @@ def test_retitle_moves_the_file_when_the_name_is_free(coding):
     detail = coding.memory_detail(str(moved))
     assert detail["title"] == "새 이름"
     assert detail["abstract"] == "내용"
+
+
+def test_greetings_are_chatter_not_cases():
+    from jarvis.learn import _is_chatter
+
+    assert _is_chatter("hello", "안녕하세요.")
+    assert _is_chatter("안녕", "안녕하세요! 무엇을 도와드릴까요?")
+    assert _is_chatter("hi", "Hello!")
+    assert _is_chatter("hey 안녕", "안녕하세요.")
+    assert not _is_chatter("hello 엔드포인트 추가해줘", "GET /hello 를 추가했습니다.")
+
+
+def test_work_order_on_an_unnamed_target_does_not_become_a_case(coding):
+    """"이 함수 리팩터링해줘 → 함수를 3개로 분리했습니다" rode on the next such prompt
+    while naming nothing a later session could find."""
+    coding.commit("app", "이 함수 리팩터링해줘", "함수를 3개로 분리했습니다.", agent="a")
+    coding.commit("app", "결제 승인 실패하면 재시도해야 해?", "재시도하지 않습니다. 이중 결제가 납니다.", agent="a")
+    coding.distill("app")
+    titles = [m["title"] for m in coding.memories("app", "cases")]
+    assert not any("리팩터링" in t for t in titles), titles
+    assert any("재시도" in t for t in titles), titles
+
+
+def test_a_complaint_with_always_in_it_is_not_a_convention(coding):
+    """Live audit: "여전히 안 되는데, 서명 검증이 항상 실패해" was filed as a
+    conventions rule at 0.55 and injected as one."""
+    coding.commit("app", "여전히 안 되는데, 서명 검증이 항상 실패해", "HMAC 비교를 constant-time 으로 바꿨습니다.", agent="a")
+    coding.distill("app")
+    assert coding.memories("app", "conventions") == []
+    coding.commit("app", "앞으로 커밋 메시지는 항상 한글로 써", "알겠습니다.", agent="a")
+    coding.distill("app")
+    assert any("한글" in m["title"] or "한글" in m["abstract"] for m in coding.memories("app", "conventions"))
+
+
+def test_titles_drop_the_trailing_particle():
+    from jarvis.learn import _title_from
+
+    assert _title_from("테스트는 어떻게 돌려?") == "테스트"
+    assert _title_from("배포는 어떻게 해?") == "배포"
+    assert _title_from("로그인 API 만들어줘") == "로그인 API 만들어줘"
+
+
+def test_questions_about_an_unnamed_thing_are_still_learned(coding):
+    """The deictic filter must only drop *work orders*: "이거 왜 안 돼?" and
+    "Is it safe to retry?" carry their answers."""
+    coding.commit("app", "Is it safe to retry payments after a timeout?", "No. Never retry — the PG double-charges.", agent="a")
+    coding.commit("app", "이거 왜 안 돼? KeyError 'x'", "config 에 x 키가 없어서입니다. 기본값을 넣었습니다.", agent="a")
+    coding.distill("app")
+    titles = [m["title"] for m in coding.memories("app", "cases")]
+    assert any("retry" in t.lower() for t in titles), titles
+    assert any("KeyError" in t or "keyerror" in t.lower() for t in titles), titles
+
+
+def test_history_is_not_chatter():
+    from jarvis.learn import _is_chatter
+
+    assert not _is_chatter("history", "git log 로 봅니다.")
+    assert not _is_chatter("hint", "힌트: ...")

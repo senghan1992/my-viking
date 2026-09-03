@@ -31,7 +31,17 @@ _PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),  # GitHub tokens
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}\b"),
     re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}\b"),  # Slack
+    re.compile(r"\bxapp-[A-Za-z0-9\-]{10,}\b"),  # Slack app-level token
     re.compile(r"\bAIza[0-9A-Za-z_\-]{30,}\b"),  # Google API key
+    # Google OAuth client secret — the very value the backup setup asks for.
+    re.compile(r"\bGOCSPX-[A-Za-z0-9_\-]{20,}\b"),
+    re.compile(r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{10,}\b"),  # Stripe secret/restricted
+    re.compile(r"\bwhsec_[A-Za-z0-9]{20,}\b"),  # Stripe webhook secret
+    re.compile(r"\bhf_[A-Za-z0-9]{30,}\b"),  # Hugging Face
+    re.compile(r"\bSG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}\b"),  # SendGrid
+    re.compile(r"\bshpat_[A-Fa-f0-9]{32}\b"),  # Shopify
+    re.compile(r"\bdop_v1_[a-f0-9]{60,}\b"),  # DigitalOcean
+    re.compile(r"\b(?:sk|pk)_[A-Za-z0-9]{2,8}_[A-Za-z0-9]{24,}\b"),  # Clerk-style vendor keys
     re.compile(r"\bjv_[A-Za-z0-9_\-]{16,}\b"),  # MyViking keys themselves
     re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),  # GitLab
     re.compile(r"\bnpm_[A-Za-z0-9]{30,}\b"),

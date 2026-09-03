@@ -257,10 +257,11 @@ def test_hook_outside_key_scope_leaves_a_breadcrumb(tmp_path):
     정확히 '--check 가 잡아야 할 조용한 유실' 이다."""
     st = tmp_path / "st"
     out = run("session-start", {"session_id": "s", "cwd": str(tmp_path)}, _NoProjectTransport(), state_dir=st)
-    assert out is None
+    # A checkout with no remote now also tells the person once, on screen.
+    assert out and "systemMessage" in out and "기록되지 않습니다" in out["systemMessage"]
     assert not (st / "last-ok").exists()
     errors = (st / "errors.log").read_text(encoding="utf-8")
-    assert "프로젝트를 정하지 못했습니다" in errors
+    assert "프로젝트를 정하지 못" in errors
 
 
 class _HealthOnlyTransport:

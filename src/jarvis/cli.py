@@ -636,6 +636,10 @@ def cmd_reindex(args, j: Jarvis) -> int:
 def cmd_config(args, j: Jarvis) -> int:
     cfg = j.config
     if args.set:
+        # Edit what the file says, not the running config: the latter carries
+        # environment overrides (JARVIS_EMBED_PROVIDER, ANTHROPIC_API_KEY→
+        # anthropic) that must not be written to disk as if the user chose them.
+        cfg = Config.load(j.config.home, env=False)
         for item in args.set:
             if "=" not in item:
                 raise SystemExit(f"key=value 형식이어야 합니다: {item}")
@@ -894,8 +898,11 @@ def cmd_agent_hooks(args, j: Jarvis | None = None) -> int:
     url = args.url or os.environ.get("MYVIKING_URL", "")
     key = args.key or os.environ.get("MYVIKING_KEY", "")
     state_dir = getattr(args, "state_dir", "") or ""
+    project = getattr(args, "project", "") or ""
     if not args.install:
-        settings = hook_settings(url or "http://127.0.0.1:8787", key, state_dir=state_dir)
+        settings = hook_settings(
+            url or "http://127.0.0.1:8787", key, state_dir=state_dir, project=project
+        )
         text = json.dumps(settings, ensure_ascii=False, indent=2)
         if args.json:
             print(text)
@@ -910,7 +917,7 @@ def cmd_agent_hooks(args, j: Jarvis | None = None) -> int:
         print("오류: --url <서버 주소> 가 필요합니다 (예: --url https://viking.duckdns.org). "
               "MYVIKING_URL 환경변수로도 줄 수 있습니다.", file=sys.stderr)
         return 1
-    settings = hook_settings(url, key, state_dir=state_dir)
+    settings = hook_settings(url, key, state_dir=state_dir, project=project)
 
     repo_dir = Path(args.path or ".").resolve()
     claude_dir = repo_dir / ".claude"
@@ -938,6 +945,12 @@ def cmd_agent_hooks(args, j: Jarvis | None = None) -> int:
     target.write_text(
         json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    if key:
+        # The file carries the API key in plain text; keep it owner-only.
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
 
     # Earlier versions wrote into the shared, committed settings.json — with the
     # key in it. Move our entries out so the key stops travelling with the repo.
@@ -2243,6 +2256,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="훅이 서버에 닿는지 + 최근 훅 실패 여부 점검 (조용한 기록 유실 감지)",
     )
     s2.add_argument("--state-dir", default="", help="훅 상태 위치 (기본 ~/.myviking/hook-state)")
+    s2.add_argument(
+        "--project", default="",
+        help="이 저장소를 기록할 서버 프로젝트 이름 (git remote 가 없는 폴더에 필수; 있으면 remote 로 자동 해석)",
+    )
     s2.set_defaults(func=cmd_agent_hooks)
     s2 = asub.add_parser("list", help="연결된 에이전트 목록")
     s2.set_defaults(func=cmd_agents)

@@ -135,8 +135,11 @@ Claude Code 화면에 한 세션당 한 번 `[MyViking] 서버가 요청을 거�
 
 1. **백업 연결** — 볼륨을 잃어도 지식은 남습니다. 대시보드 첫 화면의 백업 패널,
    또는 [백업 절](#백업--볼륨이-사라져도-살아남는-사본).
-2. **품질 올리기** — `deploy/.env` 에 `ANTHROPIC_API_KEY` 를 넣으면 요약·증류가
-   좋아집니다. [LLM 붙이기](#llm-붙이기-선택)
+2. **품질 올리기** — 기본값은 오프라인 폴백이라 동작은 하지만 **동의어·다른 표현은 못 찾습니다**
+   ("릴리스 어떻게?" 로 "배포 명령"을 못 꺼냄). `deploy/.env` 에 두 줄을 넣고 `up.sh` 를 다시
+   실행하세요: `ANTHROPIC_API_KEY`(요약·증류) 와 `JARVIS_EMBED_PROVIDER=openai` +
+   `OPENAI_API_KEY`(의미 회상; 무료로 하려면 Ollama). `up.sh` 가 끝날 때 지금 어느 수준인지
+   알려 줍니다. [LLM·임베딩 붙이기](#llm임베딩-붙이기-선택)
 3. **문제가 생기면** — [증상별 대응](#문제가-생기면--증상별-대응) 절.
 
 ---
@@ -518,7 +521,10 @@ cd ~/work/backend
 jv agent hooks --install --url https://viking.example.com --key jv_...
 ```
 
-`--install` 이 저장소의 `.claude/settings.local.json`(개인 파일 — 키가 커밋되지 않음) 에 훅 네 개를 병합하고, 끝에 서버와 키를 실제로 확인합니다.
+`--install` 이 저장소의 `.claude/settings.local.json`(개인 파일 — 키가 커밋되지 않음, 권한 0600) 에 훅 네 개를 병합하고, 끝에 서버와 키를 실제로 확인합니다.
+프로젝트는 git remote 로 정해집니다. remote 가 없는 git 저장소는 폴더 이름을 쓰고, git 저장소가
+아닌 폴더(`/tmp`, 홈 등)에서는 프로젝트를 만들지 않고 화면에 한 번 알린 뒤 기록하지 않습니다 —
+그런 폴더를 굳이 기록하려면 `--project <이름>` 으로 이름을 박아 두세요.
 그 뒤로는 에이전트의 협조 없이도 루프 전체가 돌아갑니다:
 
 | 훅 | 하는 일 |
@@ -667,9 +673,15 @@ API 키를 켜 두었다면 오른쪽 위 입력란의 키가 설정에 자동�
 | **안 쓰이면 잊힘** | 오래 쓰이지 않으면 신뢰도가 감쇠하고, 바닥을 치면 `_archive/` 로 |
 | **나중 것이 대체** | 모순된 지시가 오면 나중 것이 이깁니다. 이전 것은 보관되고 검색에서 빠집니다 |
 
-마지막 규칙이 핵심입니다. "커밋은 한글로" 다음에 "커밋은 영어로"가 오면, 나중
-지시가 현재 규칙이 되고 이전 것은 보관함으로 갑니다 — 에이전트가 서로 반대되는
+마지막 규칙이 핵심입니다. "앞으로 커밋은 항상 한글로" 다음에 "앞으로 커밋은 항상 영어로"가
+오면, 나중 지시가 현재 규칙이 되고 이전 것은 보관함으로 갑니다 — 에이전트가 서로 반대되는
 두 규칙을 동시에 보는 일이 없습니다. 파일명도 내용에 맞게 따라갑니다.
+
+정직하게 적어 두면, 이 대체는 **규칙으로 인식된 것**끼리만 일어납니다. LLM 없이 규칙 기반
+증류만 쓸 때 "규칙"으로 인식되는 문장은 "앞으로·항상·반드시·절대" 같은 표지가 있는
+사용자 지시문이고, 그 외의 대화는 질문→답 사례(`cases`)로만 남아 서로를 대체하지 않습니다.
+확실하게 바로잡으려면 같은 제목으로 `jarvis_remember`(또는 `jv remote remember`) 를
+쓰세요 — 이건 표지 없이도 즉시 대체합니다.
 
 되돌릴 수 있습니다. 보관된 파일에 무엇으로 대체됐는지 기록되고, 카테고리
 디렉터리에 그대로 남아 있습니다. 사람이 판단하고 싶다면
@@ -1102,24 +1114,52 @@ jv report|stats|cache|sessions        토큰 회계
 jv reindex|config
 ```
 
-## LLM 붙이기 (선택)
+## LLM·임베딩 붙이기 (선택)
 
-없어도 **완전히 동작합니다**. 붙이면 요약과 증류 품질만 올라갑니다.
+없어도 **동작은 합니다** — 기록·브리핑·캐시·함정 경고·수동 `remember` 는 그대로입니다.
+다만 기본값은 오프라인 폴백이라 두 가지가 분명히 약합니다. **증류가 규칙 기반**이라 대화의
+대부분은 "질문 → 답 첫 문장" 사례(`cases`, ⟨미확정⟩ 표시)로만 남고, 규칙으로 승격되는 것은
+"앞으로·항상·반드시" 같은 표지가 있는 지시문과 답 속 코드 블록 정도입니다. 그리고 **회상이
+키워드 일치**에 가깝습니다 — 해시 임베딩은 "배포"↔"릴리스" 같은 동의어를 못 잇습니다
+(조사·어미 변형은 어휘 검색이 직접 벗겨 처리합니다). 서버를 띄운 **뒤에** 넣는 설정이며,
+`up.sh` 가 끝날 때 지금 어느 수준인지 알려 줍니다. LLM 을 붙이지 않을 거면 중요한 규칙·명령·
+함정은 에이전트의 `jarvis_remember` 나 대시보드로 직접 넣는 것이 지식창고를 채우는 주된 길입니다.
+
+**Docker (권장)** — `deploy/.env` 에 넣고 `bash deploy/up.sh` 를 다시 실행:
 
 ```bash
-jv config --set llm.provider=anthropic \
-          --set llm.model=claude-sonnet-5 \
-          --set llm.api_key_env=ANTHROPIC_API_KEY
+ANTHROPIC_API_KEY=sk-ant-...            # 요약·증류 → LLM. 키만 넣으면 anthropic 이 켜집니다
+JARVIS_EMBED_PROVIDER=openai            # 의미 회상. 모델 기본 text-embedding-3-small
+OPENAI_API_KEY=sk-...
+# 무료·로컬로 하려면 (한국어는 bge-m3 권장; 호스트에서 `ollama pull bge-m3`):
+# JARVIS_EMBED_PROVIDER=ollama
+# JARVIS_EMBED_BASE_URL=http://host.docker.internal:11434/v1
 ```
 
-`anthropic` / `openai` / `volcengine` / `ollama`. 임베딩도 같은 방식으로
-교체할 수 있고(`embed.provider`), 기본값은 오프라인 해시 임베딩입니다. 문자
-n-gram 이라 한국어를 토크나이저 없이 처리합니다.
+**Docker 없이** — 같은 환경변수를 서버 프로세스에 주거나 `jv config` 로:
 
-실제 임베딩 프로바이더를 붙이면 회상이 의미 기반이 됩니다(해시 폴백은
-키워드에 가깝습니다). **프로바이더를 바꿔도 수동 재색인은 필요 없습니다** —
-색인 서명에 프로바이더·모델·차원이 들어 있어, 바뀌면 다음 접근 때 스스로
-다시 임베딩합니다.
+```bash
+jv config --set llm.provider=anthropic --set llm.model=claude-sonnet-5 \
+          --set llm.api_key_env=ANTHROPIC_API_KEY
+jv config --set embed.provider=openai   # 모델·차원·키 변수는 프로바이더 기본값이 채워집니다
+```
+
+`anthropic` / `openai` / `volcengine` / `ollama`. 벡터 차원은 모델의 첫 응답에서 서버가
+스스로 알아내고, 표에 없는 모델도 그대로 동작합니다 (`JARVIS_EMBED_DIM` 은 강제하고 싶을 때만).
+**프로바이더를 바꿔도 수동 재색인은 필요 없습니다** — 색인 서명에 프로바이더·모델·차원이
+들어 있어, 바뀌면 다음 접근 때 스스로 다시 임베딩합니다. 셸에 `ANTHROPIC_API_KEY` 가 있지만
+LLM 을 켜고 싶지 않으면 `JARVIS_LLM_PROVIDER=none` 을 주세요.
+
+**모델마다 "무관함"의 점수가 다르다는 문제는 서버가 흡수합니다.** 코사인 유사도는 모델 간에
+비교할 수 없습니다 — 해시는 무관한 글에 0, OpenAI 계열은 0.1~0.2, e5 계열은 0.8 을 줍니다.
+그래서 서버는 기동 시 서로 무관한 문장 8개로 그 모델의 기준선을 한 번 측정해(`/health` 의
+`embed_similarity_floor`) 모든 유사도를 같은 척도로 보정합니다. 실측(multilingual-e5-small):
+보정 없이는 무관한 프롬프트에도 지식이 전량 실리고 서로 다른 메모리가 "같은 교훈"으로
+병합돼 사라졌지만, 보정 후에는 해시와 같은 문턱값으로 관련 7건은 정확히 1건, 무관 6건은
+0건이 나왔습니다. 그래도 무관한 질문에 지식이 실리면 `budget.min_relevance`(기본 0.12) 를
+올리세요 — `/prepare` 응답의 `packed.items[].relevance` 가 각 항목의 근거 점수입니다.
+엔드포인트가 죽어 있으면 `/health` 가 `embed_probe_error` 와 폴백 횟수를 보여 주고, 그 동안
+저장된 것은 `jv reindex` 로 다시 임베딩합니다.
 
 지금 어느 수준으로 도는지는 대시보드 헤더의 품질 칩으로 한눈에 보입니다:
 LLM 과 실제 임베딩이 모두 붙어 있으면 **품질 최상**, 하나라도 폴백이면
@@ -1130,7 +1170,7 @@ LLM 과 실제 임베딩이 모두 붙어 있으면 **품질 최상**, 하나라
 
 ```bash
 uv pip install --python .venv -e ".[all,dev]"
-.venv/bin/python -m pytest -q        # 366 tests
+.venv/bin/python -m pytest -q
 .venv/bin/ruff check src tests
 bash examples/quickstart.sh          # 전체 루프 시연
 ```

@@ -297,6 +297,9 @@ def test_a_bad_answer_does_not_punish_unrelated_knowledge(coding):
     bystander = coding.remember(
         "app", "pitfalls", "PG 재시도 금지", "승인 응답이 0000 이 아니면 재시도하지 않는다"
     )
+    # This test is about attribution, not retrieval: the relevance gate would
+    # (rightly) keep the unrelated pitfall out of the pack, so open it here.
+    coding.config.budget.min_relevance = 0
     prepared = coding.prepare("app", "배포 어떻게 해?", use_cache=False)
     used = {i.uri for i in prepared.packed.items}
     assert {str(culprit), str(bystander)} <= used, "두 지식이 모두 검색되어야 전제가 성립합니다"
@@ -317,6 +320,8 @@ def test_a_bad_answer_does_not_punish_unrelated_knowledge(coding):
 def test_a_good_answer_credits_everything_it_used_but_by_contribution(coding):
     coding.remember("app", "commands", "테스트 실행", "pytest -q 로 돌린다")
     coding.remember("app", "conventions", "한글 문서", "문서는 한글로 쓴다")
+    # Attribution test: let the unrelated convention into the pack.
+    coding.config.budget.min_relevance = 0
     prepared = coding.prepare("app", "테스트 실행 방법", use_cache=False)
     res = coding.score(prepared.trace_id, "helpfulness", 1.0)
 
@@ -511,3 +516,13 @@ def test_concurrent_mutations_stay_consistent(coding):
     rows = j.traces("app", limit=100)
     assert len(rows) == 24
     assert all(r["output"] for r in rows)  # 모든 커밋이 제 트레이스에 붙었다
+
+
+def test_greetings_are_not_recorded_as_work(coding):
+    """Live audit: "안녕" → "안녕하세요" became a session scored 0.62 and showed up
+    as "최근 작업: 안녕" in the next briefing."""
+    res = coding.commit("app", "안녕", "안녕하세요! 무엇을 도와드릴까요?", agent="a")
+    assert res.get("skipped") == "chatter" and res["session"] == ""
+    assert coding.brief("app")["recent_work"] == []
+    res = coding.commit("app", "테스트 어떻게 돌려?", "pytest -q", agent="a")
+    assert res["session"]

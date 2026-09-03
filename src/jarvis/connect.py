@@ -70,19 +70,22 @@ def _jv_command() -> str:
 
 
 def hook_settings(
-    url: str, key: str = "", timeout: int = 15, state_dir: str = ""
+    url: str, key: str = "", timeout: int = 15, state_dir: str = "", project: str = ""
 ) -> dict[str, Any]:
     """The ``hooks`` block for Claude Code's ``.claude/settings.local.json``.
 
     ``state_dir`` is baked into every hook command when given — the install
     flag used to be accepted and then silently dropped, so the hooks kept
-    state somewhere other than where ``--check`` was told to look."""
+    state somewhere other than where ``--check`` was told to look.
+    ``project`` pins the server project for a checkout without a git remote."""
     jv = _jv_command()
 
     def command(event: str) -> str:
         env = f"MYVIKING_URL={url.rstrip('/')}"
         if key:
             env += f" MYVIKING_KEY={key}"
+        if project:
+            env += f" MYVIKING_PROJECT={project}"
         cmd = f"{env} {jv} hook {event}"
         if state_dir:
             cmd += f" --state-dir {state_dir}"

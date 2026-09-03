@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 from urllib.parse import unquote
 
@@ -507,12 +508,41 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         # A store on the offline fallbacks still works, but its distillation is
         # crude and its recall is keyword-shaped, not semantic. Say so plainly
         # so the dashboard can nudge toward the settings that make it good.
-        embed_real = embed.provider not in ("", "hashing")
+        # "provider set" is not "in use": a provider without its key silently
+        # falls back to hashing, so ask the embedder what it actually does.
+        embedder = jarvis.store.embedder
+        embed_real = bool(getattr(embedder, "semantic", False))
+        # The Docker operator edits deploy/.env; everyone else sets the same
+        # variables on the server process or uses `jv config`.
+        in_docker = os.environ.get("MYVIKING_IN_CONTAINER") == "1"
+        where = "deploy/.env 에 넣고 up.sh 를 다시 실행" if in_docker else (
+            "서버 환경변수로 주거나 `jv config --set` 으로 설정한 뒤 서버를 재시작"
+        )
         notes = []
         if not llm.available:
-            notes.append("LLM 미설정 — 증류/요약이 규칙 기반입니다 (JARVIS_LLM_PROVIDER+키 권장)")
+            notes.append(
+                f"LLM 미설정 — 증류/요약이 규칙 기반입니다. ANTHROPIC_API_KEY "
+                f"(또는 JARVIS_LLM_PROVIDER + 그 키) 를 {where}하세요"
+            )
         if not embed_real:
-            notes.append("임베딩이 해싱 폴백 — 의미 기반 회상이 제한됩니다 (JARVIS_EMBED_PROVIDER 권장)")
+            if getattr(embedder, "probe_error", ""):
+                hint = (
+                    f"'{embed.provider}' ({embed.base_url or '기본 주소'}) 에 닿지 않아 해싱으로 동작 중 — "
+                    f"{embedder.probe_error}. 엔드포인트를 살린 뒤 서버를 재시작하세요"
+                )
+            elif embed.provider not in ("", "hashing"):
+                hint = f"'{embed.provider}' 가 설정됐지만 {embed.api_key_env or 'API 키'} 가 없어 해싱으로 동작 중"
+            else:
+                hint = (
+                    f"JARVIS_EMBED_PROVIDER=openai + OPENAI_API_KEY (또는 =ollama + "
+                    f"JARVIS_EMBED_BASE_URL) 를 {where}하세요"
+                )
+            notes.append(f"임베딩이 해싱 폴백 — 동의어·다른 표현의 회상이 제한됩니다. {hint}")
+        elif getattr(embedder, "fallbacks", 0):
+            notes.append(
+                f"임베딩 엔드포인트 호출 실패 {embedder.fallbacks}회 — 그 동안 저장된 벡터는 해싱입니다. "
+                "엔드포인트를 확인한 뒤 `jv reindex` 로 다시 임베딩하세요"
+            )
         # Self-observation: a background sweep or backup that dies must show here,
         # not only in a stdout line nobody is watching.
         raw = jarvis.store.db.get_meta("maintenance")
@@ -570,6 +600,9 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
                 "embed_model": embed.model,
                 "embed_dim": embed.dim,
                 "embed_semantic": embed_real,
+                "embed_probe_error": getattr(embedder, "probe_error", ""),
+                "embed_fallbacks": getattr(embedder, "fallbacks", 0),
+                "embed_similarity_floor": round(getattr(embedder, "similarity_floor", 0.0), 3),
                 # the index re-embeds itself when the provider/model changes, so
                 # switching providers needs no manual reindex.
                 "reindex_automatic": True,

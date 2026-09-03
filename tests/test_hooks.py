@@ -48,6 +48,8 @@ def transport(client):
 def repo_dir(tmp_path):
     d = tmp_path / "checkout" / "backend"
     d.mkdir(parents=True)
+    # A git checkout (remote-less): the folder name may serve as the project.
+    (d / ".git").mkdir()
     return d
 
 
@@ -511,3 +513,77 @@ def test_container_bakes_bare_jv_not_a_container_path(monkeypatch):
     settings = connect.hook_settings("http://server:8787")
     cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
     assert "/usr/local/bin/jv hook session-start" in cmd
+
+
+def test_orientation_does_not_repeat_a_fresh_pitfall_under_warnings():
+    """A pitfall learned this week showed up twice: under "최근에 정해진 것" and
+    again under "⚠ 주의"."""
+    pit = {"uri": "backend/memories/pitfalls/pg", "category": "pitfalls",
+           "title": "PG 재시도 금지", "abstract": "재시도하면 이중 결제", "confidence": 0.8}
+    out = _orientation("backend", {"recently_learned": [pit], "warnings": [pit]})
+    assert out.count("이중 결제") == 1
+    assert "⚠ 주의" not in out
+
+
+def test_last_exchange_ignores_harness_text_seen_in_real_transcripts(tmp_path):
+    """Checked against real Claude Code transcripts: the compaction summary sits
+    in the user's seat as 17k chars of "This session is being continued…", task
+    notifications arrive with promptSource=system, an interrupted turn leaves
+    "[Request interrupted by user]", and API errors are assistant entries with
+    model "<synthetic>" / isApiErrorMessage. None of it is the exchange."""
+    p = tmp_path / "t.jsonl"
+    rows = [
+        {"type": "user", "message": {"role": "user", "content": "테스트 어떻게 돌려?"}},
+        {"type": "assistant", "message": {"role": "assistant", "model": "claude-x",
+                                          "content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "/r/a.py"}},
+                                                      {"type": "text", "text": "pytest -q 로 돌립니다."}]}},
+        {"type": "assistant", "isApiErrorMessage": True, "error": "server_error",
+         "message": {"role": "assistant", "model": "<synthetic>",
+                     "content": [{"type": "text", "text": "API Error: Server error mid-response."}]}},
+        {"type": "user", "promptSource": "system",
+         "message": {"role": "user", "content": "<task-notification>done</task-notification>"}},
+        {"type": "user", "message": {"role": "user", "content": "This session is being continued from a previous conversation that ran out of context. Summary: ..."}},
+        {"type": "user", "message": {"role": "user", "content": "[Request interrupted by user]"}},
+        {"type": "user", "isSidechain": True, "message": {"role": "user", "content": "서브에이전트 지시"}},
+        {"type": "assistant", "isSidechain": True, "message": {"role": "assistant", "model": "claude-x",
+                                                                 "content": [{"type": "text", "text": "서브 답"}]}},
+    ]
+    p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    q, a, model = _last_exchange(p)
+    assert q == "테스트 어떻게 돌려?"
+    assert a == "pytest -q 로 돌립니다." and model == "claude-x"
+    from jarvis.hooks import _touched_files
+    assert _touched_files(p) == ["/r/a.py"]
+
+
+def _project_names(client):
+    data = client.get("/projects").json()
+    items = data if isinstance(data, list) else data.get("projects", [])
+    return {p.get("project") or p.get("name") if isinstance(p, dict) else p for p in items}
+
+
+def test_plain_directory_is_not_turned_into_a_project(transport, client, tmp_path, state_dir):
+    """Live audit: running the hooks in /tmp silently created a project named
+    "tmp". A folder that is not a git checkout, has no alias and no --project
+    gives nothing to file under — say so once and record nothing."""
+    plain = tmp_path / "tmp"
+    plain.mkdir()
+    payload = {"session_id": "s-plain", "cwd": str(plain), "prompt": "테스트 어떻게 돌려?"}
+    out = run("user-prompt-submit", payload, transport, state_dir=state_dir)
+    assert out and "systemMessage" in out and "기록되지 않습니다" in out["systemMessage"]
+    # Once per session only.
+    assert run("user-prompt-submit", payload, transport, state_dir=state_dir) is None
+    assert "tmp" not in _project_names(client)
+
+
+def test_explicit_project_pins_a_plain_directory(transport, client, tmp_path, state_dir, monkeypatch):
+    plain = tmp_path / "notes"
+    plain.mkdir()
+    monkeypatch.setenv("MYVIKING_PROJECT", "pinned")
+    payload = {"session_id": "s-pinned", "cwd": str(plain)}
+    out = run("session-start", payload, transport, state_dir=state_dir)
+    assert out and "pinned" in out["hookSpecificOutput"]["additionalContext"]
+    assert "pinned" in _project_names(client)
+    from jarvis.connect import hook_settings
+    cmd = hook_settings("http://x", "k", project="pinned")["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert "MYVIKING_PROJECT=pinned" in cmd

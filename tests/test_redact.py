@@ -80,3 +80,27 @@ def test_redaction_can_be_switched_off(jarvis):
     res = jarvis.commit("app", "키 확인", f"키는 {key}", agent="t")
     node = jarvis.store.read_node(res["session"])
     assert key in (node.overview or "")
+
+
+def test_vendor_keys_missed_in_the_live_audit_are_masked():
+    """A Stripe live key and a Google OAuth client secret went straight through
+    into files, a filename and the index; the backup setup asks for the latter."""
+    from jarvis.redact import REDACTED, redact
+
+    # 가짜 키지만 푸시 보호가 "sk_live_" / "rk_test_" 접두사 리터럴만으로
+    # 실제 키로 오탐한다. 통째로 두지 않고 조각으로 이어 붙여 검증은 유지한다.
+    sk_live_key = "sk_live_" + "51Hxyz9AbCdEfGhIjKlMnOpQr"
+    rk_test_key = "rk_test_" + "4eC39HqLyjWDarjtT1zdp7dc"
+    samples = [
+        f"STRIPE={sk_live_key}",
+        rk_test_key,
+        "client secret GOCSPX-abcDEFghiJKLmnoPQRstuVWXyz12",
+        "xapp-1-A0123456789-abcdefghij",
+        "hf_abcdefghijklmnopqrstuvwxyz0123456789",
+        "whsec_abcdefghijklmnopqrstuvwxyz0123",
+    ]
+    for s in samples:
+        out = redact(s)
+        assert REDACTED in out, s
+    # Ordinary identifiers keep passing through.
+    assert redact("sk_test runs the test skeleton; task_id=42") == "sk_test runs the test skeleton; task_id=42"

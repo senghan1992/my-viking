@@ -376,14 +376,22 @@ class Tracer:
         )
         out: list[dict[str, Any]] = []
         seen_sessions: set[str] = set()
+        seen_questions: set[str] = set()
         for r in rows:
             sid = r["session_id"] or ""
             # A re-ask chain (A→B→C on the same topic) marks every link. They are
             # one open thread, not three — keep only the most recent link.
             if sid and sid in seen_sessions:
                 continue
+            # The same question re-asked across sittings is one thread too; a
+            # live briefing listed "테스트는 어떻게 돌려?" twice and lost a real one.
+            qkey = " ".join((r["input"] or "").lower().split()).rstrip("?!. ")
+            if qkey and qkey in seen_questions:
+                continue
             if sid:
                 seen_sessions.add(sid)
+            if qkey:
+                seen_questions.add(qkey)
             # ...and it is only still open if the session did not later land a
             # judged-good answer. If it did, the user got unstuck; drop it.
             if sid and self._session_settled_after(scope, sid, r["started"]):

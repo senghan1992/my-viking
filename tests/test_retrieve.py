@@ -22,10 +22,14 @@ def test_tiering_beats_loading_everything_in_full(coding):
     for i in range(5):
         _big_resource(coding, "app", f"doc{i}", f"주제{i}")
     packed = coding.retriever.pack("주제2 상세 설명", "app")
-    assert packed.baseline_tokens > packed.tokens
-    assert packed.saved_ratio > 0.2
-    # The naive "paste everything relevant" number must dominate the baseline.
-    assert packed.dump_tokens >= packed.baseline_tokens
+    # With the relevance gate only 주제2 is selected, and a single relevant
+    # document fits at full detail — so the saving is against dumping every
+    # candidate, not against the (identical) full-detail baseline.
+    assert [i.title for i in packed.items] == ["주제2 문서"]
+    assert packed.baseline_tokens >= packed.tokens
+    assert packed.tokens <= coding.config.budget.total
+    # Five documents on disk, one considered and sent: the saving is the four not sent.
+    assert packed.considered == 1
 
 
 def test_high_scoring_item_gets_a_deeper_tier(coding):
@@ -184,3 +188,72 @@ def test_unrelated_memories_do_not_tie_with_the_right_one(coding):
     hits, _ = coding.retriever.search("배포는 어떻게 해?", "app")
     by_title = {h.title: h.score for h in hits}
     assert by_title["배포 명령"] > by_title["테스트 실행"] * 1.2, by_title
+
+
+# --------------------------------------------------------------------------
+# "먼저 찾아보고, 없으면 그냥 일반 에이전트처럼" — the absolute relevance gate
+# --------------------------------------------------------------------------
+def _small_store(coding):
+    coding.remember("app", "commands", "배포 명령", "make deploy 로 배포한다")
+    coding.remember("app", "commands", "테스트 실행", "pytest -q 로 돌린다")
+    coding.remember("app", "pitfalls", "PG 재시도 금지", "승인 응답이 0000 이 아니면 재시도하지 않는다")
+    coding.commit("app", "README 오타 좀 고쳐줘", "README.md 의 오타 3곳을 고쳤습니다.", agent="a")
+
+
+def test_unrelated_prompt_gets_an_empty_pack_even_in_a_small_store(coding):
+    """Below max_items every memory used to ride on every prompt: "hello" got
+    the payment rule, the test command and the README fix. With nothing that
+    matches, the agent must see nothing and simply work as usual."""
+    _small_store(coding)
+    for q in ("CSS 버튼 색상을 파란색으로 바꿔줘", "이 함수 리팩터링해줘", "hi", "도커 이미지 빌드 스크립트 만들어줘"):
+        p = coding.prepare("app", q, agent="t", session_id="s", max_tier=0, use_cache=False)
+        assert [i.title for i in p.packed.items if i.kind == KIND_MEMORY] == [], q
+        assert p.context == "", q
+        assert p.trace_id  # the turn is still traced and committed later
+
+
+def test_related_prompt_still_finds_the_one_right_memory(coding):
+    _small_store(coding)
+    cases = {
+        "배포는 어떻게 해?": "배포 명령",  # particle on the subject
+        "서버에서 배포할 때 주의점": "배포 명령",  # verb ending
+        "테스트는 어떻게 돌려?": "테스트 실행",
+        "결제 재시도해야 해?": "PG 재시도 금지",  # conjugated verb vs "재시도하지"
+        "deploy 어떻게?": "배포 명령",
+    }
+    for q, want in cases.items():
+        p = coding.prepare("app", q, agent="t", session_id="s", max_tier=0, use_cache=False)
+        titles = [i.title for i in p.packed.items if i.kind == KIND_MEMORY]
+        assert titles == [want], (q, titles)
+
+
+def test_global_preferences_ride_along_even_when_unrelated(coding):
+    coding.remember_about_me("답변은 한글로 한다")
+    _small_store(coding)
+    p = coding.prepare("app", "CSS 버튼 색상 바꿔줘", agent="t", session_id="s", max_tier=0, use_cache=False)
+    assert "한글로" in p.context
+    assert [i.title for i in p.packed.items if not i.uri.startswith("jarvis://global/")] == []
+
+
+def test_relevance_gate_can_be_disabled(coding):
+    _small_store(coding)
+    coding.config.budget.min_relevance = 0
+    p = coding.prepare("app", "CSS 버튼 색상 바꿔줘", agent="t", session_id="s", max_tier=0, use_cache=False)
+    assert len([i for i in p.packed.items if i.kind == KIND_MEMORY]) >= 3
+
+
+def test_fts_query_expands_korean_inflections_and_drops_filler():
+    from jarvis.db import _fts_query
+
+    q = _fts_query("배포는 어떻게 해?")
+    assert '"배포"*' in q and "어떻게" not in q
+    q = _fts_query("결제 재시도해야 해?")
+    assert '"재시도"*' in q and '"재시"*' not in q
+    assert _fts_query("어떻게 해줘") == '""'
+    # No blind shortening: "로그인" must not become "로그*" (matched a log-location note).
+    q = _fts_query("로그인 페이지 만들어줘")
+    assert '"로그인"*' in q and '"로그"*' not in q
+    # Short Latin terms match exactly, never as a prefix ("PR" is not "production").
+    assert '"PR"' in _fts_query("PR 올려줘") and '"PR"*' not in _fts_query("PR 올려줘")
+    # One clause per term: the exact clause would double-count the prefix hit.
+    assert _fts_query("배포는 어떻게 해?").count("배포") == 1

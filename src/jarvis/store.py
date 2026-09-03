@@ -53,6 +53,11 @@ class Store:
         self.embedder = Embedder.from_config(self.config)
         self.llm = LLM.from_config(self.config)
         self._profiles: dict[str, MemoryProfile] = {}
+        if self.embedder.semantic:
+            # One small batch call: learns the model's real vector size (so the
+            # index signature below names what is actually stored) and its
+            # similarity floor (see Embedder.calibrate) before anything is scored.
+            self.embedder.similarity_floor
         self._ensure_index_fresh()
 
     def _ensure_index_fresh(self) -> None:

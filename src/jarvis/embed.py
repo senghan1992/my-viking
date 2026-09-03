@@ -117,10 +117,83 @@ def batch_cosine(query: Sequence[float], blobs: Sequence[bytes | None]) -> list[
     return np.clip(rows @ q, -1.0, 1.0).tolist()
 
 
+# Mutually unrelated sentences, used once per model to measure what "no
+# relation" scores. Cosine is not comparable across models: the hashing
+# vectoriser gives unrelated text ~0.0, OpenAI's models ~0.1–0.2, and e5-style
+# models ~0.8 (measured: unrelated median 0.83, related 0.80–0.90). Every
+# threshold in MyViking was tuned on the hashing scale, so raw cosine from a
+# real model put "hello" above the relevance gate and merged unrelated
+# memories (0.82). ``calibrate`` maps a model's cosine back onto that scale.
+_CALIBRATION_TEXTS = (
+    "make deploy 로 배포한다",
+    "승인 응답이 0000 이 아니면 재시도하지 않는다",
+    "커밋 메시지는 한글로, 제목 50자 이내",
+    "버튼 색상을 파란색으로 바꿔줘",
+    "The quarterly report is due on Friday",
+    "Rotate the database password every 90 days",
+    "고양이는 하루에 열두 시간 이상 잔다",
+    "How do I reset the router to factory settings?",
+)
+
+
 class Embedder:
     def __init__(self, cfg: EmbedConfig | None = None, api_key: str = ""):
         self.cfg = cfg or EmbedConfig()
         self.api_key = api_key
+        self._floor: float | None = None
+        # Observability for the silent degrade: a remote model that cannot be
+        # reached is *configured* as semantic but *behaves* as hashing. Both
+        # numbers are reported by /health so nobody reads "품질 최상" off a store
+        # that is quietly filling with hash vectors.
+        self.probe_error: str = ""
+        self.fallbacks: int = 0
+
+    @property
+    def similarity_floor(self) -> float:
+        """Median cosine between unrelated texts for the model in use.
+
+        0 for the hashing vectoriser (its thresholds are the reference scale).
+        Measured once per process for a real model — one small batch call."""
+        if self._floor is None:
+            if not self.configured_semantic:
+                self._floor = 0.0
+            else:
+                try:
+                    vecs = self._remote(list(_CALIBRATION_TEXTS))
+                    self.probe_error = ""
+                    if vecs and vecs[0] and len(vecs[0]) != self.cfg.dim:
+                        self.cfg.dim = len(vecs[0])
+                    sims = sorted(
+                        cosine(vecs[i], vecs[j])
+                        for i in range(len(vecs))
+                        for j in range(i + 1, len(vecs))
+                    )
+                    mid = len(sims) // 2
+                    floor = sims[mid] if len(sims) % 2 else (sims[mid - 1] + sims[mid]) / 2
+                    # A negative or tiny floor means the model already behaves
+                    # like the reference scale; a floor near 1 would be a
+                    # degenerate model, and dividing by ~0 must not happen.
+                    self._floor = min(max(floor, 0.0), 0.95)
+                except Exception as exc:
+                    # Endpoint down: vectors will be hashing until a restart.
+                    self.probe_error = f"{type(exc).__name__}: {exc}"[:200]
+                    self._floor = 0.0
+        return self._floor
+
+    def calibrate(self, cos: float) -> float:
+        """Cosine on the model's own scale → the reference scale thresholds
+        were tuned on: the floor becomes 0 and 1 stays 1."""
+        floor = self.similarity_floor
+        if floor <= 0.0:
+            return cos
+        return max(-1.0, min(1.0, (cos - floor) / (1.0 - floor)))
+
+    def calibrate_many(self, sims: Sequence[float]) -> list[float]:
+        floor = self.similarity_floor
+        if floor <= 0.0:
+            return list(sims)
+        scale = 1.0 - floor
+        return [max(-1.0, min(1.0, (s - floor) / scale)) for s in sims]
 
     @classmethod
     def from_config(cls, config: Config) -> "Embedder":
@@ -133,14 +206,42 @@ class Embedder:
     def embed(self, text: str) -> list[float]:
         return self.embed_batch([text])[0]
 
+    @property
+    def configured_semantic(self) -> bool:
+        """A real provider with what it needs to be called. Ollama runs locally
+        and needs no key; every other provider does."""
+        p = self.cfg.provider
+        if p in ("", "hashing"):
+            return False
+        return p == "ollama" or bool(self.api_key)
+
+    @property
+    def semantic(self) -> bool:
+        """Is a real embedding model actually answering — configured *and* the
+        startup probe reached it? A wrong URL or dead Ollama is reported as
+        not semantic, so /health says so instead of "최상"."""
+        if not self.configured_semantic:
+            return False
+        if self._floor is None:
+            self.similarity_floor  # runs the probe
+        return not self.probe_error
+
     def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
-        if self.cfg.provider == "hashing" or not self.api_key:
+        if not self.configured_semantic:
             return [hashing_embed(t, self.dim) for t in texts]
         try:
-            return self._remote(texts)
+            out = self._remote(texts)
         except Exception:
             # Never fail a write because an embedding endpoint is down.
+            self.fallbacks += 1
             return [hashing_embed(t, self.dim) for t in texts]
+        # The model decides the dimension, not the config. Learn it from the
+        # first real response so a later fallback vector has the same length
+        # (a length mismatch scores zero, silently) and so the index signature
+        # reflects what is actually stored.
+        if out and out[0] and len(out[0]) != self.cfg.dim:
+            self.cfg.dim = len(out[0])
+        return out
 
     # ----- remote providers -------------------------------------------
     def _remote(self, texts: Sequence[str]) -> list[list[float]]:
@@ -155,7 +256,7 @@ class Embedder:
             raise ValueError(f"알 수 없는 embed provider: {self.cfg.provider}")
         resp = httpx.post(
             base.rstrip("/") + "/embeddings",
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {},
             json={"model": self.cfg.model, "input": list(texts)},
             timeout=30.0,
         )

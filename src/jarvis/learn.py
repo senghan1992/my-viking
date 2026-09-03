@@ -26,7 +26,7 @@ from .embed import cosine, unpack_vector
 from .llm import LLM
 from .models import KIND_MEMORY, Node, Uri, now_iso, slugify
 from .profiles import MemoryCategory, MemoryProfile
-from .sessions import SessionLog
+from .sessions import _DEICTIC, SessionLog, is_work_order
 from .store import Store
 from .tiers import summarize
 from .tokens import estimate_tokens, truncate_to_tokens
@@ -47,6 +47,8 @@ _CHATTER = (
     "알겠", "다음", "여기까지", "오늘은", "오늘", "수고", "잘했", "굿", "그렇게", "해",
     "하자", "진행", "계속", "그래", "됐어", "됐다", "thanks", "thank", "you", "great",
     "nice", "cool", "done", "bye", "yes", "yep", "sure", "go", "ahead", "next",
+    # Greetings: "hello" → "안녕하세요." became a case and rode on every prompt.
+    "hello", "hi", "hey", "안녕", "하이", "헬로",
 )
 _NEG_MARKERS = ("아니", "안 ", "않", "말고", "하지", "없", "not ", "never", "no ")
 _WORD_RE = re.compile(r"[0-9A-Za-z]+|[가-힣]+|[぀-ヿ㐀-䶿一-鿿]+")
@@ -258,6 +260,11 @@ class Learner:
                 low = sent.lower()
                 # Weak prohibitions ("하지 마", "말고") alone are not rules —
                 # see _WEAK_PREF_MARKERS. They ride along only with a strong one.
+                # And a *report* is not a rule: "서명 검증이 항상 실패해" carries
+                # "항상" but describes a failure — in a live run it was filed as
+                # a convention at 0.55 and injected as one.
+                if _is_complaint(low):
+                    continue
                 if any(m in low for m in _PREF_MARKERS) and len(sent) > 6:
                     out.append(
                         MemoryCandidate(
@@ -320,6 +327,14 @@ class Learner:
             names, ("cases", "incidents", "findings", "phrasing", "facts")
         ) or profile.fallback_category()
         if out:
+            case_cat = ""
+        # "이 함수 리팩터링해줘 → 함수를 3개로 분리했습니다" names nothing a later
+        # session can locate: the target lived outside the text. The session
+        # record keeps it; a memory would only ride on the next such prompt.
+        # A *question* about an unnamed thing ("이거 왜 안 돼?") still carries
+        # its answer, so only work orders are dropped.
+        low_q = " ".join(question.lower().split())
+        if case_cat and _DEICTIC.search(low_q) and is_work_order(low_q):
             case_cat = ""
         if case_cat and answer.strip():
             out.append(
@@ -727,7 +742,10 @@ class Learner:
 
         best: tuple[float, str] | None = None
         for row in rows:
-            sim = cosine(probe, unpack_vector(row["vector"]))
+            # On the model's own scale an e5-style embedder scores *unrelated*
+            # lessons ~0.83 — above merge_threshold — and "테스트 실행" was
+            # silently absorbed into "배포 명령". Compare on the reference scale.
+            sim = self.store.embedder.calibrate(cosine(probe, unpack_vector(row["vector"])))
             if best is None or sim > best[0]:
                 best = (sim, row["uri"])
         if best is not None and best[0] >= threshold:
@@ -847,6 +865,18 @@ def _first_present(names: list[str], preferred: tuple[str, ...]) -> str:
     return ""
 
 
+_COMPLAINT_MARKERS = (
+    "안 되", "안되", "안 돼", "안돼", "실패", "않아", "않는데", "않습니다", "에러", "오류", "깨져", "깨진",
+    "죽어", "멈춰", "틀렸", "이상해", "느려", "fails", "failing", "failed", "error", "broken",
+    "doesn't work", "does not work", "not working", "crash", "still",
+)
+
+
+def _is_complaint(low: str) -> bool:
+    """A sentence describing a failure, not stating a rule."""
+    return any(m in low for m in _COMPLAINT_MARKERS)
+
+
 def _sentences(text: str) -> list[str]:
     parts = re.split(r"(?<=[.!?。！？\n])\s*", text or "")
     return [p.strip() for p in parts if p and len(p.strip()) > 3]
@@ -862,7 +892,10 @@ def _is_chatter(question: str, answer: str) -> bool:
 
     def chat_word(w: str) -> bool:
         # Exact word or a Korean particle/ending on one ("고마워요", "좋아요").
-        return any(w == c or (len(c) >= 2 and w.startswith(c)) for c in _CHATTER)
+        # Latin words match exactly only: "hi" as a prefix made "history" chatter.
+        return any(
+            w == c or (len(c) >= 2 and c[0] >= "가" and w.startswith(c)) for c in _CHATTER
+        )
 
     # Every word is an acknowledgement word: "고마워", "ok 다음", "좋아 그렇게 해".
     if len(q_words) <= 4 and all(chat_word(w) for w in q_words):
@@ -1046,14 +1079,32 @@ def _title_from(text: str, max_chars: int = 40) -> str:
     if not line:
         return ""
     if len(line) <= max_chars:
-        return _TITLE_TRAIL.sub("", line)
+        return _strip_last_particle(_TITLE_TRAIL.sub("", line))
     out: list[str] = []
     for word in line.split(" "):
         candidate = " ".join([*out, word])
         if out and len(candidate) > max_chars:
             break
         out.append(word)
-    return _TITLE_TRAIL.sub("", " ".join(out) or line[:max_chars])
+    return _strip_last_particle(_TITLE_TRAIL.sub("", " ".join(out) or line[:max_chars]))
+
+
+def _strip_last_particle(title: str) -> str:
+    """"테스트는 어떻게 돌려?" loses its filler and ends as "테스트는" — a name
+    with the subject particle still attached, so the file is `cases/테스트는`
+    and a second phrasing becomes a second row. Strip it from the final word."""
+    words = title.split(" ")
+    if not words:
+        return title
+    last = words[-1]
+    # Subject/object particles only. "한글로" (in Korean) or "서버에" (on the
+    # server) carry meaning a rule's name must keep.
+    if re.fullmatch(r"[가-힣]{3,}", last):
+        for suf in ("은", "는", "이", "가", "을", "를", "도"):
+            if last.endswith(suf) and len(last) - len(suf) >= 2:
+                words[-1] = last[: -len(suf)]
+                break
+    return " ".join(words)
 
 
 def _words(text: str) -> list[str]:

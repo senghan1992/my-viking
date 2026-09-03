@@ -167,7 +167,9 @@ def test_chatter_is_not_distilled(jarvis, q, a):
     assert _is_chatter(q, a)
     jarvis.init_project("app", template="coding")
     res = jarvis.commit("app", q, a, agent="d")
-    assert not res["distill"]["created"] and not res["distill"]["merged"]
+    # Chatter is no longer even recorded as a session (it showed up as "최근 작업: 안녕").
+    assert res.get("skipped") == "chatter"
+    assert jarvis.memories("app") == []
 
 
 def test_real_exchanges_are_still_distilled(jarvis):
