@@ -735,7 +735,7 @@ class Tracer:
             )
         self.db.commit()
 
-    def scores_for_uri(self, uri: str) -> dict[str, Any]:
+    def scores_for_uri(self, uri: str, since: str = "") -> dict[str, Any]:
         """How did traces that used this memory turn out?
 
         ``avg_score`` is the raw average outcome of every trace this memory rode
@@ -744,16 +744,26 @@ class Tracer:
         (see ``record_attribution``); that is the honest basis for calling a
         memory harmful, because a bad answer's blame lands only on what drove it.
         """
+        # ``since`` — verdicts before this instant were about an earlier
+        # statement under the same URI (a person rewrote it). Counting them
+        # made the *correction* show up in review as harmful.
+        window = ""
+        params: list[Any] = [uri]
+        if since:
+            # Strictly after: timestamps have second resolution, and the blame
+            # that prompted the rewrite often lands in the same second.
+            window = " AND c.trace_id IN (SELECT id FROM traces WHERE started > ?)"
+            params.append(since)
         row = self.db.one(
             "SELECT COUNT(DISTINCT c.trace_id) AS uses, AVG(s.value) AS avg_score,"
             " COUNT(s.id) AS scored FROM context_used c"
-            " LEFT JOIN scores s ON s.trace_id = c.trace_id WHERE c.uri = ?",
-            (uri,),
+            " LEFT JOIN scores s ON s.trace_id = c.trace_id WHERE c.uri = ?" + window,
+            params,
         )
         harm = self.db.one(
-            "SELECT SUM(applied) AS harm FROM context_used"
-            " WHERE uri = ? AND applied < 0",
-            (uri,),
+            "SELECT SUM(applied) AS harm FROM context_used c"
+            " WHERE c.uri = ? AND applied < 0" + window,
+            params,
         )
         return {
             "uri": uri,

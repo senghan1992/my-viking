@@ -594,6 +594,13 @@ class Learner:
         extra["reviewed"] = True
         extra["reviewed_at"] = stamp
         extra["extractor"] = ""
+        # Trace-level blame recorded before this instant was about the old
+        # statement; review and trust read outcomes from here on. Millisecond
+        # precision to match trace timestamps — the blame that prompted the
+        # rewrite usually landed in the same second.
+        extra["verdicts_reset_at"] = datetime.now(timezone.utc).isoformat(
+            timespec="milliseconds"
+        )
         self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
         return node.uri
 

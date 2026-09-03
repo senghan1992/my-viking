@@ -316,6 +316,7 @@ def test_every_post_route_parses_its_body(client):
         "/aliases": {"alias": "github.com/me/app", "project": "app"},
         "/resolve": {"project": "app"},
         "/keys": {"name": "test-key"},
+        "/preferences": {"statement": "답변은 한글로 한다"},
         "/memories/confirm": {"uri": "jarvis://projects/app/memories/commands/t"},
         "/reindex": None,
         "/backup/config": {"keep": 5},

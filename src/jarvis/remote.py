@@ -188,6 +188,19 @@ class RemoteClient:
             },
         )
 
+    def preferences(self) -> list[dict[str, Any]]:
+        res = self.t.request("GET", "/preferences") or {}
+        return list(res.get("items") or [])
+
+    def add_preference(
+        self, statement: str, title: str = "", category: str = "preferences"
+    ) -> dict[str, Any]:
+        return self.t.request(
+            "POST",
+            "/preferences",
+            {"statement": statement, "title": title, "category": category},
+        )
+
     def remember(
         self,
         project: str,

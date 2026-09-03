@@ -66,6 +66,12 @@ _HARM_THRESHOLD = -0.05
 # stated bad score around -0.2. So this needs a stated verdict or two inferred
 # ones — a single misread follow-up must not retract a fact.
 _HARM_CONTESTED = -0.15
+# A verdict below this evicts the cached answer for the question. A complaint
+# (reworked, 0.1–0.18) and a stated bad score do; merely asking the same
+# thing again (repeated, 0.35) does not — in a hook session that repeat *is*
+# the moment the cache would help, and evicting there meant the hook path
+# never served a cached answer at all.
+_CACHE_EVICT_BELOW = 0.35
 
 SYSTEM_PREFIX = (
     "당신은 이 프로젝트에 대한 누적 컨텍스트를 가진 어시스턴트입니다.\n"
@@ -431,6 +437,13 @@ class Jarvis:
             return out("fresh", "최근 기록 · 아직 검증 안 됨")
         return out("established", "확립")
 
+    def _impact_of(self, node: Node) -> dict[str, Any]:
+        """Attributed outcomes for this memory — only those about its *current*
+        statement. A hand rewrite resets the window (``verdicts_reset_at``)."""
+        return self.tracer.scores_for_uri(
+            str(node.uri), since=str(node.extra.get("verdicts_reset_at") or "")
+        )
+
     def memories(
         self,
         project: str,
@@ -470,9 +483,7 @@ class Jarvis:
             for m in out:
                 node = self.store.read_node(Uri.parse(m["uri"]))
                 if node is not None:
-                    m["trust"] = self.trust(
-                        node, self.tracer.scores_for_uri(m["uri"])
-                    )
+                    m["trust"] = self.trust(node, self._impact_of(node))
         return out
 
     # ------------------------------------------------------------------
@@ -874,7 +885,7 @@ class Jarvis:
             node = self.store.read_node(uri)
             if node is None:
                 continue
-            impact = self.tracer.scores_for_uri(row["uri"])
+            impact = self._impact_of(node)
             reasons = self._review_reasons(
                 node, impact, include_unconfirmed=include_unconfirmed
             )
@@ -1028,7 +1039,7 @@ class Jarvis:
         node = self.store.read_node(uri)
         if node is None:
             return None
-        impact = self.tracer.scores_for_uri(uri)
+        impact = self._impact_of(node)
         u = Uri.parse(uri)
         return {
             "uri": uri,
@@ -1703,7 +1714,7 @@ class Jarvis:
         score_id = self.tracer.add_score(
             scope, name, value, trace_id=trace_id, comment=comment, source=source
         )
-        if value < 0.5 and row["input"]:
+        if value < _CACHE_EVICT_BELOW and row["input"]:
             # The answer this trace produced was cached under its question. A
             # bad verdict on the answer must reach the cache too, or the same
             # question next time is served the very answer that just failed —

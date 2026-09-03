@@ -1190,6 +1190,32 @@ def cmd_remote_remember(args, j: Jarvis | None = None) -> int:
 cmd_remote_remember.no_jarvis = True  # type: ignore[attr-defined]
 
 
+def cmd_remote_me(args, j: Jarvis | None = None) -> int:
+    """`jv me` is the local store; this is the same thing on the server."""
+    try:
+        client = _remote(args)
+        if args.op == "list":
+            items = client.preferences()
+            if not items:
+                print("서버에 기록된 전역 선호가 없습니다. `jv remote me add \"...\"` 로 남기세요.")
+                return 0
+            for m in items:
+                print(f"- [{m.get('category')}] {m.get('title')}: {m.get('abstract')}")
+            return 0
+        if not args.statement:
+            print("오류: add 에는 내용이 필요합니다", file=sys.stderr)
+            return 1
+        res = client.add_preference(args.statement, title=args.title or "", category=args.category)
+    except Exception as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    print(f"기록: {res.get('uri', '')}\n  이 항목은 서버의 모든 프로젝트 컨텍스트에 함께 실립니다.")
+    return 0
+
+
+cmd_remote_me.no_jarvis = True  # type: ignore[attr-defined]
+
+
 def cmd_remote_score(args, j: Jarvis | None = None) -> int:
     try:
         client = _remote(args)
@@ -2263,6 +2289,13 @@ def build_parser() -> argparse.ArgumentParser:
     remote_common(s2)
     s2.add_argument("--detail", default="", help="명령·경로·오류 메시지 원문")
     s2.set_defaults(func=cmd_remote_remember)
+    s2 = rsub.add_parser("me", help="모든 프로젝트에 실리는 내 선호를 서버에 기록/조회 (jv me 의 원격판)")
+    s2.add_argument("op", choices=["add", "list"])
+    s2.add_argument("statement", nargs="?", default="")
+    s2.add_argument("--title", default="")
+    s2.add_argument("--category", default="preferences")
+    remote_common(s2)
+    s2.set_defaults(func=cmd_remote_me)
     s2 = rsub.add_parser("score", help="결과 평가 (사용된 지식의 신뢰도 조정)")
     s2.add_argument("trace_id")
     s2.add_argument("value", type=float, help="0=틀림, 0.5=보통, 1=도움됨")

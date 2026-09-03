@@ -167,6 +167,15 @@ class Retriever:
                 dir_scores[row["uri"]] = score + 0.01 * len(d.parts)
 
         entered = sorted(dir_scores.items(), key=lambda kv: -kv[1])[:dir_fanout]
+        # Global preferences are standing instructions, not answers to be found:
+        # their directory must always be walked. Once a project has more than a
+        # handful of directories (archives included) the global ones fell out of
+        # the fan-out and preferences silently stopped riding along.
+        if include_global and project != GLOBAL_SCOPE:
+            already = {u for u, _ in entered}
+            for uri, score in dir_scores.items():
+                if uri.startswith(f"jarvis://{GLOBAL_SCOPE}/") and uri not in already:
+                    entered.append((uri, score))
         for uri, score in entered:
             trace.append(
                 {"step": "dir", "uri": uri, "score": round(score, 4), "action": "entered"}
@@ -539,7 +548,9 @@ def _focus(
         kept.append(c)
 
     def warned(c: Candidate) -> bool:
-        return c.category in warn_cats and c.fts_score > 0
+        # Warnings that lexically matched, and global preferences — standing
+        # instructions that ride into every project regardless of the question.
+        return (c.category in warn_cats and c.fts_score > 0) or c.uri.is_global
 
     # A small store is not the problem: two or three items are read either way,
     # and a bystander must stay retrievable so blame attribution has something

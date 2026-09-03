@@ -177,6 +177,14 @@ class KeyBody(BaseModel):
         return self
 
 
+class PreferenceBody(BaseModel):
+    """A preference that rides into every project (``jarvis://global``)."""
+
+    statement: str
+    title: str = ""
+    category: str = "preferences"
+
+
 class ConnectionBody(BaseModel):
     # The key to *embed* in the generated snippet travels in the POST body, not
     # a URL query string, so it never lands in proxy/access logs or browser
@@ -1015,6 +1023,37 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
                     "name": None, "projects": ["*"]}
         return {"auth_required": True, "admin": info.allows("*"),
                 "id": info.id, "name": info.name, "projects": info.projects}
+
+    # ----- global preferences ------------------------------------------
+    # `jv me` writes to the *local* store. On a deployed server that is the
+    # wrong store, and a live reviewer concluded preferences were "never
+    # injected" — they had never reached the server. These routes are the
+    # remote counterpart; they touch every project, so they are admin-only.
+    def _require_all_access(request: Request) -> None:
+        if _scoped_key(request) is not None:
+            raise HTTPException(403, "전역 선호는 모든 프로젝트에 실리므로 전체 접근 키만 바꿀 수 있습니다")
+
+    @app.get("/preferences")
+    def list_preferences(request: Request) -> dict[str, Any]:
+        _require_all_access(request)
+        return {"items": jarvis.about_me()}
+
+    @app.post("/preferences")
+    def add_preference(body: PreferenceBody, request: Request) -> dict[str, Any]:
+        _require_all_access(request)
+        try:
+            uri = jarvis.remember_about_me(body.statement, body.title, body.category)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"uri": str(uri)}
+
+    @app.delete("/preferences")
+    def forget_preference(uri: str, request: Request) -> dict[str, Any]:
+        _require_all_access(request)
+        try:
+            return {"forgotten": jarvis.forget_about_me(uri)}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     # ----- keys --------------------------------------------------------
     @app.get("/keys")

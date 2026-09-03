@@ -59,6 +59,80 @@ def test_manual_re_remember_replaces_headline_body_and_verdicts(jarvis):
     assert node.extra["evidence"][-1]["kind"] == "replaced"
 
 
+def test_a_replaced_memory_is_not_harmful_in_review_or_brief(jarvis):
+    """Dave 재검증: trust 는 확립인데 리뷰 큐·브리핑 미해결에는 harmful 로 남아
+    확립 지식에서 빠졌다 — 트레이스 귀속 harm 이 평생 합계였기 때문."""
+    jarvis.init_project("app", template="coding")
+    uri = jarvis.remember("app", "commands", "테스트 실행", "python -m unittest 으로 실행한다")
+    for _ in range(2):
+        tid = jarvis.prepare("app", "테스트 어떻게 돌려?", agent="d", session_id="s1", max_tier=0, use_cache=False).trace_id
+        jarvis.score(tid, value=0.0, uris=[str(uri)])
+    assert any(r["uri"] == str(uri) and "harmful" in r["reasons"] for r in jarvis.review_queue("app"))
+
+    jarvis.remember("app", "commands", "테스트 실행", "pytest -q 로 실행한다 (unittest 아님)")
+    assert not any(r["uri"] == str(uri) for r in jarvis.review_queue("app"))
+    b = jarvis.brief("app")
+    assert str(uri) in {k["uri"] for k in b["know"]}
+    assert str(uri) not in {u["uri"] for u in b["unresolved"]}
+    # 교정 뒤의 새 판정은 다시 셈에 들어간다
+    tid = jarvis.prepare("app", "테스트 어떻게 돌려?", agent="d", session_id="s2", max_tier=0, use_cache=False).trace_id
+    jarvis.score(tid, value=0.0, uris=[str(uri)])
+    assert jarvis.memory_detail(str(uri))["impact"]["harm"] < 0
+
+
+def test_repeating_a_question_keeps_the_cache_but_a_complaint_evicts_it(jarvis):
+    """Dave D: 훅 경로에서 같은 질문을 다시 하면 'repeated' 가 캐시를 먼저 지워
+    캐시가 한 번도 서빙되지 않았다."""
+    jarvis.init_project("app", template="coding")
+    q = "Store.all 이 파일 없을 때 뭐 돌려줘"
+    p = jarvis.prepare("app", q, agent="d", session_id="s1", max_tier=0)
+    jarvis.commit("app", q, "빈 리스트 [] 를 돌려줍니다.", trace_id=p.trace_id, agent="d")
+    again = jarvis.prepare("app", q, agent="d", session_id="s1", max_tier=0)
+    assert again.cache_hit is not None
+    jarvis.commit("app", q, "빈 리스트 [] 를 돌려줍니다.", trace_id=again.trace_id, agent="d")
+    jarvis.prepare("app", "여전히 안 되는데", agent="d", session_id="s1", max_tier=0)
+    assert not any(c["question"] == q for c in jarvis.cache_list("app"))
+
+
+def test_preferences_have_a_remote_route_that_reaches_the_hook_path(client):
+    """Dave: '`jv me` 전역 선호가 주입되지 않는다' — 실제 원인은 `jv me` 가 로컬
+    저장소에만 쓰고 원격 서버에는 전역 선호를 넣을 길이 없었던 것."""
+    def hdr(k):
+        return {"authorization": f"Bearer {k}"}
+
+    client.post("/projects", json={"project": "alpha"})
+    admin = client.post("/keys", json={"name": "admin"}).json()["key"]
+    scoped = client.post("/keys", json={"name": "s", "projects": ["alpha"]}, headers=hdr(admin)).json()["key"]
+    assert client.post("/preferences", json={"statement": "답변은 한글로 한다"}, headers=hdr(scoped)).status_code == 403
+    made = client.post("/preferences", json={"statement": "답변은 한글로 한다"}, headers=hdr(admin))
+    assert made.status_code == 200 and made.json()["uri"].startswith("jarvis://global/")
+    assert len(client.get("/preferences", headers=hdr(admin)).json()["items"]) == 1
+    p = client.post(
+        "/prepare",
+        json={"project": "alpha", "question": "add 함수 문서화해줘", "agent": "a", "session_id": "s1", "max_tier": 0},
+        headers=hdr(scoped),
+    ).json()
+    assert "한글로" in p["context"]
+
+
+def test_global_preferences_survive_the_focus_cap(jarvis):
+    jarvis.init_project("app", template="coding")
+    jarvis.config.learn.merge_threshold = 0.99
+    pref = jarvis.remember_about_me("답변은 한글로 한다")
+    for i in range(12):
+        jarvis.remember("app", "conventions", f"규칙 {i}", f"규칙 {i} 은 {i}번째 규칙이다. 내용 {i}")
+    # Enough directories (categories, archive) that the fan-out is contested —
+    # the live store where preferences went missing looked like this.
+    for i in range(3):
+        jarvis.commit("app", f"질문 {i} 은 무엇인가", f"답 {i} 은 notes/store.py 를 보면 된다.", agent="a")
+    jarvis.remember("app", "commands", "빌드", "make build")
+    jarvis.remember("app", "pitfalls", "강제 푸시 금지", "main 에 force push 하지 않는다")
+    jarvis.forget(str(jarvis.remember("app", "commands", "옛 명령", "make old")))
+    p = jarvis.prepare("app", "add 함수 문서화해줘", agent="t", session_id="s", max_tier=0, use_cache=False)
+    assert str(pref) in {i.uri for i in p.packed.items}
+    assert "한글로" in p.context
+
+
 # --------------------------------------------------------------------------
 # Dave — remember 경로의 비밀값
 # --------------------------------------------------------------------------
