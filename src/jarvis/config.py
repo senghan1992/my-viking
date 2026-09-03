@@ -127,6 +127,15 @@ class LearnConfig:
     # recently-blamed one is taken to *correct* it (supersede), not sit beside
     # it as a rival fact. Same scale as rework_similarity.
     correction_similarity: float = 0.35
+    # A distilled memory is shown as "검증 전" until it has been confirmed, or
+    # has ridden in this many answers whose follow-up moved on without complaint
+    # ("settled"). Retrieval count and age alone never promote it: being shown
+    # is not evidence of being right.
+    settled_after: int = 3
+    # Strip credentials (API keys, tokens, passwords, private keys) from what the
+    # hooks capture before it is stored or injected. Off only if you know every
+    # prompt and answer in the project is safe to keep verbatim.
+    redact_secrets: bool = True
 
 
 @dataclass

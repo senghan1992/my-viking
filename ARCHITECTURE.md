@@ -129,6 +129,11 @@ sequenceDiagram
     S->>S: 직전 답을 다음 프롬프트로 채점 (암묵 피드백)
 ```
 
+보내기 전에 **비밀값을 지웁니다**(`redact.py`). API 키·토큰·비밀번호 대입문·JWT·개인키
+블록·URL 속 자격증명은 `[REDACTED]` 로 바뀌어 서버에 닿습니다. 훅이 없는 MCP·셸 클라이언트를
+위해 서버의 `commit()`/`prepare()` 에서도 한 번 더 지웁니다. 한 번 들어간 값은 이후 모든
+세션과 스코프 키 보유자에게 다시 주입되기 때문입니다.
+
 핵심은 **에이전트가 "기록해줘"라고 부탁하지 않아도** 캡처된다는 점입니다.
 에이전트가 추가로 하는 일은 딱 둘 — 무엇이 *확정*인지 알리는 `jarvis_remember`,
 결과가 어땠는지 알리는 `jarvis_score` (이건 사람/에이전트만 판단할 수 있으니까).
@@ -178,25 +183,30 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> fresh: 방금 기록됨 (아직 검증 전)
-    fresh --> established: 좋은 결과로 확인됨
-    established --> contested: 최근 결과가 연속으로 어긋남<br/>(반박 streak ≥ contested_after)
-    contested --> established: 좋은 결과로 재확인<br/>(streak 0으로 리셋)
+    [*] --> fresh: 증류로 기록됨 (아직 검증 전)
+    fresh --> established: 확인됨 / 사람이 검토 / 불만 없이 N회 쓰임(settled)
+    established --> contested: 반박 streak ≥ contested_after<br/>또는 교정 후보가 생김
+    contested --> established: 좋은 결과로 재확인<br/>또는 다음 요청이 불만 없이 넘어감(settled)
     established --> stale: 오래 쓰이지도 확인되지도 않음<br/>(단, 사람이 본 것은 예외)
     stale --> established: 다시 쓰이거나 확인됨
-    established --> superseded: 교정 지식이 이걸 대체함
-    contested --> superseded: 교정 지식이 이걸 대체함
+    established --> superseded: 사람이 같은 주제로 바로잡음 (즉시)
+    contested --> superseded: 교정 후보가 좋은 결과로 확인됨
     superseded --> [*]: 보관함으로 (이력은 남음)
 ```
 
 | 상태 | 의미 | 주입될 때 |
 |---|---|---|
 | `established` **확립** | 결과가 뒷받침한 사실 | 표시 없이 "확립된 지식"으로 |
-| `fresh` **검증 전** | 방금 기록, 아직 결과 없음 | ⟨검증 전⟩ |
+| `fresh` **검증 전** | 증류로 생김, 확인·검토·settled 아직 없음 | ⟨검증 전⟩ |
 | `tentative` **미확정** | 신뢰도가 사실 기준선 아래 | ⟨미확정⟩ |
 | `stale` **오래됨** | 오래 확인·사용 없음 | ⟨오래됨⟩ |
-| `contested` **확인 필요** | 최근 결과가 어긋남 → 정답지에서 내려옴 | 주입 안 됨 + trust_notes 경고 |
+| `contested` **확인 필요** | 최근 결과가 어긋남, 또는 교정 후보가 있음 → 정답지에서 내려옴 | 주입 안 됨 + trust_notes 경고 |
 | `superseded` **대체됨** | 최신 교정본으로 갱신됨 | 주입 안 됨 (보관) |
+
+> **왜 "주입 3회"나 "7일"로는 확립되지 않나** — 주입됐다는 것은 검색에 걸렸다는 뜻일 뿐,
+> 맞았다는 증거가 아닙니다. 그래서 fresh 를 벗는 조건은 셋뿐입니다: 좋은 결과로 확인,
+> 사람이 대시보드에서 검토, 또는 그 지식이 실린 답 뒤에 사용자가 **불만 없이 다음 일로
+> 넘어간 것(settled)** 이 `settled_after`회.
 
 ### 두 가지 갱신 경로
 
@@ -207,32 +217,46 @@ stateDiagram-v2
                                              │
              다음 프롬프트: "여전히 안 되는데?"  ──▶  직전 답을 reworked 로 채점 (암묵 피드백)
                                              │        → 이 지식에 blame 귀속, 신뢰↓, 반박 streak++
+                                             │        → 그 질문의 답 캐시도 지움
                                              ▼
                           반박이 contested_after 회 쌓이면  ──▶  상태 = contested
                                              │                    (다음부터 "사실"로 주입 안 됨)
-             나중에 이 지식이 좋은 결과를 내면  ──▶  streak=0, 확인++  ──▶  다시 established
+             이 지식이 실린 답 뒤에 사용자가       ──▶  streak=0 (settled)  ──▶  다시 established
+             불만 없이 다음 일로 넘어가면              (신뢰는 안 오름 — 불만 없음 ≠ 칭찬)
+             좋은 결과로 확인되면                ──▶  streak=0, 확인++, 신뢰↑
 ```
 
 blame 은 **퍼뜨리지 않고 귀속**합니다. 검색이 12개를 줬어도 나쁜 답을 실제로 이끈
 상위 항목에만 책임을 지웁니다(`score()` 의 attributed demotion, `_BLAME_FLOOR`).
 
-**(B) 교정이 오답을 대체하기** — `_reconcile_correction()`
+무엇이 "불만"인가도 좁게 봅니다. "안 되는데·틀렸·doesn't work"는 주제와 무관하게
+직전 답에 대한 판정이지만, "고쳐·수정해"는 **직전 작업을 가리킬 때만**(같은 주제, "그거·이
+부분" 같은 지시어, 또는 대상 없이 "고쳐줘") 판정합니다. "README 오타 수정해줘"는 다음
+작업이지 판정이 아닙니다. 이 구분이 없을 때 실측에서 사람이 쓴 올바른 지식이 두 프롬프트
+만에 정답지에서 내려갔습니다.
+
+**(B) 교정이 오답을 대체하기 — 두 속도** `_reconcile_correction()`
 
 ```
-   최근(수 시간) 나쁜 결과로 지목된 지식들 = "blamed"          (service._recent_blamed)
+   최근(수 시간, 같은 세션) 나쁜 결과로 지목된 지식 = "blamed"     (service._recent_blamed)
                          │
-   그 직후 학습된 새 지식이  ─ 같은 카테고리 ─ 주제가 겹치면(≥ correction_similarity)
-                         ▼
-          learner._mark_superseded(옛것 → 새것)
-          · 옛 지식: superseded_by 기록 후 _archive/ 로 (되돌릴 수 있음)
-          · 새 지식: corrects=[옛것], 신뢰 ≥ 0.7, evidence 에 correction 기록
-                         ▼
-          brief 의 "확립된 지식"에서 옛것은 사라지고 새것이 그 자리에
+   그 직후 생긴 새 지식이  ─ 같은 카테고리 ─ 주제가 겹치면(≥ correction_similarity)
+                         │
+        ┌────────────────┴──────────────────┐
+        ▼ 사람이 remember 로 바로잡음          ▼ 에이전트의 다음 시도가 증류됨
+   즉시 대체 (immediate)                  임시 도전 (pending)
+   · 옛것 → _archive/, superseded_by      · 옛것: challenged_by=새것 → contested (라이브 유지)
+   · 새것: corrects, 신뢰 ≥ 0.7           · 새것: corrects, 신뢰 그대로(검증 전)
+                                                   │
+                                  새것이 좋은 결과 ──▶ 그때 대체 완결 (superseded)
+                                  옛것이 좋은 결과 ──▶ 도전 철회 (vindicated)
+                                  다음 요청이 불만 없이 넘어감 ──▶ 도전 철회 (settled)
 ```
 
-호출 지점: `commit()`(증류로 새 지식이 생길 때)과 `remember()`(사람이 손으로
-바로잡을 때). 에이전트 지시문·훅 주입문도 "틀렸으면 **같은 제목**으로 remember 하면
-이전 것을 자동 대체(이력 보관)"라고 안내합니다.
+왜 두 속도인가: 불만 직후 에이전트가 낸 두 번째 답은 **아직 맞는지 모르는 재시도**입니다.
+그걸 곧바로 정답으로 승격하면, 오답이 오답을 대체하는 일이 생깁니다. 사람이 손으로
+바로잡은 것만 즉시 믿습니다. 에이전트 지시문·훅 주입문도 "틀렸으면 **같은 제목**으로
+remember 하면 이전 것을 자동 대체(이력 보관)"라고 안내합니다.
 
 ### 근거(evidence) 트레일
 
@@ -297,6 +321,7 @@ README 의 "어디에 띄우나" 표에 있습니다.
 ```
 
 키는 SHA-256 해시로만 저장되고(`auth.py`), 발급 시 한 번만 평문으로 보입니다.
+캡처된 질문·답 속 자격증명은 저장 전에 마스킹됩니다(`redact.py`, `learn.redact_secrets`).
 백업(`backup.py`)은 볼륨을 잃어도 지식이 남도록 Google Drive 로 스냅샷을 회전 업로드합니다.
 
 ---
@@ -323,6 +348,7 @@ README 의 "어디에 띄우나" 표에 있습니다.
 | | `tiers.py` / `tokens.py` / `budget.py` | L0/L1/L2 생성 · 토큰 추정 · 절감 계산 |
 | | `embed.py` / `llm.py` | 임베딩(오프라인 기본) · LLM(선택) |
 | **관측** | `trace.py` | 트레이스·관측·점수 (blame 귀속의 근거) |
+| **보호** | `redact.py` | 캡처된 텍스트의 자격증명 마스킹 |
 | **운영** | `auth.py` / `backup.py` / `config.py` | 키 · 백업 · 설정과 디스크 배치 |
 
 ---

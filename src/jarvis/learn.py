@@ -264,14 +264,29 @@ class Learner:
         if cmd_cat:
             blocks = _code_blocks(answer)
             if blocks:
+                low_q = question.lower()
+                retry = any(m in low_q for m in _RETRY_MARKERS)
+                base_title = _title_from(question.strip() or session.title) or "명령"
+                # A retry must not merge into the very memory it may be
+                # replacing — that would raise the blamed belief's confidence
+                # with an unverified guess. Its own row lets it *challenge*
+                # the old one and supersede it only once an outcome confirms it.
+                title = f"{base_title} 재시도" if retry else base_title
                 out.append(
                     MemoryCandidate(
                         category=cmd_cat,
-                        title=_title_from(question.strip() or session.title) or "명령",
-                        statement=f"{question.strip()[:160]} 에 사용된 명령/코드",
+                        title=title,
+                        statement=(
+                            f"{_title_from(question.strip(), 160) or question.strip()[:160]}"
+                            + (" 에 재시도한 명령/코드 (검증 전)" if retry else " 에 사용된 명령/코드")
+                        ),
                         detail="\n\n".join(f"```\n{b}\n```" for b in blocks[:3]),
-                        confidence=0.5,
-                        tags=["코드"],
+                        # A retry after a complaint is a guess until an outcome
+                        # says otherwise: keep it below the tentative line so it
+                        # is never injected as settled and never outranks the
+                        # belief it may be trying to replace.
+                        confidence=0.4 if retry else 0.5,
+                        tags=["코드", "재시도"] if retry else ["코드"],
                         source=str(session.uri),
                         extractor="rule",
                     )
@@ -803,6 +818,25 @@ def _polarity_differs(a: str, b: str) -> bool:
 
 
 _TITLE_TRAIL = re.compile(r"[\s?!.,:;·]+$")
+# Request boilerplate and complaint phrasing that a question carries but a
+# memory's *name* should not. Without this a retry after "린트 검사 여전히 안
+# 되는데" was filed under that sentence, and the same lesson asked three ways
+# became three rows.
+_TITLE_NOISE = re.compile(
+    r"(?:\b(?:여전히|아직|그대로|계속)\s*)?"
+    r"(?:안\s*되는데|안되는데|안\s*돼|안돼|안\s*됩니다|왜\s*안\s*돼|"
+    r"어떻게\s*(?:해|하지|하나요|합니까|돌려|써)|"
+    r"해\s*줘|해줘|해주세요|알려\s*줘|알려줘|알려주세요|"
+    r"좀|다시|please|how\s+do\s+i|how\s+to|can\s+you)"
+    r"(?=[\s?!.,]|$)",
+    re.IGNORECASE,
+)
+# Wording that says the question is a complaint about the previous attempt.
+# A code block answering it is the *next try*, not a proven command.
+_RETRY_MARKERS = (
+    "안 되는데", "안되는데", "안 돼", "안돼", "여전히", "아직", "그대로", "틀렸",
+    "still", "doesn't work", "not working", "didn't work", "broken",
+)
 
 
 def _title_from(text: str, max_chars: int = 40) -> str:
@@ -817,6 +851,10 @@ def _title_from(text: str, max_chars: int = 40) -> str:
     same row in the review queue.
     """
     line = " ".join((text or "").split())
+    cleaned = " ".join(_TITLE_NOISE.sub(" ", line).split())
+    # Keep the noise if stripping it leaves nothing — a title beats no title.
+    if len(cleaned) >= 2:
+        line = cleaned
     if not line:
         return ""
     if len(line) <= max_chars:

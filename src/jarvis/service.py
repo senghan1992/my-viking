@@ -28,6 +28,7 @@ from .learn import DistillReport, Learner, MemoryCandidate
 from .models import KIND_MEMORY, KIND_PROMPT, KIND_SESSION, Node, Uri, now_iso, slugify
 from .profiles import MemoryProfile, builtin, template_summary
 from .prompts import PromptLibrary, RenderResult
+from .redact import redact
 from .retrieve import PackedContext, Retriever
 from .sessions import CacheHit, SessionLog
 from .store import GLOBAL_SCOPE, Store
@@ -57,6 +58,11 @@ _BLAME_FLOOR = 0.9
 # a top-ranked memory lands around -0.06, so this catches a single real culprit
 # while ignoring the tiny nudges a memory picks up from riding along.
 _HARM_THRESHOLD = -0.05
+# Attributed harm at which trust() retracts a memory to "contested" while its
+# challenge streak is open. One inferred blame lands around -0.07 to -0.09; a
+# stated bad score around -0.2. So this needs a stated verdict or two inferred
+# ones — a single misread follow-up must not retract a fact.
+_HARM_CONTESTED = -0.15
 
 SYSTEM_PREFIX = (
     "당신은 이 프로젝트에 대한 누적 컨텍스트를 가진 어시스턴트입니다.\n"
@@ -308,9 +314,10 @@ class Jarvis:
         )
         uri, action, _conflict = self.learner.absorb(project, cand, profile)
         # A hand-written memory is a strong signal. If it corrects a belief a
-        # recent bad outcome blamed, let it supersede the old one too.
+        # recent bad outcome blamed, let it supersede the old one right away:
+        # a person asserted it, so it does not wait for an outcome.
         if uri is not None and action in ("created", "merged"):
-            self._reconcile_correction(project, [str(uri)])
+            self._reconcile_correction(project, [str(uri)], immediate=True)
         return uri  # type: ignore[return-value]
 
     @_locked
@@ -371,11 +378,18 @@ class Jarvis:
 
         if superseded_by:
             return out("superseded", "대체됨 · 최신 기록으로 갱신됨")
+        if extra.get("challenged_by"):
+            return out("contested", "확인 필요 · 교정 후보가 있음")
         if conflict and conflict.get("resolution") != "superseded":
             return out("contested", "확인 필요 · 다른 기록과 충돌")
         if streak >= cfg.contested_after:
             return out("contested", f"확인 필요 · 최근 {streak}회 어긋남")
-        if harm is not None and harm <= _HARM_THRESHOLD:
+        # Attributed harm is a lifetime sum, so on its own it would be a ratchet:
+        # one misread follow-up and the memory reads "contested" for ever. It
+        # counts only while the challenge is still open (streak > 0) and only
+        # when it amounts to more than a single inferred blame — a stated "this
+        # was wrong" or two inferred ones.
+        if harm is not None and harm <= _HARM_CONTESTED and streak > 0:
             return out("contested", "확인 필요 · 최근 나쁜 결과에 관여")
         if node.confidence < 0.5:
             return out("tentative", f"미확정 · 신뢰 {node.confidence:.2f}")
@@ -383,11 +397,15 @@ class Jarvis:
             return out("stale", f"오래됨 · {age:.0f}일간 확인·사용 없음")
         if node.confidence < cfg.solid_confidence:
             return out("tentative", f"미확정 · 신뢰 {node.confidence:.2f}")
+        # Being retrieved is not evidence of being right, and neither is age.
+        # A distilled memory stays "fresh" until something has actually gone
+        # well with it in the room: a confirmation, a person reviewing it, or
+        # enough follow-ups that moved on without complaint (settled).
         if (
             extra.get("origin", "distilled") != "manual"
-            and _days_since(node.created or "") <= 7
             and confirmations == 0
-            and node.hits < 3
+            and int(extra.get("settled", 0)) < cfg.settled_after
+            and not extra.get("reviewed")
         ):
             return out("fresh", "최근 기록 · 아직 검증 안 됨")
         return out("established", "확립")
@@ -1034,6 +1052,10 @@ class Jarvis:
     ) -> Prepared:
         """Assemble the best context available for ``question``, and trace it."""
         self.store.ensure_project(project)
+        if self.config.learn.redact_secrets:
+            # The question is stored on the trace and may be cached with its
+            # answer; a pasted credential must not be kept under either.
+            question = redact(question)
         # Group work into sittings even when the caller does not track sessions.
         # Requiring an agent to invent and carry a session id is a requirement it
         # will quietly ignore, and then "catch me up on last time" has nothing to
@@ -1375,6 +1397,11 @@ class Jarvis:
         learns which files last time's work touched, not just the topic.
         """
         files = [f for f in (files or []) if f][:50]
+        if self.config.learn.redact_secrets:
+            # Second line of defence behind the hooks: MCP and shell-bridge
+            # clients send exchanges too, and what is stored here is re-injected
+            # into every later session on this project.
+            question, answer = redact(question), redact(answer)
         if trace_id:
             self.tracer.event(
                 trace_id,
@@ -1432,7 +1459,9 @@ class Jarvis:
             # outcome blamed, let it supersede the old one — the answer key
             # upgrades itself instead of keeping both the wrong and the right.
             new_uris = [str(u) for u in (report.created + report.merged)]
-            corrected = self._reconcile_correction(project, new_uris)
+            corrected = self._reconcile_correction(
+                project, new_uris, immediate=False, trace_id=trace_id
+            )
             if corrected:
                 result["corrected"] = corrected
         if agent:
@@ -1512,6 +1541,14 @@ class Jarvis:
             # evidence of being right (config learn.reinforce=0.0).
             apply_to_memory=value < 0.5,
         )
+        if value >= 0.5:
+            # Moving on is too weak to *promote* a memory, but it is enough to
+            # close an open challenge against one: the user used the answer it
+            # fed and did not come back. Without this, a memory demoted by a
+            # misread follow-up could only be healed by a stated score, which
+            # in unattended operation never arrives — retraction would be a
+            # one-way ratchet.
+            self._settle(prev["id"], why)
         self.tracer.annotate(prev["id"], {"implicit_outcome": outcome})
         self.tracer.event(
             prev["id"],
@@ -1522,6 +1559,46 @@ class Jarvis:
             level="warning" if value < 0.5 else "info",
         )
         return outcome
+
+    def _settle(self, trace_id: str, why: str) -> list[str]:
+        """The answer this trace produced was accepted without complaint.
+
+        For every memory that rode in it: count a settled use, clear any open
+        challenge streak, and withdraw a pending correction against it. No
+        confidence moves — this is the absence of a complaint, not praise.
+        """
+        settled: list[str] = []
+        for item in self.tracer.context_of(trace_id):
+            uri = Uri.parse(item["uri"])
+            if uri.kind_dir != "memories" or uri.is_global:
+                continue
+            node = self.store.read_node(uri)
+            if node is None:
+                continue
+            extra = node.extra
+            extra["settled"] = int(extra.get("settled", 0)) + 1
+            healed = int(extra.get("challenge_streak", 0)) > 0 or bool(
+                extra.get("challenged_by")
+            )
+            if healed:
+                extra["challenge_streak"] = 0
+                extra.pop("challenged_by", None)
+                extra.pop("challenged_at", None)
+                extra.setdefault("evidence", []).append(
+                    {
+                        "at": now_iso(),
+                        "kind": "settled",
+                        "delta": 0.0,
+                        "confidence": round(node.confidence, 3),
+                        "source": "implicit",
+                        "trace": trace_id,
+                        "why": (why or "")[:160],
+                    }
+                )
+                del extra["evidence"][:-20]
+            self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
+            settled.append(str(uri))
+        return settled
 
     # ==================================================================
     # quality loop
@@ -1552,13 +1629,21 @@ class Jarvis:
         matched, and a negative score only reaches items that actually drove the
         answer. Pass ``uris`` when the caller knows exactly what was at fault.
         """
-        row = self.store.db.one("SELECT scope FROM traces WHERE id = ?", (trace_id,))
+        row = self.store.db.one(
+            "SELECT scope, input FROM traces WHERE id = ?", (trace_id,)
+        )
         if row is None:
             raise KeyError(f"없는 트레이스: {trace_id}")
         scope = row["scope"]
         score_id = self.tracer.add_score(
             scope, name, value, trace_id=trace_id, comment=comment, source=source
         )
+        if value < 0.5 and row["input"]:
+            # The answer this trace produced was cached under its question. A
+            # bad verdict on the answer must reach the cache too, or the same
+            # question next time is served the very answer that just failed —
+            # the one place the evolving answer key otherwise cannot reach.
+            self.sessions.cache_forget(scope, row["input"])
 
         moved: list[dict[str, Any]] = []
         if apply_to_memory:
@@ -1590,6 +1675,8 @@ class Jarvis:
                     continue
                 node.confidence = max(0.0, min(1.0, node.confidence + delta))
                 self._note_outcome(node, delta, trace_id, comment, source)
+                if delta > 0:
+                    self._confirm_corrections(node, trace_id)
                 self.store.write_node(
                     node, regenerate_tiers=False, reinforce_dirs=False
                 )
@@ -1655,6 +1742,45 @@ class Jarvis:
         )
         del trail[:-20]
 
+    def _confirm_corrections(self, node: Node, trace_id: str) -> None:
+        """A good outcome for ``node`` resolves what it was pending against.
+
+        If it was a provisional correction, the belief it challenged is now
+        superseded for real (archived with a pointer). If it was itself under
+        challenge, the challenge is withdrawn — it just worked.
+        """
+        extra = node.extra
+        if extra.pop("challenged_by", None) is not None:
+            extra.pop("challenged_at", None)
+            extra.setdefault("evidence", []).append(
+                {
+                    "at": now_iso(),
+                    "kind": "vindicated",
+                    "delta": 0.0,
+                    "confidence": round(node.confidence, 3),
+                    "source": "outcome",
+                    "trace": trace_id,
+                    "why": "교정 후보가 있었지만 이 기록이 다시 좋은 결과를 냈습니다",
+                }
+            )
+        for old_uri in list(extra.get("corrects", [])):
+            old = self.store.read_node(Uri.parse(old_uri))
+            if old is None or old.extra.get("challenged_by") != str(node.uri):
+                continue
+            self.learner._mark_superseded(Uri.parse(old_uri), node.uri, node.abstract)
+            extra.setdefault("evidence", []).append(
+                {
+                    "at": now_iso(),
+                    "kind": "correction",
+                    "replaced": old_uri,
+                    "trace": trace_id,
+                    "why": "좋은 결과로 확인되어 이전 기록을 대체했습니다",
+                }
+            )
+            node.confidence = max(node.confidence, self.config.learn.solid_confidence)
+        if extra.get("evidence"):
+            del extra["evidence"][:-20]
+
     @staticmethod
     def _score_delta(value: float) -> float:
         """Map a 0..1 score onto a confidence nudge centred on neutral (0.5).
@@ -1668,23 +1794,35 @@ class Jarvis:
     # ==================================================================
     # the answer key upgrades itself — a correction supersedes what it fixed
     # ==================================================================
-    def _recent_blamed(self, project: str, hours: int = 4) -> list[str]:
+    def _recent_blamed(
+        self, project: str, hours: int = 4, trace_id: str = ""
+    ) -> list[str]:
         """Memories an attributed bad outcome demoted in the last few hours.
 
         These are the beliefs most likely to be *wrong*, not merely stale: the
         implicit-feedback loop pinned the blame on them when the user said the
         last answer missed. When a corrected lesson is learned right after, it
         is almost certainly the fix for one of these.
+
+        With ``trace_id`` the search stays inside that trace's sitting: on a
+        shared project, a teammate's unrelated lesson must not be read as the
+        fix for a failure it never saw.
         """
         from datetime import datetime, timedelta, timezone
 
         since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-        rows = self.store.db.query(
+        sql = (
             "SELECT DISTINCT c.uri FROM context_used c"
             " JOIN traces t ON t.id = c.trace_id"
-            " WHERE t.scope=? AND c.applied < 0 AND t.started >= ?",
-            (project, since),
+            " WHERE t.scope=? AND c.applied < 0 AND t.started >= ?"
         )
+        params: list[Any] = [project, since]
+        if trace_id:
+            sql += (
+                " AND t.session_id = (SELECT session_id FROM traces WHERE id=?)"
+            )
+            params.append(trace_id)
+        rows = self.store.db.query(sql, params)
         out: list[str] = []
         for r in rows:
             u = Uri.parse(r["uri"])
@@ -1693,17 +1831,30 @@ class Jarvis:
         return out
 
     def _reconcile_correction(
-        self, project: str, new_uris: list[str]
+        self,
+        project: str,
+        new_uris: list[str],
+        immediate: bool = False,
+        trace_id: str = "",
     ) -> list[dict[str, Any]]:
         """When a freshly learned lesson disproves a recently-blamed belief,
         let the new one *supersede* the old rather than sit beside it.
 
         This is the upgrade the user asked for: what was taken as the answer,
         then shown wrong by later prompts, is replaced by the corrected version
-        — automatically, reversibly (the old node is archived with a pointer),
-        and with the correction recorded so the history is legible.
+        — reversibly (the old node is archived with a pointer), with the
+        correction recorded so the history is legible.
+
+        Two speeds. ``immediate`` is for a person's hand-written correction:
+        they asserted it, so the old belief is superseded on the spot. A lesson
+        distilled from the agent's *next attempt* is not yet known to be right
+        — it is the retry after a complaint, not the verified fix — so it only
+        *challenges* the old belief: the old one drops to "확인 필요" and stays
+        retrievable, and the supersede is completed when the new one earns a
+        good outcome (see ``_confirm_corrections``) or withdrawn when the old
+        one does.
         """
-        blamed = self._recent_blamed(project)
+        blamed = self._recent_blamed(project, trace_id=trace_id)
         if not blamed:
             return []
         thr = self.config.learn.correction_similarity
@@ -1728,25 +1879,62 @@ class Jarvis:
                 )
                 if sim < thr:
                     continue
-                self.learner._mark_superseded(
-                    Uri.parse(bu), Uri.parse(nu), new.abstract
-                )
                 corrects = new.extra.setdefault("corrects", [])
                 if bu not in corrects:
                     corrects.append(bu)
-                new.extra.setdefault("evidence", []).append(
-                    {
-                        "at": now_iso(),
-                        "kind": "correction",
-                        "replaced": bu,
-                        "similarity": round(sim, 3),
-                    }
-                )
-                # A correction that just fixed a real failure is not a guess.
-                new.confidence = max(new.confidence, 0.7)
+                if immediate:
+                    self.learner._mark_superseded(
+                        Uri.parse(bu), Uri.parse(nu), new.abstract
+                    )
+                    new.extra.setdefault("evidence", []).append(
+                        {
+                            "at": now_iso(),
+                            "kind": "correction",
+                            "replaced": bu,
+                            "similarity": round(sim, 3),
+                        }
+                    )
+                    # A person's correction of a real failure is not a guess.
+                    new.confidence = max(new.confidence, 0.7)
+                    mode = "superseded"
+                else:
+                    if old.extra.get("challenged_by") in ("", None):
+                        old.extra["challenged_by"] = nu
+                        old.extra["challenged_at"] = now_iso()
+                        old.extra.setdefault("evidence", []).append(
+                            {
+                                "at": now_iso(),
+                                "kind": "challenged",
+                                "delta": 0.0,
+                                "confidence": round(old.confidence, 3),
+                                "source": "distill",
+                                "trace": trace_id,
+                                "why": f"교정 후보가 생김: {new.title}"[:160],
+                            }
+                        )
+                        del old.extra["evidence"][:-20]
+                        self.store.write_node(
+                            old, regenerate_tiers=False, reinforce_dirs=False
+                        )
+                    new.extra.setdefault("evidence", []).append(
+                        {
+                            "at": now_iso(),
+                            "kind": "correction_pending",
+                            "replaced": bu,
+                            "similarity": round(sim, 3),
+                            "why": "좋은 결과로 확인되면 이전 기록을 대체합니다",
+                        }
+                    )
+                    mode = "pending"
+                del new.extra["evidence"][:-20]
                 changed = True
                 corrected.append(
-                    {"new": nu, "replaced": bu, "similarity": round(sim, 3)}
+                    {
+                        "new": nu,
+                        "replaced": bu,
+                        "similarity": round(sim, 3),
+                        "mode": mode,
+                    }
                 )
             if changed:
                 self.store.write_node(
@@ -2002,17 +2190,32 @@ _HANGUL_RE = re.compile(r"^[가-힣]+$")
 # work" can only be a verdict on the previous answer:
 _CORRECTION_MARKERS = (
     "안 되는데", "안되는데", "안 되네", "안되네", "안 돼", "안돼", "안 됩니다",
-    "여전히", "아직", "그대로",
     "동작하지", "작동하지", "구현이 안", "왜 안",
-    "틀렸", "제대로 안", "고쳐", "수정해",
-    "still", "doesn't work", "does not work", "not working",
-    "didn't work", "did not work", "fix it", "fix this", "broken",
+    "틀렸", "제대로 안",
+    "doesn't work", "does not work", "not working",
+    "didn't work", "did not work", "fix it", "fix this", "fix that", "broken",
 )
+# Repair imperatives are a verdict on the last answer only when they point at
+# it. "그 부분 고쳐줘" does; "README 의 오타를 수정해줘" names a new object and is
+# simply the next task. Measured on a live store, the second kind — the most
+# common sentence in a coding session — was demoting perfectly good memories
+# two prompts at a time. So a repair verb counts when the subject is unchanged,
+# when a demonstrative refers back ("그거", "이 부분"), or when nothing else is
+# named at all ("고쳐줘", "다시 고쳐").
+_REPAIR_MARKERS = ("고쳐", "수정해", "수정 해", "바로잡")
+_BACK_REFERENCES = (
+    "그 부분", "그부분", "이 부분", "이부분", "그거", "그걸", "그건", "이거", "이걸",
+    "이건", "저거", "방금", "아까", "위의", "위에", "직전", "그렇게 하지",
+)
+# Persistence words ("still", "아직") are a complaint when paired with trouble,
+# negation, or each other — "아직 에러가 나", "아직 그대로야" — but not on their
+# own: "아직 커밋하지 마" is an instruction about the future.
+_PERSISTENCE_MARKERS = ("여전히", "아직", "그대로", "still")
+_NEGATIONS = ("안 ", "않", "못 ", "없", "not ", "n't")
 # Weak quality-adverbs that read as a complaint only when the subject hasn't
 # changed. "이제 배포 스크립트 제대로 짜줘" contains "제대로" but is a brand-new
 # request, not a verdict on the last answer — so these count only with topic
-# overlap. (Repair imperatives like "고쳐"/"수정해" stay strong: they reference
-# work already produced regardless of subject.)
+# overlap.
 _WEAK_CORRECTION_MARKERS = (
     "다시 해", "다시 봐", "다시 한", "제대로", "잘못", "again",
 )
@@ -2037,7 +2240,7 @@ _WORD_RE = re.compile(r"[0-9A-Za-z]+|[가-힣]+")
 _TOPIC_STOPWORDS = {
     "어떻게", "어떻", "떻게", "해줘", "해야", "하나", "되나", "뭐야", "무엇",
     "알려", "알려줘", "좀", "줄래", "봐줘", "해", "할", "수", "있", "이거",
-    "이건", "그거", "방법", "해주", "주세", "지금", "다시", "또",
+    "이건", "그거", "방법", "해주", "주세", "주세요", "줘", "줘요", "지금", "다시", "또",
     "how", "do", "does", "the", "a", "an", "to", "is", "it", "what",
     "please", "can", "i", "me", "my", "you",
 }
@@ -2103,7 +2306,22 @@ def _classify_followup(
     corrected = any(m in low for m in _CORRECTION_MARKERS)
     weakly_corrected = any(m in low for m in _WEAK_CORRECTION_MARKERS)
     troubled = any(m in low for m in _TROUBLE_WORDS)
-    complained = corrected or ((weakly_corrected or troubled) and same_topic)
+    refers_back = any(m in low for m in _BACK_REFERENCES)
+    repair = any(m in low for m in _REPAIR_MARKERS)
+    persist = sum(1 for m in _PERSISTENCE_MARKERS if m in low)
+    negated = any(m in low for m in _NEGATIONS)
+    # A repair verb with no object named: "고쳐줘", "다시 고쳐". Strip the verb
+    # and see whether any subject survives.
+    bare = low
+    for m in _REPAIR_MARKERS:
+        bare = bare.replace(m, " ")
+    repair_bare = repair and not _topic_grams(bare)
+    complained = (
+        corrected
+        or (repair and (same_topic or refers_back or repair_bare))
+        or (persist > 0 and (troubled or negated or persist > 1 or same_topic))
+        or ((weakly_corrected or troubled) and same_topic)
+    )
 
     if complained and not continuing:
         detail = "같은 주제로 " if same_topic else ""

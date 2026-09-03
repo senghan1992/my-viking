@@ -655,12 +655,19 @@ async function openMemory(uri) {
         ${d.conflict.other ? `<a onclick="openMemory('${esc(d.conflict.other)}')" class="mono" style="cursor:pointer;text-decoration:underline">상대 열기</a>` : ""}
       </div>` : "";
     const t = d.trust || {};
-    const EV = { confirmed: ["✓", "ok", "결과가 뒷받침"], contradicted: ["✕", "bad", "결과가 어긋남"], correction: ["↺", "warn", "이 내용으로 대체"] };
+    const EV = {
+      confirmed: ["✓", "ok", "결과가 뒷받침"], contradicted: ["✕", "bad", "결과가 어긋남"],
+      settled: ["○", "ok", "불만 없이 넘어감"], vindicated: ["✓", "ok", "교정 후보 철회"],
+      challenged: ["?", "warn", "교정 후보 생김"], correction_pending: ["…", "warn", "대체 대기"],
+      correction: ["↺", "warn", "이 내용으로 대체"],
+    };
     const evLine = (e) => {
       const [mark, cls] = EV[e.kind] || ["·", "", ""];
       const note = e.kind === "correction"
-        ? `이전 기록을 대체 (유사도 ${e.similarity})`
-        : esc(e.why || (e.kind === "confirmed" ? "좋은 결과" : "나쁜 결과"));
+        ? (e.similarity != null ? `이전 기록을 대체 (유사도 ${e.similarity})` : esc(e.why || "이전 기록을 대체"))
+        : e.kind === "correction_pending"
+        ? `좋은 결과가 나오면 이전 기록을 대체 (유사도 ${e.similarity})`
+        : esc(e.why || (e.kind === "confirmed" ? "좋은 결과" : e.kind === "settled" ? "다음 요청이 불만 없이 넘어감" : "나쁜 결과"));
       return `<div class="why" style="align-items:baseline"><b class="${cls}">${mark}</b>
         <span style="color:var(--muted)">${esc(when(e.at))}</span> ${note}</div>`;
     };

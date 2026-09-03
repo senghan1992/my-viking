@@ -297,6 +297,56 @@ def test_trouble_words_do_count_when_the_subject_is_unchanged():
 @pytest.mark.parametrize(
     "question",
     [
+        # 수리 동사가 있어도 '새 대상'을 이름 붙여 말하면 다음 작업이다.
+        "README 의 오타를 수정해줘",
+        "CHANGELOG 도 고쳐줘",
+        "로그인 페이지 스타일 수정해줘",
+        # 지속 부사 단독은 미래에 대한 지시일 수 있다.
+        "아직 커밋하지 마",
+        "still need to add the tests",
+        "그대로 두고 문서만 추가해",
+    ],
+)
+def test_a_repair_request_naming_a_new_object_is_not_a_complaint(question):
+    """실측: "이것도 수정해줘"가 주제 무관하게 직전 답을 오답 처리해, 사람이 쓴
+    올바른 지식이 두 프롬프트 만에 정답지에서 내려갔다. 수리 동사는 직전 작업을
+    가리킬 때(주제 일치·지시어·대상 없음)만 판정한다."""
+    kind, _v, _w = _classify_followup(question, 0.0, 2, 0.25)
+    assert kind != "reworked", question
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "고쳐줘",  # 대상 없음 → 직전 작업
+        "다시 고쳐",
+        "그거 수정해줘",  # 지시어
+        "방금 만든 거 고쳐",
+        "아직 에러가 나",  # 지속 + 장애
+        "여전히 안 돼",  # 지속 + 부정
+        "아직 그대로야",  # 지속 둘
+    ],
+)
+def test_a_repair_request_pointing_back_is_a_complaint(question):
+    kind, _v, _w = _classify_followup(question, 0.0, 2, 0.25)
+    assert kind == "reworked", question
+
+
+def test_an_unrelated_repair_request_does_not_demote_the_previous_memory(coding):
+    """끝에서 끝: 확립된 지식이 주입된 답 뒤에, 다른 파일을 고치라는 요청이
+    이어져도 그 지식은 반박당하지 않는다."""
+    uri = coding.remember("app", "commands", "테스트 실행", "pytest -q 로 돌린다")
+    _turn(coding, "app", "테스트 실행 어떻게 해?", answer="pytest -q 로 돌립니다.")
+    _turn(coding, "app", "README 의 오타를 수정해줘", answer="고쳤습니다.")
+    _turn(coding, "app", "CHANGELOG 도 고쳐줘", answer="고쳤습니다.")
+    node = coding.store.read_node(uri)
+    assert not [e for e in node.extra.get("evidence", []) if e["kind"] == "contradicted"]
+    assert coding.trust(node)["status"] == "established"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
         # 새 작업 요청에 붙은 품질 부사일 뿐, 직전 답에 대한 불만이 아니다.
         "이제 배포 스크립트 제대로 짜줘",
         "다시 한 번 로깅 설정 정리해줘",

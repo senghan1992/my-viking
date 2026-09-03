@@ -196,6 +196,15 @@ class SessionLog:
         self.db.commit()
         return int(cur.lastrowid or 0)
 
+    def cache_forget(self, project: str, question: str) -> int:
+        """Drop the cached answer for one question — it was judged wrong."""
+        cur = self.db.execute(
+            "DELETE FROM cache WHERE scope=? AND qhash=?",
+            (project, question_hash(question)),
+        )
+        self.db.commit()
+        return cur.rowcount or 0
+
     def cache_lookup(
         self,
         project: str,

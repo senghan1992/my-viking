@@ -35,6 +35,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .redact import redact
+
 DEFAULT_URL = "http://127.0.0.1:8787"
 DEFAULT_STATE_DIR = Path.home() / ".myviking" / "hook-state"
 _STATE_TTL = 7 * 24 * 3600
@@ -248,7 +250,9 @@ def user_prompt_submit(
             "project": project,
             "repo": state.get("repo", ""),
             "path": cwd,
-            "question": prompt[:_MAX_QUESTION_CHARS],
+            # Masked before it leaves the machine: a key pasted into a prompt
+            # must not be stored on the server or shown to a later session.
+            "question": redact(prompt[:_MAX_QUESTION_CHARS]),
             "agent": _agent_name(),
             "session_id": sid,
             "max_tier": 0,
@@ -294,8 +298,8 @@ def stop(
         "/commit",
         {
             "project": project,
-            "question": question[:_MAX_QUESTION_CHARS],
-            "answer": answer[:_MAX_ANSWER_CHARS],
+            "question": redact(question[:_MAX_QUESTION_CHARS]),
+            "answer": redact(answer[:_MAX_ANSWER_CHARS]),
             "model": model,
             "trace_id": trace_id,
             "agent": _agent_name(),
