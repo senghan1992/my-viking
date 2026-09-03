@@ -36,6 +36,30 @@ def _admin_and_scoped(client, scope="alpha"):
     return admin, scoped
 
 
+def test_key_scope_never_widens_by_a_field_typo(client):
+    """팀 리드 시뮬레이션에서 발견: {"project": "shop-api"} (단수) 를 보내자 필드가
+    조용히 무시되고 전체 관리자 키가 발급됐다. 단수는 그 뜻대로 받고, 모르는 필드는
+    거절하며, 두 표기를 동시에 주면 거절한다."""
+    admin, _ = _admin_and_scoped(client)
+    made = client.post(
+        "/keys", json={"name": "eve", "project": "alpha"}, headers=_hdr(admin)
+    )
+    assert made.status_code == 200
+    me = client.get("/me", headers=_hdr(made.json()["key"])).json()
+    assert me["projects"] == ["alpha"] and not me.get("admin")
+
+    bad = client.post(
+        "/keys", json={"name": "eve", "scope": "alpha"}, headers=_hdr(admin)
+    )
+    assert bad.status_code == 422
+    both = client.post(
+        "/keys",
+        json={"name": "eve", "project": "alpha", "projects": ["beta"]},
+        headers=_hdr(admin),
+    )
+    assert both.status_code == 422
+
+
 # --------------------------------------------------------------------------
 # 스코프 키가 넘지 못해야 하는 선 (고수 B1/H1/H2, 중급 F2)
 # --------------------------------------------------------------------------

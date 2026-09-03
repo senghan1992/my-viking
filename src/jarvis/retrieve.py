@@ -14,6 +14,7 @@ Two ideas do the work here:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -336,6 +337,12 @@ class Retriever:
             include_global=include_global,
             max_candidates=cfg.max_candidates,
         )
+        before = len(candidates)
+        candidates = _focus(candidates, warn_cats, cfg)
+        if len(candidates) != before:
+            trace.append(
+                {"step": "focus", "before": before, "after": len(candidates)}
+            )
 
         per_kind_cap = {
             KIND_MEMORY: cfg.memories,
@@ -498,6 +505,56 @@ def _render_section(cand: Candidate, tier: int, text: str) -> str:
     head = f"### {cand.title or cand.uri.name}"
     meta = f"<!-- {_short_ref(cand)} {TIER_NAMES[tier]} c={cand.confidence:.1f} -->"
     return f"{head}\n{meta}\n{text}"
+
+
+def _norm_title(title: str) -> str:
+    return re.sub(r"[\s\W_]+", "", (title or "").lower())
+
+
+def _focus(
+    candidates: list[Candidate], warn_cats: set[str], cfg: BudgetConfig
+) -> list[Candidate]:
+    """Keep the pack about the question.
+
+    The token budget alone does not do this: at L0 every memory is cheap, so
+    a budget of a few thousand tokens admits the entire project — and every
+    prompt then carries a dozen unrelated one-liners, six of them the same
+    "테스트" lesson re-learned six times. Three rules, in order:
+
+    * one item per (kind, category, title) — the best-scoring survives;
+    * nothing that scores far below the best match, unless it is a warning
+      that lexically matched the question (warnings earn their place);
+    * at most ``max_items`` in total, warnings first.
+    """
+    if not candidates:
+        return candidates
+    ordered = sorted(candidates, key=lambda c: -c.score)
+    seen: set[tuple[str, str, str]] = set()
+    kept: list[Candidate] = []
+    for c in ordered:
+        key = (c.kind, c.category, _norm_title(c.title))
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(c)
+
+    def warned(c: Candidate) -> bool:
+        return c.category in warn_cats and c.fts_score > 0
+
+    # A small store is not the problem: two or three items are read either way,
+    # and a bystander must stay retrievable so blame attribution has something
+    # to *not* blame. The gate only bites when there is more than fits anyway.
+    over = cfg.max_items > 0 and len(kept) > cfg.max_items
+    if over and cfg.min_relative_score > 0:
+        floor = kept[0].score * cfg.min_relative_score
+        gated = [c for c in kept if c.score >= floor or warned(c)]
+        if gated:
+            kept = gated
+    if cfg.max_items > 0 and len(kept) > cfg.max_items:
+        warn_first = [c for c in kept if warned(c)]
+        rest = [c for c in kept if not warned(c)]
+        kept = (warn_first + rest)[: max(cfg.max_items, len(warn_first))]
+    return kept
 
 
 def _sections_of(triples, warn_cats: set[str]) -> dict[str, list[str]]:

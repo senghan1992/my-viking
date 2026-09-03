@@ -66,16 +66,27 @@ def test_merge_raises_confidence(coding):
     assert coding.memories("app", "commands")[0]["confidence"] > before
 
 
-def test_non_cumulative_category_keeps_separate_files(coding):
+def test_non_cumulative_same_title_keeps_only_the_newest_live(coding):
+    """Non-cumulative categories still keep one file per observation, but the
+    same title is the same observation made again: the newer account stays
+    live and the older is archived pointing at it. (Live use left six
+    "테스트" cases side by side, all injected on every prompt.)"""
     profile = coding.profile("app")
     assert profile.category("cases").cumulative is False
+    uris = []
     for i in range(2):
-        coding.learner.absorb(
+        uri, _a, _c = coding.learner.absorb(
             "app",
             MemoryCandidate(category="cases", title="같은 제목", statement=f"사례 {i}"),
             profile,
         )
-    assert len(coding.memories("app", "cases")) == 2
+        uris.append(uri)
+    live = coding.memories("app", "cases")
+    assert len(live) == 1 and live[0]["abstract"] == "사례 1"
+    archived = coding.store.read_node(
+        str(uris[0]).replace("/memories/", "/_archive/memories/")
+    )
+    assert archived is not None and archived.extra["superseded_by"] == str(uris[1])
 
 
 def test_contradiction_is_flagged_not_silently_overwritten(coding):
@@ -294,6 +305,9 @@ def test_provenance_stays_out_of_memory_text(coding):
         ("테스트는 pytest -q 로 돌린다", "로그는 JSON 으로 남기지 않는다"),
         ("포트는 8080 을 쓴다", "캐시는 없다"),
         ("커밋 메시지는 한글로 쓴다", "배포는 금요일에 하지 않는다"),
+        # Same sentence frame, different subject: two conventions that coexist.
+        ("테스트는 pytest 로 돌린다", "린트는 ruff 로 돌린다"),
+        ("prettier 를 쓴다", "eslint 를 쓴다"),
     ],
 )
 def test_unrelated_statements_are_not_conflicts(a, b):

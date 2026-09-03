@@ -20,7 +20,10 @@ KIND_SESSION = "session"
 KIND_RESOURCE = "resource"
 KINDS = (KIND_MEMORY, KIND_PROMPT, KIND_SESSION, KIND_RESOURCE)
 
-_SLUG_RE = re.compile(r"[^0-9a-z가-힣._-]+")
+# No dots in slugs. "Store.all() 이 파일 없을 때" and "store.py 열어봐" both
+# collapsed to a name that resolved as ``store`` and the second silently
+# overwrote the first — the only data-destroying bug found in live use.
+_SLUG_RE = re.compile(r"[^0-9a-z가-힣_-]+")
 
 
 def now_iso() -> str:

@@ -893,8 +893,9 @@ def cmd_agent_hooks(args, j: Jarvis | None = None) -> int:
 
     url = args.url or os.environ.get("MYVIKING_URL", "")
     key = args.key or os.environ.get("MYVIKING_KEY", "")
+    state_dir = getattr(args, "state_dir", "") or ""
     if not args.install:
-        settings = hook_settings(url or "http://127.0.0.1:8787", key)
+        settings = hook_settings(url or "http://127.0.0.1:8787", key, state_dir=state_dir)
         text = json.dumps(settings, ensure_ascii=False, indent=2)
         if args.json:
             print(text)
@@ -909,7 +910,7 @@ def cmd_agent_hooks(args, j: Jarvis | None = None) -> int:
         print("오류: --url <서버 주소> 가 필요합니다 (예: --url https://viking.duckdns.org). "
               "MYVIKING_URL 환경변수로도 줄 수 있습니다.", file=sys.stderr)
         return 1
-    settings = hook_settings(url, key)
+    settings = hook_settings(url, key, state_dir=state_dir)
 
     repo_dir = Path(args.path or ".").resolve()
     claude_dir = repo_dir / ".claude"

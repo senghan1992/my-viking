@@ -125,7 +125,9 @@ def test_session_start_briefs_previous_work(transport, client, repo_dir, state_d
         state_dir=state_dir,
     )
     ctx = out["hookSpecificOutput"]["additionalContext"]
-    assert "다시 조사하지" in ctx
+    # With accumulated work the closing line says to start from it; with none
+    # yet, it must not (that read as a contradiction to live users).
+    assert "다시 조사하지" in ctx or "아직 기록이 없습니다" in ctx
 
 
 def test_session_start_announces_a_freshly_invented_project(transport, repo_dir, state_dir):

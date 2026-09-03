@@ -254,7 +254,10 @@ def format_context(prepared: dict[str, Any]) -> str:
         lines.append("⚠ 주의 (거스르는 제안 금지): " + ", ".join(w["title"] for w in warnings))
     context = str(prepared.get("context") or "").strip()
     if context:
-        lines.append("아래는 이 프로젝트에서 이미 확인된 내용입니다. 다시 조사하지 마세요.")
+        lines.append(
+            "아래는 이 프로젝트에 축적된 기록입니다. 표시가 없는 항목은 확립된 것이니 다시 조사하지 "
+            "말고 활용하고, 제목에 ⟨…⟩ 표시가 붙은 항목은 확인 후 쓰세요."
+        )
         lines.append(context)
     else:
         lines.append("(아직 축적된 컨텍스트가 없습니다. 작업 후 remember/commit 으로 남기세요.)")

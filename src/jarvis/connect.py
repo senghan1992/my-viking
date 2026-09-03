@@ -69,15 +69,24 @@ def _jv_command() -> str:
     return shutil.which("jv") or "jv"
 
 
-def hook_settings(url: str, key: str = "", timeout: int = 15) -> dict[str, Any]:
-    """The ``hooks`` block for Claude Code's ``.claude/settings.local.json``."""
+def hook_settings(
+    url: str, key: str = "", timeout: int = 15, state_dir: str = ""
+) -> dict[str, Any]:
+    """The ``hooks`` block for Claude Code's ``.claude/settings.local.json``.
+
+    ``state_dir`` is baked into every hook command when given — the install
+    flag used to be accepted and then silently dropped, so the hooks kept
+    state somewhere other than where ``--check`` was told to look."""
     jv = _jv_command()
 
     def command(event: str) -> str:
         env = f"MYVIKING_URL={url.rstrip('/')}"
         if key:
             env += f" MYVIKING_KEY={key}"
-        return f"{env} {jv} hook {event}"
+        cmd = f"{env} {jv} hook {event}"
+        if state_dir:
+            cmd += f" --state-dir {state_dir}"
+        return cmd
 
     return {
         "hooks": {

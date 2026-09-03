@@ -52,6 +52,9 @@ _REVIEW_WEIGHT = {
 # damage than the actual culprit, because in a small corpus the scores sit close
 # together and a *relative* threshold stops separating them.
 _BLAME_FLOOR = 0.9
+# How many pack leaders an *unnamed* negative score may reach. Named blame
+# (``uris=``) is exact and unlimited.
+_BLAME_MAX_UNNAMED = 2
 
 # A memory is flagged "harmful" once the demotion attributed to it (summed over
 # every bad outcome it actually drove) crosses this. One clearly-bad judgement on
@@ -303,6 +306,10 @@ class Jarvis:
                 f"'{category}' 는 이 프로젝트의 카테고리가 아닙니다. "
                 f"사용 가능: {', '.join(profile.category_names())}"
             )
+        if self.config.learn.redact_secrets:
+            # Hand-written memories ride into every later prompt's ⚠ block; a
+            # DSN with a password in it would be re-broadcast on each one.
+            statement, detail = redact(statement), redact(detail)
         cand = MemoryCandidate(
             category=category,
             title=title,
@@ -318,7 +325,21 @@ class Jarvis:
         # a person asserted it, so it does not wait for an outcome.
         if uri is not None and action in ("created", "merged"):
             self._reconcile_correction(project, [str(uri)], immediate=True)
+            # Cached answers on this subject were composed before this was
+            # known. Left in place they are served *ahead* of the memory and
+            # the correction never reaches the agent (seen live: the old
+            # command kept coming back from the cache after a fix).
+            self._evict_cache_about(project, f"{title} {statement}")
         return uri  # type: ignore[return-value]
+
+    def _evict_cache_about(self, project: str, text: str) -> int:
+        thr = self.config.learn.rework_similarity
+        dropped = 0
+        for row in self.sessions.cache_list(project, limit=500):
+            q = str(row.get("question") or "")
+            if q and topic_overlap(q, text) >= thr:
+                dropped += self.sessions.cache_forget(project, q)
+        return dropped
 
     @_locked
     def forget(self, uri: str, archive: bool = True) -> bool:
@@ -529,18 +550,31 @@ class Jarvis:
             return t["established"] if t else m["confidence"] >= 0.6
 
         def top(pred, n=limit):
-            return [
-                {
-                    "uri": m["uri"],
-                    "title": m["title"],
-                    "category": m["category"],
-                    "abstract": m["abstract"],
-                    "confidence": m["confidence"],
-                    "trust": m.get("trust"),
-                }
-                for m in mems
-                if pred(m)
-            ][:n]
+            # One row per (category, title). ``mems`` is ordered by confidence,
+            # so the strongest account of a repeated lesson is the one shown —
+            # a briefing that lists "테스트" twice says less, not more.
+            out: list[dict[str, Any]] = []
+            seen: set[tuple[str, str]] = set()
+            for m in mems:
+                if not pred(m):
+                    continue
+                key = (m["category"], re.sub(r"[\s\W_]+", "", (m["title"] or "").lower()))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(
+                    {
+                        "uri": m["uri"],
+                        "title": m["title"],
+                        "category": m["category"],
+                        "abstract": m["abstract"],
+                        "confidence": m["confidence"],
+                        "trust": m.get("trust"),
+                    }
+                )
+                if len(out) >= n:
+                    break
+            return out
 
         established = [
             m
@@ -579,9 +613,7 @@ class Jarvis:
             ][:limit],
             "open_threads": self.tracer.unresolved_threads(project, limit=5),
             "recent_work": self.recent_work(project, limit=4),
-            "recently_learned": self.recently_learned(
-                project, days=14, limit=limit, established_only=True
-            ),
+            "recently_learned": self._settled_recent(project, limit),
             "recent_sessions": self.recent_sessions(project, limit=5),
             "prompts": [
                 {"name": p["name"], "description": p["description"], "uses": p["uses"]}
@@ -665,6 +697,29 @@ class Jarvis:
                     ],
                 }
             )
+        return out
+
+    def _settled_recent(self, project: str, limit: int) -> list[dict[str, Any]]:
+        """"최근에 정해진 것" for the briefing: recent, and not in dispute.
+
+        Each item carries its trust so the hook can tag it. Items that are
+        contested, superseded or below the tentative line are left out — a
+        0.55 guess showed up here untagged in a live run and read as decided.
+        """
+        out = []
+        for m in self.recently_learned(
+            project, days=14, limit=limit * 3, established_only=True
+        ):
+            node = self.store.read_node(Uri.parse(m["uri"]))
+            if node is None:
+                continue
+            t = self.trust(node)
+            if t["status"] in ("contested", "superseded", "tentative"):
+                continue
+            m["trust"] = t
+            out.append(m)
+            if len(out) >= limit:
+                break
         return out
 
     def recently_learned(
@@ -1051,6 +1106,10 @@ class Jarvis:
         cross_project: bool = True,
     ) -> Prepared:
         """Assemble the best context available for ``question``, and trace it."""
+        if not (question or "").strip():
+            # An empty question still opened a trace and left a ghost thread
+            # ("agent: '', questions: ['']") in every later briefing.
+            raise ValueError("question 이 비어 있습니다")
         self.store.ensure_project(project)
         if self.config.learn.redact_secrets:
             # The question is stored on the trace and may be cached with its
@@ -1183,6 +1242,12 @@ class Jarvis:
         )
         warnings = self._warnings(project, packed)
         trust_notes = self._trust_notes(packed)
+        if trust_notes and packed.text:
+            # The tag goes on the item, not in a footnote. Agents read the
+            # heading and the line under it; a list of titles at the end that
+            # says "these five are unsettled" arrives after the items have
+            # already been consumed, and cannot tell six "테스트" apart.
+            packed.text = _tag_headings(packed.text, trust_notes)
         cross = (
             self._cross_project(project, retrieval_query) if cross_project else []
         )
@@ -1278,7 +1343,7 @@ class Jarvis:
         ]
 
     def _trust_notes(
-        self, packed: PackedContext, limit: int = 5
+        self, packed: PackedContext, limit: int = 50
     ) -> list[dict[str, Any]]:
         """Which packed memories are not settled fact, so the injection can flag
         them. This runs on the per-prompt hot path, so it reads the node (cheap)
@@ -1652,6 +1717,22 @@ class Jarvis:
             top = max((float(i["score"]) for i in used), default=0.0)
             base = self._score_delta(value) * max(0.0, float(strength))
             negative = base < 0
+            # Without real embeddings every packed item scores about the same,
+            # so the relative floor alone lets an unnamed bad score reach the
+            # whole pack — a live run flagged a correct memory as harmful for
+            # sitting next to the wrong one. Unnamed blame reaches at most the
+            # two items that led the pack.
+            leaders: set[str] = set()
+            if negative and not named:
+                ranked = sorted(
+                    (
+                        i
+                        for i in used
+                        if Uri.parse(i["uri"]).kind_dir == "memories"
+                    ),
+                    key=lambda i: -float(i["score"]),
+                )
+                leaders = {i["uri"] for i in ranked[:_BLAME_MAX_UNNAMED]}
             for item in used:
                 uri = Uri.parse(item["uri"])
                 # Only memories move: sessions and resources are records, and
@@ -1665,7 +1746,7 @@ class Jarvis:
                     weight = 1.0
                 else:
                     weight = (float(item["score"]) / top) if top > 0 else 1.0
-                    if negative and weight < _BLAME_FLOOR:
+                    if negative and (weight < _BLAME_FLOOR or item["uri"] not in leaders):
                         continue
                 delta = base * weight
                 if abs(delta) < 0.005:
@@ -1858,6 +1939,11 @@ class Jarvis:
         if not blamed:
             return []
         thr = self.config.learn.correction_similarity
+        # The catch-all category holds raw exchanges ("Q → A"), not lessons. A
+        # case filed from an unrelated commit must never read as the fix for a
+        # blamed belief — it did in a live run ("마찰 테스트 질문" challenged a
+        # correct test memory on the strength of one shared word).
+        fallback = self.store.profile(project).fallback_category()
         corrected: list[dict[str, Any]] = []
         for nu in new_uris:
             if nu in blamed:
@@ -1865,6 +1951,10 @@ class Jarvis:
             new = self.store.read_node(Uri.parse(nu))
             if new is None or new.extra.get("superseded_by"):
                 continue
+            if fallback and new.category == fallback:
+                continue
+            if len(_topic_grams(f"{new.title} {new.abstract}")) < 3:
+                continue  # too little text to say what it is about
             changed = False
             for bu in blamed:
                 if bu == nu:
@@ -1873,6 +1963,8 @@ class Jarvis:
                 if old is None or old.extra.get("superseded_by"):
                     continue
                 if old.category != new.category:
+                    continue
+                if len(_topic_grams(f"{old.title} {old.abstract}")) < 3:
                     continue
                 sim = topic_overlap(
                     f"{old.title} {old.abstract}", f"{new.title} {new.abstract}"
@@ -2266,6 +2358,19 @@ def _topic_grams(text: str) -> set[str]:
         else:
             out.add(word)
     return {g for g in out if g not in _TOPIC_STOPWORDS}
+
+
+def _tag_headings(text: str, notes: list[dict[str, Any]]) -> str:
+    """Append ``⟨label⟩`` to the ``### title`` heading of each unsettled item."""
+    for n in notes:
+        title = str(n.get("title") or "")
+        label = str(n.get("label") or n.get("status") or "")
+        if not title or not label:
+            continue
+        head = f"### {title}\n"
+        if head in text:
+            text = text.replace(head, f"### {title} ⟨{label}⟩\n", 1)
+    return text
 
 
 def topic_overlap(a: str, b: str) -> float:

@@ -59,6 +59,13 @@ class BudgetConfig:
     cache_hit_threshold: float = 0.92
     # Similarity at/above which a past session is offered as a reference.
     reference_threshold: float = 0.45
+    # A pack is about one question. Five agents using the store live all
+    # reported the same thing: every prompt carried the whole project's memory
+    # ("README 오타 수정" got nine unrelated items). So the pack keeps at most
+    # this many items and drops anything scoring far below the best match.
+    # Warning-category items with a lexical hit are always kept. 0 disables.
+    max_items: int = 8
+    min_relative_score: float = 0.45
     # Ceiling on candidates scored per query. Directory-first retrieval keeps
     # L0 reads proportional to depth, but a single flat category can still hold
     # thousands of files — and then every query pays for all of them. Beyond

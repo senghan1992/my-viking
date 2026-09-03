@@ -259,7 +259,8 @@ def user_prompt_submit(
         },
     ) or {}
     state["trace_id"] = str(prepared.get("trace_id") or "")
-    state["question"] = prompt
+    # The state file sits on disk in plain text; keep the masked form there.
+    state["question"] = redact(prompt)
     _save_state(state_dir, sid, state)
     text = _context_note(project, prepared)
     if not text:
@@ -292,7 +293,7 @@ def stop(
         return None
     # Attach to the trace the prompt hook opened — but only if it was opened
     # for *this* question, or the generation lands on someone else's retrieval.
-    trace_id = state.get("trace_id", "") if state.get("question") == question else ""
+    trace_id = state.get("trace_id", "") if state.get("question") == redact(question) else ""
     transport.request(
         "POST",
         "/commit",
@@ -714,7 +715,13 @@ def _orientation(project: str, brief: dict[str, Any], tail: str = "") -> str:
         for t in threads[:3]:
             lines.append(f"- {_clip(t.get('question'), 110)}")
 
-    work = brief.get("recent_work") or []
+    # A sitting with no actor and no questions (a probe, an aborted start)
+    # rendered as "- 2026-09-03 (?): " — nothing to orient anyone with.
+    work = [
+        w
+        for w in (brief.get("recent_work") or [])
+        if (w.get("work") and any((x.get("question") or "").strip() for x in w["work"]))
+    ]
     if work:
         lines.append("■ 최근 작업")
         for w in work[:3]:
@@ -761,14 +768,21 @@ def _orientation(project: str, brief: dict[str, Any], tail: str = "") -> str:
             lines.append(f"- {_clip(m.get('title'), 60)} ({', '.join(m.get('reasons') or [])})")
 
     if len(lines) == 1:
-        lines.append("아직 기록이 없습니다. 지금부터의 작업이 축적됩니다.")
+        # Nothing accumulated yet: say so, and do not follow it with "do not
+        # re-investigate" — there is nothing here to start from.
+        lines.append(
+            "아직 기록이 없습니다. 지금부터의 작업이 자동으로 축적됩니다. 확정된 규칙·명령은 "
+            "jarvis_remember(MCP) 또는 `jv remote remember <카테고리> <제목> <내용>` 으로 남길 수 있습니다."
+        )
+        return "\n".join(lines)
     lines.append(
         tail
         or "위 내용은 지금까지 이 프로젝트에서 축적·검증된 것이니 다시 조사하지 말고 여기서 시작하세요. "
-        "다만 이건 고정된 정답이 아니라 계속 갱신되는 기록입니다 — ⟨확인 필요⟩·⟨오래됨⟩ 표시가 붙은 "
-        "항목은 사실로 단정하지 말고 쓰기 전에 확인하세요. 표시가 없으면 확립된 것으로 봐도 됩니다. "
-        "작업 기록은 자동으로 수집됩니다. 틀렸던 내용을 바로잡을 땐 같은 제목으로 jarvis_remember 하면 "
-        "이전 것을 자동으로 대체하고(이력은 보관), 확실히 틀렸으면 jarvis_score 로 알려 주세요."
+        "다만 이건 고정된 정답이 아니라 계속 갱신되는 기록입니다 — ⟨확인 필요⟩·⟨오래됨⟩·⟨미확정⟩·⟨검증 전⟩ "
+        "표시가 붙은 항목은 사실로 단정하지 말고 쓰기 전에 확인하세요. 표시가 없으면 확립된 것으로 봐도 됩니다. "
+        "작업 기록은 자동으로 수집됩니다. 틀렸던 내용을 바로잡을 땐 같은 제목으로 jarvis_remember(MCP) 또는 "
+        "`jv remote remember` 하면 이전 것을 대체하고(이력은 보관), 확실히 틀렸으면 jarvis_score 또는 "
+        "`jv remote score <trace_id> 0` 으로 알려 주세요."
     )
     return "\n".join(lines)
 
@@ -778,8 +792,9 @@ def _context_note(project: str, prepared: dict[str, Any]) -> str:
     context, always carrying the trace_id so the agent can report back."""
     trace_id = str(prepared.get("trace_id") or "")
     tail = (
-        f"(이 작업의 trace_id={trace_id} — 사용자가 만족/불만을 표현하면 jarvis_score 로 보고, "
-        "새로 확정된 것은 jarvis_remember 로 기록)"
+        f"(이 작업의 trace_id={trace_id} — 사용자가 만족/불만을 표현하면 jarvis_score 또는 "
+        f"`jv remote score {trace_id} <0..1>` 로 보고, 새로 확정된 것은 jarvis_remember 또는 "
+        "`jv remote remember` 로 기록)"
         if trace_id
         else ""
     )
@@ -803,20 +818,24 @@ def _context_note(project: str, prepared: dict[str, Any]) -> str:
     notes = prepared.get("trust_notes") or []
     verify = ""
     if notes:
+        # The items themselves carry ⟨label⟩ on their heading; this line only
+        # says what the marks mean. No cap — a partial list reads as "the rest
+        # are fine".
         verify = (
-            "※ 다음 항목은 아직 확정이 아니니 사실로 단정하지 말고 쓰기 전에 확인하세요 — "
-            + " / ".join(f"{_clip(n.get('title'), 34)}({n.get('label')})" for n in notes[:5])
+            f"※ 제목에 ⟨…⟩ 표시가 붙은 {len(notes)}개 항목은 아직 확정이 아니니 사실로 단정하지 말고 "
+            "쓰기 전에 확인하세요."
         )
     return "\n".join(
         x
         for x in [
-            f"[MyViking · {project}] 이 질문과 관련 있을 만한, 이 프로젝트에 이미"
-            " 축적·검증된 기록입니다. 관련된 부분은 다시 조사하지 말고 활용하되, 질문과"
-            " 무관하면 무시하세요. ⚠ 주의 항목을 거스르는 제안은 하지 마세요.",
+            f"[MyViking · {project}] 이 질문과 관련 있을 만한, 이 프로젝트에 축적된 기록입니다."
+            " 표시가 없는 항목은 확립된 것이니 다시 조사하지 말고 활용하고, ⟨…⟩ 표시가 붙은 항목은"
+            " 확인 후 쓰세요. 질문과 무관하면 무시하세요. ⚠ 주의 항목을 거스르는 제안은 하지 마세요.",
             context,
             verify,
-            "상세가 필요하면 jarvis_browse(op=read) 로 URI 를 읽으세요. 틀렸던 내용을 바로잡을 땐"
-            " 같은 제목으로 jarvis_remember 하면 이전 것을 자동 대체합니다. " + tail,
+            "상세가 필요하면 jarvis_browse(op=read) 또는 `jv remote ctx \"<질문>\" --max-tier 2` 로 읽으세요."
+            " 틀렸던 내용을 바로잡을 땐 같은 제목으로 jarvis_remember 또는 `jv remote remember` 하면"
+            " 이전 것을 대체합니다. " + tail,
         ]
         if x
     )

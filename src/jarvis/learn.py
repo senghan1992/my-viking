@@ -29,13 +29,24 @@ from .profiles import MemoryCategory, MemoryProfile
 from .sessions import SessionLog
 from .store import Store
 from .tiers import summarize
-from .tokens import truncate_to_tokens
+from .tokens import estimate_tokens, truncate_to_tokens
 
 # Phrases that mark a durable instruction rather than a one-off request.
 _PREF_MARKERS = (
-    "항상", "반드시", "절대", "하지 마", "하지마", "말고", "대신",
-    "앞으로", "기본으로", "규칙", "선호", "원칙", "매번",
-    "always", "never", "prefer", "must", "don't", "do not", "from now on",
+    "항상", "반드시", "절대", "앞으로", "기본으로", "규칙", "선호", "원칙", "매번",
+    "always", "never", "prefer", "must", "from now on",
+)
+# A bare prohibition is usually about *this* step, not a standing rule: "아직
+# 커밋하지 마, 리뷰 먼저 볼게" was promoted to a convention and then rode into
+# every later prompt. These count only next to a generality marker above.
+_WEAK_PREF_MARKERS = ("하지 마", "하지마", "말고", "대신", "don't", "do not")
+# Exchanges with nothing to keep: greetings, acknowledgements, sign-offs. Ten
+# such prompts became ten "cases" in a live run and drowned the four useful ones.
+_CHATTER = (
+    "고마워", "고맙", "감사", "좋아", "좋다", "ok", "okay", "오케이", "응", "네", "넵",
+    "알겠", "다음", "여기까지", "오늘은", "오늘", "수고", "잘했", "굿", "그렇게", "해",
+    "하자", "진행", "계속", "그래", "됐어", "됐다", "thanks", "thank", "you", "great",
+    "nice", "cool", "done", "bye", "yes", "yep", "sure", "go", "ahead", "next",
 )
 _NEG_MARKERS = ("아니", "안 ", "않", "말고", "하지", "없", "not ", "never", "no ")
 _WORD_RE = re.compile(r"[0-9A-Za-z]+|[가-힣]+|[぀-ヿ㐀-䶿一-鿿]+")
@@ -237,9 +248,16 @@ class Learner:
         pref_cat = _first_present(
             names, ("preferences", "conventions", "voice", "thresholds")
         )
+        # Nothing durable comes out of "고마워" / "ok 다음" / "오늘은 여기까지",
+        # nor out of an answer that is only "완료했습니다". Skip the session.
+        if _is_chatter(question, answer):
+            return out
+
         if pref_cat:
             for sent in _sentences(question):
                 low = sent.lower()
+                # Weak prohibitions ("하지 마", "말고") alone are not rules —
+                # see _WEAK_PREF_MARKERS. They ride along only with a strong one.
                 if any(m in low for m in _PREF_MARKERS) and len(sent) > 6:
                     out.append(
                         MemoryCandidate(
@@ -309,8 +327,12 @@ class Learner:
                     category=case_cat,
                     title=_title_from(question.strip() or session.title)
                     or session.uri.name,
-                    statement=truncate_to_tokens(
-                        f"{question.strip()} → {_lead(answer)}", 120
+                    # Question first, then the answer's opening sentence(s). Both
+                    # sides cut at sentence/clause boundaries so the L0 line a
+                    # future prompt sees carries the conclusion, not a stub.
+                    statement=(
+                        f"{clip_sentences(question.strip(), 70)} → "
+                        f"{_lead(answer, limit=140)}"
                     ),
                     detail=truncate_to_tokens(session.body, 900),
                     confidence=0.4,
@@ -336,6 +358,21 @@ class Learner:
         cat = profile.category(cand.category) or MemoryCategory(name=cand.category)
         target = self._find_similar(project, cand, cat)
 
+        exact = Uri(project, ("memories", cand.category, slugify(cand.title, "memory")))
+        # Replacement is what "the same title" means — a look-alike found by
+        # similarity is a merge, not a restatement, and must not be overwritten.
+        if target is not None and target == exact and cat.cumulative and cand.source == "manual":
+            node = self.store.read_node(target)
+            # Under the "flag" policy a contradiction is for a person to settle,
+            # so a clashing restatement still goes through the flagging path.
+            flag_it = (
+                self.store.config.learn.conflict_policy == "flag"
+                and node is not None
+                and _clash_kind(node.abstract, cand.statement) != ""
+            )
+            if node is not None and not flag_it:
+                return self._replace_by_hand(node, cand), "merged", False
+
         if target is not None and cat.cumulative:
             node = self.store.read_node(target)
             if node is not None:
@@ -349,7 +386,13 @@ class Learner:
                 node.body = _append_detail(
                     node.body, cand, conflict, superseded=supersede_here
                 )
-                node.confidence = min(1.0, node.confidence + 0.12)
+                if cand.source == "manual":
+                    # A person restating the rule is not "another observation":
+                    # it must not push the value above what they asserted. (Seen
+                    # live: a re-remember at 0.8 came out at 0.92.)
+                    node.confidence = max(node.confidence, cand.confidence)
+                else:
+                    node.confidence = min(1.0, node.confidence + 0.12)
                 # Once an LLM reading lands in the file, it is no longer a purely
                 # rule-derived guess — record the stronger provenance.
                 if cand.extractor == "llm" and node.extra.get("extractor") != "llm":
@@ -396,7 +439,7 @@ class Learner:
                 # Summarising the accumulated body instead produces a digest of
                 # dated log lines, which is not a headline.
                 if not conflict:
-                    node.abstract = truncate_to_tokens(cand.statement, 100)
+                    node.abstract = clip_tokens_at_sentence(cand.statement, 100)
 
                 if not supersede_here:
                     # L1 summarises the accumulated record: that is its job.
@@ -415,8 +458,15 @@ class Learner:
                 return self._retitle(node, cand.title or cand.statement), "merged", conflict
 
         uri = Uri(project, ("memories", cand.category, slugify(cand.title, "memory")))
+        predecessor: Uri | None = None
         if self.store.read_node(uri) is not None and not cat.cumulative:
-            # Non-cumulative categories keep one file per observation.
+            # Non-cumulative categories keep one file per observation — but the
+            # same title is the same observation made again (titles come from
+            # the question), and the newer account is the one to keep live. The
+            # older one is archived pointing at its replacement, which is also
+            # what the injected text promises ("같은 제목이면 이전 것을 대체").
+            # Without this a repeated question left six "테스트" cases live.
+            predecessor = uri
             uri = Uri(
                 project,
                 (
@@ -443,7 +493,7 @@ class Learner:
             kind=KIND_MEMORY,
             title=cand.title,
             category=cand.category,
-            abstract=truncate_to_tokens(cand.statement, 100),
+            abstract=clip_tokens_at_sentence(cand.statement, 100),
             overview=truncate_to_tokens(
                 cand.statement + (("\n\n" + cand.detail) if cand.detail else ""), 2000
             ),
@@ -480,6 +530,8 @@ class Learner:
             else:
                 node.extra["reviewed"] = False
         self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
+        if predecessor is not None:
+            self._mark_superseded(predecessor, uri, cand.statement)
         if clash is not None:
             other_uri, kind, other_statement = clash
             if supersede:
@@ -491,6 +543,59 @@ class Learner:
                 )
             return uri, "created", True
         return uri, "created", False
+
+    def _replace_by_hand(self, node: Node, cand: MemoryCandidate) -> Uri:
+        """A person re-stating a memory under the same title *replaces* it.
+
+        The injected text promises exactly this ("같은 제목이면 이전 것을 대체").
+        Appending instead — what the merge path does for distilled lessons —
+        left the headline and L1/L2 body saying the old, wrong thing, and kept
+        the old contradictions so the *correction* surfaced in the review
+        queue as harmful. The previous statement stays in the body as history.
+        """
+        previous = node.abstract or ""
+        stamp = now_iso()
+        history = ""
+        if previous and previous.strip() != cand.statement.strip():
+            history = (
+                f"\n\n## 대체된 이전 내용 (더 이상 유효하지 않음)\n"
+                f"- {stamp}: {previous}"
+            )
+            prior = node.extra.get("superseded_statements", [])
+            node.extra["superseded_statements"] = [*prior, previous][-10:]
+        node.abstract = clip_tokens_at_sentence(cand.statement, 100)
+        node.overview = truncate_to_tokens(
+            cand.statement + (("\n\n" + cand.detail) if cand.detail else ""), 2000
+        )
+        node.body = (
+            f"{cand.statement}\n\n{cand.detail}".strip() if cand.detail else cand.statement
+        ) + history
+        node.confidence = max(cand.confidence, 0.0)
+        node.sources = _add_source(node.sources, cand.source)
+        node.tags = sorted(set(node.tags) | set(cand.tags))
+        extra = node.extra
+        # The verdicts below were about the old statement, not this one.
+        for k in ("challenge_streak", "contradictions", "confirmations"):
+            extra.pop(k, None)
+        for k in ("challenged_by", "challenged_at", "conflict", "last_confirmed"):
+            extra.pop(k, None)
+        extra["evidence"] = [
+            {
+                "at": stamp,
+                "kind": "replaced",
+                "delta": 0.0,
+                "confidence": round(node.confidence, 3),
+                "source": "manual",
+                "trace": "",
+                "why": "같은 제목으로 다시 기록되어 이전 내용을 대체했습니다",
+            }
+        ]
+        extra["origin"] = "manual"
+        extra["reviewed"] = True
+        extra["reviewed_at"] = stamp
+        extra["extractor"] = ""
+        self.store.write_node(node, regenerate_tiers=False, reinforce_dirs=False)
+        return node.uri
 
     def _find_clash(
         self, project: str, cand: MemoryCandidate
@@ -740,11 +845,87 @@ def _sentences(text: str) -> list[str]:
     return [p.strip() for p in parts if p and len(p.strip()) > 3]
 
 
+def _is_chatter(question: str, answer: str) -> bool:
+    """True when the exchange carries nothing worth a memory."""
+    q = " ".join((question or "").split())
+    a = " ".join((answer or "").split())
+    q_words = _WORD_RE.findall(q.lower())
+    if not q_words:
+        return True
+
+    def chat_word(w: str) -> bool:
+        # Exact word or a Korean particle/ending on one ("고마워요", "좋아요").
+        return any(w == c or (len(c) >= 2 and w.startswith(c)) for c in _CHATTER)
+
+    # Every word is an acknowledgement word: "고마워", "ok 다음", "좋아 그렇게 해".
+    if len(q_words) <= 4 and all(chat_word(w) for w in q_words):
+        return True
+    # A one-word prompt answered with a pleasantry ("응" → "네, 알겠습니다.").
+    a_low = a.lower()
+    if len(q_words) <= 1 and len(a) < 20 and any(
+        a_low.startswith(c) for c in ("완료", "네", "알겠", "수고", "천만", "감사", "ok", "좋")
+    ):
+        return True
+    return False
+
+
+_SENTENCE_END = re.compile(r"(?<=[.!?。])\s+")
+_CLAUSE_BREAKS = (", ", " — ", " - ", " (", "; ", " · ")
+
+
 def _lead(text: str, limit: int = 200) -> str:
+    """The opening of an answer, cut at a sentence — never mid-thought.
+
+    A hard character cut produced abstracts like "위험한 점이 세 가지 있어서
+    그대로 쓰기 전에" — the warning's conclusion was exactly the part lost.
+    Whole sentences are taken while they fit; an over-long first sentence is
+    cut at its last clause break and marked with an ellipsis.
+    """
+    para = ""
     for line in (text or "").splitlines():
         if line.strip() and not line.strip().startswith("#"):
-            return line.strip()[:limit]
-    return (text or "").strip()[:limit]
+            para = line.strip()
+            break
+    if not para:
+        para = (text or "").strip()
+    return clip_sentences(para, limit)
+
+
+def clip_sentences(text: str, limit: int) -> str:
+    """Longest run of leading whole sentences within ``limit`` characters."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    out = ""
+    for sent in (s for s in _SENTENCE_END.split(text) if s):
+        if not out:
+            if len(sent) <= limit:
+                out = sent
+                continue
+            head = sent[:limit]
+            cut = max((head.rfind(b) for b in _CLAUSE_BREAKS), default=-1)
+            return (head[:cut] if cut > limit // 3 else head[: limit - 1]).rstrip() + "…"
+        if len(out) + 1 + len(sent) > limit:
+            break
+        out = f"{out} {sent}"
+    return out
+
+
+def clip_tokens_at_sentence(text: str, tokens: int) -> str:
+    """``truncate_to_tokens`` that backs off to the last full sentence."""
+    text = " ".join((text or "").split())
+    if estimate_tokens(text) <= tokens:
+        return text
+    sents = [s for s in _SENTENCE_END.split(text) if s]
+    out = ""
+    for sent in sents:
+        trial = f"{out} {sent}".strip()
+        if estimate_tokens(trial) > tokens:
+            break
+        out = trial
+    if out:
+        return out
+    return truncate_to_tokens(text, tokens).rstrip() + "…"
 
 
 def _code_blocks(text: str) -> list[str]:
@@ -908,11 +1089,36 @@ def _shares_topic(a: str, b: str) -> bool:
     "절대 강제 푸시하지 않는다" differ in polarity while contradicting nothing,
     and scanning a whole category with that rule floods review with noise.
     """
-    wa, wb = set(_words(a)), set(_words(b))
+    # Frame words carry no topic. Without dropping them "테스트는 pytest 로
+    # 돌린다" and "린트는 ruff 로 돌린다" shared {로, 돌린다}, read as the same
+    # topic with a swapped term, and the newer rule *superseded* the older one —
+    # two unrelated conventions could not coexist in a category (seen live).
+    wa = {w for w in _words(a) if w not in _FRAME_WORDS}
+    wb = {w for w in _words(b) if w not in _FRAME_WORDS}
     if not wa or not wb:
         return False
     shared = len(wa & wb)
-    return shared >= 2 and shared >= 0.4 * min(len(wa), len(wb))
+    smallest = min(len(wa), len(wb))
+    if smallest <= 2:
+        # "테스트는 pytest" vs "테스트는 unittest": one shared content word is
+        # the whole subject. But "명령 0" vs "명령 1" is an enumeration, not a
+        # dispute — when everything that differs is a number, leave it alone.
+        differing = wa ^ wb
+        if differing and all(d.isdigit() and len(d) <= 2 for d in differing):
+            return False  # "포트는 8080" vs "9090" still counts: values, not indices
+        return shared >= 1 and shared >= 0.5 * smallest
+    return shared >= 2 and shared >= 0.4 * smallest
+
+
+_FRAME_WORDS = {
+    # particles and light verbs that give a sentence its shape, not its subject
+    "로", "으로", "를", "을", "은", "는", "이", "가", "에", "에서", "와", "과", "도", "만",
+    "의", "및", "또는", "그리고", "쓴다", "쓴다.", "쓰다", "쓴", "한다", "하다", "합니다",
+    "돌린다", "돌리다", "실행한다", "사용한다", "사용", "이용한다", "않는다", "않다",
+    "있다", "없다", "된다", "된", "것", "수", "때", "항상", "앞으로", "반드시", "절대",
+    "the", "a", "an", "is", "are", "be", "use", "uses", "using", "run", "runs", "with",
+    "for", "to", "of", "in", "on", "and", "or", "always", "never", "must", "should",
+}
 
 
 def _clash_kind(existing: str, incoming: str) -> str:

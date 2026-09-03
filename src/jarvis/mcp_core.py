@@ -142,6 +142,11 @@ def _tools() -> list[dict[str, Any]]:
                     "tokens_in": {"type": "integer", "default": 0},
                     "tokens_out": {"type": "integer", "default": 0},
                     "agent": {"type": "string"},
+                    "files": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "이 작업에서 고친 파일 경로. 다음 세션 브리핑의 '파일:' 줄이 됩니다",
+                    },
                 },
                 "required": ["project", "question", "answer"],
             },
@@ -307,14 +312,21 @@ class Handler:
             template=str(args.get("template") or "coding"),
         )
         if not resolved["project"]:
+            known = ", ".join(resolved.get("candidates") or []) or "(없음)"
+            if name:
+                raise ValueError(
+                    f"'{name}' 는 등록되지 않은 프로젝트입니다. 등록된 프로젝트: {known}"
+                )
             raise ValueError(
                 "프로젝트를 특정할 수 없습니다. project 를 지정하거나 repo(git remote)를 "
-                f"넘기세요. 등록된 프로젝트: {', '.join(resolved.get('candidates') or []) or '(없음)'}"
+                f"넘기세요. 등록된 프로젝트: {known}"
             )
         self._check_scope(resolved["project"])
         return resolved["project"]
 
     def jarvis_context(self, args: dict[str, Any]) -> Any:
+        if not str(args.get("question") or "").strip():
+            raise ValueError("question 이 비어 있습니다")
         project = self._project(args)
         prepared = self.j.prepare(
             project,
@@ -422,7 +434,9 @@ class Handler:
 
     def jarvis_remember(self, args: dict[str, Any]) -> Any:
         uri = self.j.remember(
-            self._project(args),
+            # A typo in the project name must not mint a project. remember() is
+            # for a project that exists; hooks and context create them.
+            self._project(args, create=False),
             args["category"],
             args["title"],
             args["statement"],
@@ -442,6 +456,7 @@ class Handler:
             trace_id=str(args.get("trace_id") or ""),
             latency_ms=int(args.get("latency_ms", 0)),
             agent=str(args.get("agent") or ""),
+            files=[str(f) for f in (args.get("files") or []) if f],
         )
 
     def jarvis_browse(self, args: dict[str, Any]) -> Any:
@@ -453,6 +468,8 @@ class Handler:
             self._guard_uri(args["uri"])
             return self.j.tree(args["uri"], depth=int(args.get("depth", 3)))
         if op == "find":
+            if not args.get("project"):
+                raise ValueError("find 에는 project 가 필요합니다")
             self._check_scope(str(args.get("project") or ""))
             return self.j.find(
                 args.get("query", ""), args["project"], limit=int(args.get("limit", 15))

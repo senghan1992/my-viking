@@ -18,7 +18,7 @@ from urllib.parse import unquote
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import __version__
 from .auth import KeyStore
@@ -152,8 +152,29 @@ class ResolveBody(BaseModel):
 
 
 class KeyBody(BaseModel):
+    """A key's scope must never widen by accident.
+
+    Found in a team-usage review: ``{"name": "eve", "project": "shop-api"}`` —
+    the singular field a person naturally writes — was silently ignored and an
+    all-projects admin key came back. Unknown fields are now rejected, and the
+    singular spelling is accepted as the one-project scope it obviously means.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     name: str
-    projects: list[str] = Field(default_factory=lambda: ["*"])
+    projects: list[str] | None = None
+    project: str | None = None
+
+    @model_validator(mode="after")
+    def _scope(self) -> "KeyBody":
+        if self.project and self.projects:
+            raise ValueError("project 와 projects 중 하나만 지정하세요")
+        if self.project:
+            self.projects = [self.project]
+        if not self.projects:
+            self.projects = ["*"]
+        return self
 
 
 class ConnectionBody(BaseModel):
@@ -724,6 +745,21 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
         return {"uri": str(node.uri)}
 
     # ----- the loop ---------------------------------------------------
+    def _actor(agent: str, request: Request) -> str:
+        """Name the actor by the key that signed the request, not the host.
+
+        Hooks report ``claude-code@<hostname>``. Two people on one machine —
+        or one machine used by two keys — then merge into one actor, and the
+        briefing shows a teammate's work as yours (seen live). The key's name
+        is the identity the operator actually handed out, so it replaces the
+        host part when a key is present.
+        """
+        info = getattr(request.state, "key", None)
+        if info is None or not agent:
+            return agent
+        base = agent.split("@", 1)[0] or agent
+        return f"{base}@{info.name}"
+
     @app.post("/prepare")
     def prepare(body: PrepareBody, request: Request) -> dict[str, Any]:
         resolved = _resolve_guarded(request, body)
@@ -743,11 +779,13 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
                 include_global=body.include_global,
                 max_tier=body.max_tier,
                 kinds=body.kinds,
-                agent=body.agent,
+                agent=_actor(body.agent, request),
                 session_id=body.session_id,
             )
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         return prepared.to_dict()
 
     @app.post("/commit")
@@ -766,7 +804,7 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
             distill=body.distill,
             trace_id=body.trace_id,
             latency_ms=body.latency_ms,
-            agent=body.agent,
+            agent=_actor(body.agent, request),
             files=body.files,
         )
 

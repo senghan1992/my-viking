@@ -355,6 +355,61 @@ def test_a_complaint_evicts_the_cached_answer_implicitly(jarvis):
 
 
 # --------------------------------------------------------------------------
+# 7b) 실사용 시뮬레이션(셸 브리지 Bob)에서 잡힌 것들
+# --------------------------------------------------------------------------
+def test_remember_evicts_cached_answers_on_the_same_subject(jarvis):
+    """오답을 remember 로 바로잡아도 같은 질문의 답 캐시가 먼저 나가면 교정이
+    에이전트에게 닿지 않는다."""
+    jarvis.init_project("app", template="coding")
+    q = "테스트 어떻게 돌려?"
+    p = jarvis.prepare("app", q, session_id="s1", agent="a", max_tier=0)
+    jarvis.commit("app", q, "PIPELINE_TZ=Asia/Seoul pytest", trace_id=p.trace_id, agent="a")
+    assert any(c["question"] == q for c in jarvis.cache_list("app"))
+    jarvis.remember("app", "commands", "테스트 실행", "PIPELINE_TZ=UTC python -m pytest -q")
+    assert not any(c["question"] == q for c in jarvis.cache_list("app"))
+    # 무관한 주제의 캐시는 남는다
+    q2 = "배포 어떻게 해?"
+    p2 = jarvis.prepare("app", q2, session_id="s1", agent="a", max_tier=0)
+    jarvis.commit("app", q2, "make deploy", trace_id=p2.trace_id, agent="a")
+    jarvis.remember("app", "conventions", "커밋 메시지", "conventional commits 를 쓴다")
+    assert any(c["question"] == q2 for c in jarvis.cache_list("app"))
+
+
+def test_a_raw_case_from_an_unrelated_commit_never_challenges_a_belief(jarvis):
+    """cases(폴백) 카테고리는 원문 교환이지 교훈이 아니다. 무관한 commit 이 남긴
+    case 가 단어 하나를 공유한다고 blame 된 지식에 교정 후보를 걸면 안 된다."""
+    jarvis.init_project("app", template="coding")
+    jarvis.config.learn.merge_threshold = 0.99
+    # 제목이 다른 case 로 둔다 — 같은 제목의 새 case 는 이제 옛것을 대체(보관)한다.
+    old = jarvis.remember("app", "cases", "테스트 명령 정리", "테스트 어떻게 돌려? → pytest -q 로 돌린다")
+    tid = _turn(jarvis, "테스트 어떻게 돌려?", answer="pytest -q")
+    jarvis.score(tid, value=0.0, uris=[str(old)])
+    res = jarvis.commit("app", "마찰 테스트 질문", "마찰 테스트 답", agent="a")
+    assert not res.get("corrected")
+    assert not jarvis.store.read_node(old).extra.get("challenged_by")
+
+
+def test_unnamed_blame_reaches_only_the_pack_leaders(jarvis):
+    """대상 없는 score 0 이 팩 5개 전체에 균등 배분되어, 틀린 것 옆에 있던 옳은
+    지식이 harmful 로 찍혔다. 이름 없는 blame 은 상위 두 항목까지만."""
+    jarvis.init_project("app", template="coding")
+    jarvis.config.learn.merge_threshold = 0.99
+    uris = [
+        jarvis.remember("app", "commands", f"테스트 명령 {i}", f"테스트는 도구{i} 로 돌린다")
+        for i in range(5)
+    ]
+    p = jarvis.prepare("app", "테스트 어떻게 돌려?", session_id="s1", agent="a", max_tier=0)
+    packed = [i.uri for i in p.packed.items if "/memories/" in i.uri]
+    if len(packed) < 3:
+        return  # 검색이 셋 미만을 골랐으면 이 테스트가 볼 것이 없다
+    jarvis.commit("app", "테스트 어떻게 돌려?", "도구0", trace_id=p.trace_id, agent="a")
+    res = jarvis.score(p.trace_id, value=0.0, comment="틀렸다")
+    assert 1 <= len(res["memories_adjusted"]) <= 2
+    untouched = [u for u in uris if str(u) in packed and str(u) not in res["memories_adjusted"]]
+    assert all(not jarvis.store.read_node(u).extra.get("evidence") for u in untouched)
+
+
+# --------------------------------------------------------------------------
 # 8) 규칙 기반 증류의 재시도는 제목이 깨끗하고, 검증 전으로 남는다
 # --------------------------------------------------------------------------
 def test_a_retry_after_a_complaint_is_filed_as_unverified(jarvis):
