@@ -682,8 +682,10 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
 
     # ----- memory -----------------------------------------------------
     @app.get("/projects/{project}/memories")
-    def list_memories(project: str, category: str = "", limit: int = 100) -> list[dict[str, Any]]:
-        return jarvis.memories(project, category, limit)
+    def list_memories(
+        project: str, category: str = "", limit: int = 100, trust: bool = False
+    ) -> list[dict[str, Any]]:
+        return jarvis.memories(project, category, limit, with_trust=trust)
 
     @app.post("/memories")
     def add_memory(body: MemoryBody, request: Request) -> dict[str, Any]:

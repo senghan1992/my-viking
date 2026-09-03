@@ -106,6 +106,27 @@ class LearnConfig:
     # coming back rather than a new subject. Calibrated on measured pairs:
     # repeats landed 0.50-1.00, every change of subject 0.00.
     rework_similarity: float = 0.25
+    # --- the answer key evolves ---------------------------------------------
+    # Knowledge is a hypothesis until outcomes confirm it, and it can go stale.
+    # These knobs decide when a once-"established" fact is retracted back into
+    # "verify before you rely on this", and when a newly learned lesson is
+    # treated as a *correction* that supersedes the belief it just disproved.
+    #
+    # Confidence at/above which a memory reads as a settled fact rather than a
+    # tentative note the agent should double-check.
+    solid_confidence: float = 0.6
+    # Attributed contradictions in a row (since the last confirmation) that flip
+    # an established belief to "contested" — it leaves the injected answer key
+    # until a good outcome re-confirms it. This is the self-correcting core:
+    # repeated bad outcomes *retract* a fact, they do not merely nudge a number.
+    contested_after: int = 2
+    # Days without any use or confirmation after which a memory is shown as
+    # "오래됨" so the agent re-verifies it. Zero disables staleness.
+    stale_days: int = 90
+    # Topic-overlap at/above which a freshly learned memory that contradicts a
+    # recently-blamed one is taken to *correct* it (supersede), not sit beside
+    # it as a rival fact. Same scale as rework_similarity.
+    correction_similarity: float = 0.35
 
 
 @dataclass

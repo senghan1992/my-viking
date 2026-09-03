@@ -335,6 +335,22 @@ const reasonChip = (r) => {
   return `<span class="chip ${cls}">${esc(label)}</span>`;
 };
 
+// The trust lifecycle — whether a memory is still treated as fact. This is the
+// self-evolving answer key made visible: outcomes push a belief between states.
+const TRUST = {
+  established: ["확립",      "ok",   "지금까지의 결과가 뒷받침합니다. 사실로 취급됩니다."],
+  fresh:       ["검증 전",   "",     "방금 기록됐고 아직 결과로 검증되지 않았습니다."],
+  tentative:   ["미확정",    "warn", "신뢰도가 사실 기준선 아래입니다. 쓰기 전에 확인하세요."],
+  stale:       ["오래됨",    "warn", "오랫동안 쓰이거나 확인된 적이 없습니다. 재확인이 필요합니다."],
+  contested:   ["확인 필요", "bad",  "최근 작업 결과가 이 내용과 어긋났습니다. 정답지에서 잠시 내려왔습니다."],
+  superseded:  ["대체됨",    "",     "더 최신 기록으로 갱신됐습니다. 이전 내용은 보관돼 있습니다."],
+};
+const trustChip = (t) => {
+  if (!t) return "";
+  const [label, cls] = TRUST[t.status] || [t.status, ""];
+  return `<span class="chip ${cls}" title="${esc(t.label || (TRUST[t.status] || [,,""])[2])}">${esc(label)}</span>`;
+};
+
 function table(el, cols, rows, onClick, emptyHtml) {
   if (!rows.length) {
     el.innerHTML = `<tbody><tr><td class="empty">${emptyHtml || "아직 기록이 없습니다"}</td></tr></tbody>`;
@@ -564,7 +580,7 @@ async function loadKnowledge() {
   }
   const [profile, mems, review, brief] = await Promise.all([
     api(`/projects/${encodeURIComponent(project)}/profile`),
-    api(`/projects/${encodeURIComponent(project)}/memories?limit=500`),
+    api(`/projects/${encodeURIComponent(project)}/memories?limit=500&trust=true`),
     api(`/projects/${encodeURIComponent(project)}/review`),
     api(`/projects/${encodeURIComponent(project)}/brief`),
   ]);
@@ -586,6 +602,7 @@ async function loadKnowledge() {
   table($("mems"),
     [{ label: "카테고리", get: (r) => `<span class="chip">${warn.has(r.category) ? "⚠ " : ""}${esc(r.category)}</span>` },
      { label: "지식", get: (r) => `<b>${esc(r.title)}</b><div style="color:var(--muted)">${esc((r.abstract || "").slice(0, 120))}</div>`, cls: "wrap" },
+     { label: "상태", get: (r) => trustChip(r.trust) },
      { label: "신뢰", get: (r) => r.confidence.toFixed(2) },
      { label: "사용", get: (r) => r.hits },
      { label: "수정", get: (r) => esc((r.updated || "").slice(0, 10)), cls: "mono" }],
@@ -637,15 +654,42 @@ async function openMemory(uri) {
           : "아직 정해지지 않았습니다."}
         ${d.conflict.other ? `<a onclick="openMemory('${esc(d.conflict.other)}')" class="mono" style="cursor:pointer;text-decoration:underline">상대 열기</a>` : ""}
       </div>` : "";
+    const t = d.trust || {};
+    const EV = { confirmed: ["✓", "ok", "결과가 뒷받침"], contradicted: ["✕", "bad", "결과가 어긋남"], correction: ["↺", "warn", "이 내용으로 대체"] };
+    const evLine = (e) => {
+      const [mark, cls] = EV[e.kind] || ["·", "", ""];
+      const note = e.kind === "correction"
+        ? `이전 기록을 대체 (유사도 ${e.similarity})`
+        : esc(e.why || (e.kind === "confirmed" ? "좋은 결과" : "나쁜 결과"));
+      return `<div class="why" style="align-items:baseline"><b class="${cls}">${mark}</b>
+        <span style="color:var(--muted)">${esc(when(e.at))}</span> ${note}</div>`;
+    };
+    const evidence = (d.evidence || []).length ? `
+      <div style="margin:6px 0 10px">
+        <label style="font-size:11.5px;color:var(--muted)">이 지식이 겪은 결과 (최근순)</label>
+        ${[...(d.evidence || [])].reverse().map(evLine).join("")}
+      </div>` : "";
+    const supLink = d.superseded_by
+      ? `<div style="color:var(--muted);font-size:12.5px;margin:-2px 0 8px">이 내용은 대체되었습니다 →
+          <a onclick="openMemory('${esc(d.superseded_by)}')" class="mono" style="cursor:pointer;text-decoration:underline">최신 열기</a></div>`
+      : "";
+    const corrLink = (d.corrects || []).length
+      ? `<div style="color:var(--muted);font-size:12.5px;margin:-2px 0 8px">이 내용이 바로잡은 이전 기록:
+          ${d.corrects.map((u) => `<a onclick="openMemory('${esc(u)}')" class="mono" style="cursor:pointer;text-decoration:underline">${esc(short(u))}</a>`).join(" ")}</div>`
+      : "";
     $("mem-body").innerHTML = `
-      ${why}${clash}
+      ${why}${clash}${supLink}${corrLink}
       <div class="row" style="margin:8px 0">
+        ${trustChip(t)}
         <span class="chip">${d.origin === "manual" ? "직접 작성" : "에이전트가 기록"}</span>
         <span class="chip">사용 ${d.hits}회</span>
         <span class="chip">작업 ${d.impact.uses}건에 포함</span>
+        ${t.confirmations ? `<span class="chip ok">확인 ${t.confirmations}회</span>` : ""}
+        ${t.contradictions ? `<span class="chip bad">반박 ${t.contradictions}회</span>` : ""}
         ${d.impact.avg_score == null ? "" : `<span class="chip ${scoreClass(d.impact.avg_score)}">평균 점수 ${d.impact.avg_score}</span>`}
         <span class="chip">L0 ${d.tokens.l0} / L2 ${d.tokens.l2} 토큰</span>
       </div>
+      ${evidence}
       <div class="split">
         <div class="fld"><label>제목 (파일명이 됩니다)</label><input id="f-title" value="${esc(d.title)}"></div>
         <div class="fld"><label>카테고리</label><select id="f-cat">${

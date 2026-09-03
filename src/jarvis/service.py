@@ -86,6 +86,10 @@ class Prepared:
     warnings: list[dict[str, Any]] = field(default_factory=list)
     # Relevant knowledge from *other* projects, always labelled as such.
     from_other_projects: list[dict[str, Any]] = field(default_factory=list)
+    # Packed items that are *not* settled fact (contested/stale/tentative/fresh),
+    # so the injection can tell the agent which lines to verify before relying on
+    # them instead of presenting everything as confirmed.
+    trust_notes: list[dict[str, Any]] = field(default_factory=list)
     trace_id: str = ""
     session_id: str = ""
     latency_ms: int = 0
@@ -118,6 +122,7 @@ class Prepared:
             "references": self.references,
             "warnings": self.warnings,
             "from_other_projects": self.from_other_projects,
+            "trust_notes": self.trust_notes,
             "trace_id": self.trace_id,
             "session_id": self.session_id,
             "latency_ms": self.latency_ms,
@@ -301,7 +306,11 @@ class Jarvis:
             tags=tags or ["수동"],
             source="manual",
         )
-        uri, _action, _conflict = self.learner.absorb(project, cand, profile)
+        uri, action, _conflict = self.learner.absorb(project, cand, profile)
+        # A hand-written memory is a strong signal. If it corrects a belief a
+        # recent bad outcome blamed, let it supersede the old one too.
+        if uri is not None and action in ("created", "merged"):
+            self._reconcile_correction(project, [str(uri)])
         return uri  # type: ignore[return-value]
 
     @_locked
@@ -310,8 +319,85 @@ class Jarvis:
             return self.store.archive_node(uri, reason="manual") is not None
         return self.store.delete_node(uri)
 
+    # ------------------------------------------------------------------
+    # trust — is this still a fact, or a hypothesis due for a recheck?
+    # ------------------------------------------------------------------
+    def trust(
+        self, node: Node, impact: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """How far this memory has earned the right to be treated as fact.
+
+        Injected knowledge is only safe if the agent can tell what is settled
+        from what is provisional. A belief that keeps riding in bad outcomes, or
+        that nothing has confirmed in months, should be *offered* for checking
+        rather than *asserted* — so the agent verifies it instead of building on
+        it. Re-confirmation heals it: a good outcome resets the challenge streak
+        and the item earns its way back into the answer key. The store's answer
+        key thus updates itself in both directions, which is the whole point.
+
+        Status, worst first: ``superseded`` (replaced by a later correction),
+        ``contested`` (recent outcomes turned against it), ``tentative`` (never
+        rose above the fact line), ``stale`` (nothing has touched it in a long
+        time), ``fresh`` (just written, not yet tested), ``established``.
+        """
+        cfg = self.config.learn
+        extra = node.extra
+        contradictions = int(extra.get("contradictions", 0))
+        confirmations = int(extra.get("confirmations", 0))
+        streak = int(extra.get("challenge_streak", 0))
+        last_confirmed = str(extra.get("last_confirmed", "") or "")
+        conflict = extra.get("conflict") or {}
+        superseded_by = str(extra.get("superseded_by", "") or "")
+        corrects = list(extra.get("corrects", []))
+        harm = (impact or {}).get("harm")
+        age = _days_since(
+            max(node.updated or "", node.last_used or "", last_confirmed)
+        )
+
+        def out(status: str, label: str) -> dict[str, Any]:
+            return {
+                "status": status,
+                "label": label,
+                "established": status == "established",
+                "confidence": round(node.confidence, 3),
+                "contradictions": contradictions,
+                "confirmations": confirmations,
+                "streak": streak,
+                "last_confirmed": last_confirmed,
+                "age_days": round(age, 1),
+                "corrects": corrects,
+                "superseded_by": superseded_by,
+            }
+
+        if superseded_by:
+            return out("superseded", "대체됨 · 최신 기록으로 갱신됨")
+        if conflict and conflict.get("resolution") != "superseded":
+            return out("contested", "확인 필요 · 다른 기록과 충돌")
+        if streak >= cfg.contested_after:
+            return out("contested", f"확인 필요 · 최근 {streak}회 어긋남")
+        if harm is not None and harm <= _HARM_THRESHOLD:
+            return out("contested", "확인 필요 · 최근 나쁜 결과에 관여")
+        if node.confidence < 0.5:
+            return out("tentative", f"미확정 · 신뢰 {node.confidence:.2f}")
+        if cfg.stale_days and age > cfg.stale_days and not extra.get("reviewed"):
+            return out("stale", f"오래됨 · {age:.0f}일간 확인·사용 없음")
+        if node.confidence < cfg.solid_confidence:
+            return out("tentative", f"미확정 · 신뢰 {node.confidence:.2f}")
+        if (
+            extra.get("origin", "distilled") != "manual"
+            and _days_since(node.created or "") <= 7
+            and confirmations == 0
+            and node.hits < 3
+        ):
+            return out("fresh", "최근 기록 · 아직 검증 안 됨")
+        return out("established", "확립")
+
     def memories(
-        self, project: str, category: str = "", limit: int = 100
+        self,
+        project: str,
+        category: str = "",
+        limit: int = 100,
+        with_trust: bool = False,
     ) -> list[dict[str, Any]]:
         params: list[Any] = [project, KIND_MEMORY]
         sql = (
@@ -324,7 +410,7 @@ class Jarvis:
         sql += " ORDER BY confidence DESC, updated DESC LIMIT ?"
         params.append(limit)
         rows = self.store.db.query(sql, params)
-        return [
+        out = [
             {
                 "uri": r["uri"],
                 "title": r["title"],
@@ -338,6 +424,17 @@ class Jarvis:
             for r in rows
             if Uri.parse(r["uri"]).parts[:1] != ("_archive",)
         ]
+        if with_trust:
+            # One node read + one impact query per row. Only callers that render
+            # trust (the dashboard, the briefing) ask for it, so the plain list
+            # stays a single query.
+            for m in out:
+                node = self.store.read_node(Uri.parse(m["uri"]))
+                if node is not None:
+                    m["trust"] = self.trust(
+                        node, self.tracer.scores_for_uri(m["uri"])
+                    )
+        return out
 
     # ------------------------------------------------------------------
     # you — preferences that follow you into every project
@@ -391,15 +488,27 @@ class Jarvis:
         """
         profile = self.store.profile(project)
         warn_cats = profile.warn_categories()
-        mems = self.memories(project, limit=500)
+        mems = self.memories(project, limit=500, with_trust=True)
         review = self.review_queue(project, limit=200)
 
-        # Anything with an open contradiction is not established knowledge, no
-        # matter how confident it looks. Listing both sides of a disagreement
-        # under "확립된 지식" is worse than not listing them at all.
+        # Anything with an open contradiction — or that recent outcomes have
+        # turned against — is not established knowledge, no matter how confident
+        # its number still looks. Listing both sides of a disagreement, or a
+        # belief the last few tasks disproved, under "확립된 지식" is worse than
+        # not listing it at all. This is where a retracted fact leaves the
+        # injected answer key.
         disputed = {
             it["uri"] for it in review if {"conflict", "harmful"} & set(it["reasons"])
         }
+        disputed |= {
+            m["uri"]
+            for m in mems
+            if m.get("trust", {}).get("status") in ("contested", "superseded")
+        }
+
+        def _est(m: dict[str, Any]) -> bool:
+            t = m.get("trust")
+            return t["established"] if t else m["confidence"] >= 0.6
 
         def top(pred, n=limit):
             return [
@@ -409,6 +518,7 @@ class Jarvis:
                     "category": m["category"],
                     "abstract": m["abstract"],
                     "confidence": m["confidence"],
+                    "trust": m.get("trust"),
                 }
                 for m in mems
                 if pred(m)
@@ -419,7 +529,7 @@ class Jarvis:
             for m in mems
             if m["uri"] not in disputed
             and m["category"] not in warn_cats
-            and m["confidence"] >= 0.6
+            and _est(m)
         ]
         return {
             "project": project,
@@ -434,9 +544,12 @@ class Jarvis:
             "know": top(
                 lambda m: m["uri"] not in disputed
                 and m["category"] not in warn_cats
-                and m["confidence"] >= 0.6
+                and _est(m)
             ),
-            "warnings": top(lambda m: m["category"] in warn_cats and m["uri"] not in disputed),
+            "warnings": top(
+                lambda m: m["category"] in warn_cats
+                and m.get("trust", {}).get("status") != "superseded"
+            ),
             "unresolved": [
                 {
                     "uri": it["uri"],
@@ -870,6 +983,10 @@ class Jarvis:
             },
             "impact": impact,
             "reasons": self._review_reasons(node, impact),
+            "trust": self.trust(node, impact),
+            "evidence": list(node.extra.get("evidence", []))[-10:],
+            "corrects": list(node.extra.get("corrects", [])),
+            "superseded_by": node.extra.get("superseded_by", ""),
             "path": str(self.store.path_for(u)),
         }
 
@@ -1043,6 +1160,7 @@ class Jarvis:
             self.catch_up(project, exclude_session=sitting) if first_call else None
         )
         warnings = self._warnings(project, packed)
+        trust_notes = self._trust_notes(packed)
         cross = (
             self._cross_project(project, retrieval_query) if cross_project else []
         )
@@ -1112,6 +1230,7 @@ class Jarvis:
             references=refs,
             warnings=warnings,
             from_other_projects=cross,
+            trust_notes=trust_notes,
             trace_id=trace_id,
             session_id=sitting,
             latency_ms=latency,
@@ -1135,6 +1254,35 @@ class Jarvis:
             for item in packed.items
             if item.kind == KIND_MEMORY and item.category in warn_cats
         ]
+
+    def _trust_notes(
+        self, packed: PackedContext, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Which packed memories are not settled fact, so the injection can flag
+        them. This runs on the per-prompt hot path, so it reads the node (cheap)
+        but skips the scores lookup — contested-by-conflict/streak still shows;
+        only harm-based contested is deferred to the slower review views."""
+        out: list[dict[str, Any]] = []
+        for item in packed.items:
+            if item.kind != KIND_MEMORY:
+                continue
+            node = self.store.read_node(Uri.parse(item.uri))
+            if node is None:
+                continue
+            t = self.trust(node)
+            if t["established"] or t["status"] == "superseded":
+                continue
+            out.append(
+                {
+                    "uri": item.uri,
+                    "title": item.title,
+                    "status": t["status"],
+                    "label": t["label"],
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
 
     def _cross_project(
         self, project: str, query: str, limit: int = 3, threshold: float = 0.5
@@ -1280,6 +1428,13 @@ class Jarvis:
                     metadata={"created": report.created, "merged": report.merged},
                 )
             result["distill"] = report.to_dict()
+            # If any of what we just learned corrects a belief that a recent bad
+            # outcome blamed, let it supersede the old one — the answer key
+            # upgrades itself instead of keeping both the wrong and the right.
+            new_uris = [str(u) for u in (report.created + report.merged)]
+            corrected = self._reconcile_correction(project, new_uris)
+            if corrected:
+                result["corrected"] = corrected
         if agent:
             self.tracer.touch_agent(agent, project=project)
         return result
@@ -1434,6 +1589,7 @@ class Jarvis:
                 if node is None:
                     continue
                 node.confidence = max(0.0, min(1.0, node.confidence + delta))
+                self._note_outcome(node, delta, trace_id, comment, source)
                 self.store.write_node(
                     node, regenerate_tiers=False, reinforce_dirs=False
                 )
@@ -1463,6 +1619,43 @@ class Jarvis:
         }
 
     @staticmethod
+    def _note_outcome(
+        node: Node, delta: float, trace_id: str, why: str, source: str
+    ) -> None:
+        """Write the running evidence trail that makes a belief self-correcting.
+
+        A confidence number tells you *where* a memory is; it does not tell you
+        *why*, or whether it just got there by drifting down one bad task at a
+        time. So each outcome that touches a memory leaves a dated line, a
+        contradiction bumps a streak, and a confirmation clears it. ``trust()``
+        reads these to decide when an established fact should step back to
+        "verify me". Kept to the last 20 lines — enough to see the trend.
+        """
+        extra = node.extra
+        if delta < 0:
+            extra["contradictions"] = int(extra.get("contradictions", 0)) + 1
+            extra["challenge_streak"] = int(extra.get("challenge_streak", 0)) + 1
+            kind = "contradicted"
+        else:
+            extra["confirmations"] = int(extra.get("confirmations", 0)) + 1
+            extra["challenge_streak"] = 0
+            extra["last_confirmed"] = now_iso()
+            kind = "confirmed"
+        trail = extra.setdefault("evidence", [])
+        trail.append(
+            {
+                "at": now_iso(),
+                "kind": kind,
+                "delta": round(delta, 4),
+                "confidence": round(node.confidence, 3),
+                "source": source,
+                "trace": trace_id,
+                "why": (why or "")[:160],
+            }
+        )
+        del trail[:-20]
+
+    @staticmethod
     def _score_delta(value: float) -> float:
         """Map a 0..1 score onto a confidence nudge centred on neutral (0.5).
 
@@ -1471,6 +1664,95 @@ class Jarvis:
         """
         centred = float(value) - 0.5
         return centred * (0.24 if centred >= 0 else 0.44)
+
+    # ==================================================================
+    # the answer key upgrades itself — a correction supersedes what it fixed
+    # ==================================================================
+    def _recent_blamed(self, project: str, hours: int = 4) -> list[str]:
+        """Memories an attributed bad outcome demoted in the last few hours.
+
+        These are the beliefs most likely to be *wrong*, not merely stale: the
+        implicit-feedback loop pinned the blame on them when the user said the
+        last answer missed. When a corrected lesson is learned right after, it
+        is almost certainly the fix for one of these.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        rows = self.store.db.query(
+            "SELECT DISTINCT c.uri FROM context_used c"
+            " JOIN traces t ON t.id = c.trace_id"
+            " WHERE t.scope=? AND c.applied < 0 AND t.started >= ?",
+            (project, since),
+        )
+        out: list[str] = []
+        for r in rows:
+            u = Uri.parse(r["uri"])
+            if u.kind_dir == "memories" and u.parts[:1] != ("_archive",):
+                out.append(r["uri"])
+        return out
+
+    def _reconcile_correction(
+        self, project: str, new_uris: list[str]
+    ) -> list[dict[str, Any]]:
+        """When a freshly learned lesson disproves a recently-blamed belief,
+        let the new one *supersede* the old rather than sit beside it.
+
+        This is the upgrade the user asked for: what was taken as the answer,
+        then shown wrong by later prompts, is replaced by the corrected version
+        — automatically, reversibly (the old node is archived with a pointer),
+        and with the correction recorded so the history is legible.
+        """
+        blamed = self._recent_blamed(project)
+        if not blamed:
+            return []
+        thr = self.config.learn.correction_similarity
+        corrected: list[dict[str, Any]] = []
+        for nu in new_uris:
+            if nu in blamed:
+                continue
+            new = self.store.read_node(Uri.parse(nu))
+            if new is None or new.extra.get("superseded_by"):
+                continue
+            changed = False
+            for bu in blamed:
+                if bu == nu:
+                    continue
+                old = self.store.read_node(Uri.parse(bu))
+                if old is None or old.extra.get("superseded_by"):
+                    continue
+                if old.category != new.category:
+                    continue
+                sim = topic_overlap(
+                    f"{old.title} {old.abstract}", f"{new.title} {new.abstract}"
+                )
+                if sim < thr:
+                    continue
+                self.learner._mark_superseded(
+                    Uri.parse(bu), Uri.parse(nu), new.abstract
+                )
+                corrects = new.extra.setdefault("corrects", [])
+                if bu not in corrects:
+                    corrects.append(bu)
+                new.extra.setdefault("evidence", []).append(
+                    {
+                        "at": now_iso(),
+                        "kind": "correction",
+                        "replaced": bu,
+                        "similarity": round(sim, 3),
+                    }
+                )
+                # A correction that just fixed a real failure is not a guess.
+                new.confidence = max(new.confidence, 0.7)
+                changed = True
+                corrected.append(
+                    {"new": nu, "replaced": bu, "similarity": round(sim, 3)}
+                )
+            if changed:
+                self.store.write_node(
+                    new, regenerate_tiers=False, reinforce_dirs=False
+                )
+        return corrected
 
     # ==================================================================
     # observability reads
@@ -1866,3 +2148,16 @@ def _minutes_between(a: str, b: str) -> float:
     if ta is None or tb is None:
         return 0.0
     return max(0.0, (tb - ta).total_seconds() / 60.0)
+
+
+def _days_since(iso: str) -> float:
+    """Days between an ISO timestamp and now; 0 if unparseable or in the future."""
+    from datetime import datetime, timezone
+
+    try:
+        ts = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return 0.0
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0)

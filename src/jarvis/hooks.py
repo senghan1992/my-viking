@@ -684,6 +684,20 @@ def _basename(path: str) -> str:
     return str(path).replace("\\", "/").rsplit("/", 1)[-1] or str(path)
 
 
+# How a memory's trust status is tagged inline, so the agent weights it instead
+# of taking every injected line as confirmed fact. Established items get no tag.
+_TRUST_TAGS = {
+    "contested": " ⟨확인 필요⟩",
+    "stale": " ⟨오래됨⟩",
+    "tentative": " ⟨미확정⟩",
+    "fresh": " ⟨검증 전⟩",
+}
+
+
+def _trust_tag(m: dict[str, Any]) -> str:
+    return _TRUST_TAGS.get((m.get("trust") or {}).get("status", ""), "")
+
+
 def _orientation(project: str, brief: dict[str, Any], tail: str = "") -> str:
     """The session-start read: recent work first, because "what was I doing"
     is the question a returning session actually has. ``tail`` swaps the
@@ -714,7 +728,10 @@ def _orientation(project: str, brief: dict[str, Any], tail: str = "") -> str:
     if learned:
         lines.append("■ 최근에 정해진 것")
         for m in learned[:4]:
-            lines.append(f"- [{m.get('category')}] {_clip(m.get('title'), 40)}: {_clip(m.get('abstract'), 90)}")
+            lines.append(
+                f"- [{m.get('category')}] {_clip(m.get('title'), 40)}:"
+                f" {_clip(m.get('abstract'), 90)}{_trust_tag(m)}"
+            )
 
     # The durable, high-confidence knowledge — the point of coming back oriented.
     # Skip anything already shown under "최근에 정해진 것" so it is not repeated.
@@ -722,7 +739,10 @@ def _orientation(project: str, brief: dict[str, Any], tail: str = "") -> str:
     if know:
         lines.append("■ 확립된 지식")
         for m in know[:4]:
-            lines.append(f"- [{m.get('category')}] {_clip(m.get('title'), 40)}: {_clip(m.get('abstract'), 90)}")
+            lines.append(
+                f"- [{m.get('category')}] {_clip(m.get('title'), 40)}:"
+                f" {_clip(m.get('abstract'), 90)}{_trust_tag(m)}"
+            )
 
     warnings = brief.get("warnings") or []
     if warnings:
@@ -740,8 +760,11 @@ def _orientation(project: str, brief: dict[str, Any], tail: str = "") -> str:
         lines.append("아직 기록이 없습니다. 지금부터의 작업이 축적됩니다.")
     lines.append(
         tail
-        or "위 내용은 이미 확인된 사실이니 다시 조사하지 말고 여기서 시작하세요. "
-        "작업 기록은 자동으로 수집됩니다. 새로 확정된 규칙·명령·함정은 jarvis_remember 로 남기세요."
+        or "위 내용은 지금까지 이 프로젝트에서 축적·검증된 것이니 다시 조사하지 말고 여기서 시작하세요. "
+        "다만 이건 고정된 정답이 아니라 계속 갱신되는 기록입니다 — ⟨확인 필요⟩·⟨오래됨⟩ 표시가 붙은 "
+        "항목은 사실로 단정하지 말고 쓰기 전에 확인하세요. 표시가 없으면 확립된 것으로 봐도 됩니다. "
+        "작업 기록은 자동으로 수집됩니다. 틀렸던 내용을 바로잡을 땐 같은 제목으로 jarvis_remember 하면 "
+        "이전 것을 자동으로 대체하고(이력은 보관), 확실히 틀렸으면 jarvis_score 로 알려 주세요."
     )
     return "\n".join(lines)
 
@@ -773,14 +796,23 @@ def _context_note(project: str, prepared: dict[str, Any]) -> str:
     context = str(prepared.get("context") or "").strip()
     if not context:
         return ""
+    notes = prepared.get("trust_notes") or []
+    verify = ""
+    if notes:
+        verify = (
+            "※ 다음 항목은 아직 확정이 아니니 사실로 단정하지 말고 쓰기 전에 확인하세요 — "
+            + " / ".join(f"{_clip(n.get('title'), 34)}({n.get('label')})" for n in notes[:5])
+        )
     return "\n".join(
         x
         for x in [
             f"[MyViking · {project}] 이 질문과 관련 있을 만한, 이 프로젝트에 이미"
-            " 축적된 지식입니다. 관련된 부분은 다시 조사하지 말고 활용하되, 질문과"
+            " 축적·검증된 기록입니다. 관련된 부분은 다시 조사하지 말고 활용하되, 질문과"
             " 무관하면 무시하세요. ⚠ 주의 항목을 거스르는 제안은 하지 마세요.",
             context,
-            "상세가 필요하면 jarvis_browse(op=read) 로 URI 를 읽으세요. " + tail,
+            verify,
+            "상세가 필요하면 jarvis_browse(op=read) 로 URI 를 읽으세요. 틀렸던 내용을 바로잡을 땐"
+            " 같은 제목으로 jarvis_remember 하면 이전 것을 자동 대체합니다. " + tail,
         ]
         if x
     )

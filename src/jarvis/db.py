@@ -173,17 +173,30 @@ class Database:
         self.conn.close()
 
     # ----- generic helpers ---------------------------------------------
+    # One sqlite connection is shared across FastAPI's request threadpool
+    # (check_same_thread=False). A connection is *not* safe for two threads to
+    # drive at once: overlapping a cursor here with any other statement raises
+    # "bad parameter or other API misuse". Concurrent reads alone are enough to
+    # trigger it — the dashboard fires several at once. So every touch of the
+    # connection goes through the reentrant lock. It is the same RLock the
+    # service-layer @_locked mutators hold, so a mutator that calls query()
+    # re-enters rather than deadlocks, and read-only callers serialise cheaply
+    # (statements finish in microseconds on a personal server).
     def execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
-        return self.conn.execute(sql, tuple(params))
+        with self.lock:
+            return self.conn.execute(sql, tuple(params))
 
     def query(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
-        return list(self.conn.execute(sql, tuple(params)).fetchall())
+        with self.lock:
+            return list(self.conn.execute(sql, tuple(params)).fetchall())
 
     def one(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Row | None:
-        return self.conn.execute(sql, tuple(params)).fetchone()
+        with self.lock:
+            return self.conn.execute(sql, tuple(params)).fetchone()
 
     def commit(self) -> None:
-        self.conn.commit()
+        with self.lock:
+            self.conn.commit()
 
     # ----- meta (small operational key/values) -------------------------
     def set_meta(self, key: str, value: str) -> None:
