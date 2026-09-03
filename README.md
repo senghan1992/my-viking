@@ -21,7 +21,8 @@
   <a href="#docker-로-띄우기-권장">Docker 배포</a> ·
   <a href="#집-서버를-밖으로-여는-체크리스트-포트포워딩">외부 노출</a> ·
   <a href="#에이전트-붙이기--claude-code-는-훅으로-권장">에이전트 붙이기</a> ·
-  <a href="#보안">보안</a>
+  <a href="#보안">보안</a> ·
+  <a href="ARCHITECTURE.md">구조 한눈에</a>
 </p>
 
 ---
@@ -42,6 +43,9 @@
 [volcengine/OpenViking](https://github.com/volcengine/OpenViking) 의 세 가지
 아이디어에서 출발했습니다: 컨텍스트를 가상 파일시스템으로 다루기(`jarvis://`),
 L0/L1/L2 티어 로딩, 세션에서 장기 메모리 증류.
+
+지금 내부가 어떻게 도는지 그림으로 보려면 [ARCHITECTURE.md](ARCHITECTURE.md) 를 보세요 —
+자동 캡처 루프, 검색·주입 경로, 정답지가 스스로 갱신되는 신뢰 상태 기계까지.
 
 ---
 
