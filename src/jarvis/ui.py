@@ -484,7 +484,7 @@ async function renderConnection() {
         에이전트가 도구 호출을 잊어도 기록이 남습니다.
       </div>
       <div style="font-size:12.5px;margin:0 0 4px"><b>권장:</b> 그 저장소 폴더에서 아래 한 줄 실행
-        <span style="color:var(--muted)">(에이전트 머신에 <span class="mono">pip install my-viking</span> 이 되어 있어야 합니다)</span></div>
+        <span style="color:var(--muted)">(에이전트 머신에 먼저 <span class="mono">${esc(c.install_cmd)}</span>)</span></div>
       ${copyBlock(installCmd)}
       <details style="margin:6px 0"><summary style="cursor:pointer;font-size:12.5px;color:var(--muted)">직접 병합하려면 (JSON)</summary>
         <div style="color:var(--muted);font-size:12px;margin:4px 0">저장소의 <span class="mono">.claude/settings.json</span> 을 열어

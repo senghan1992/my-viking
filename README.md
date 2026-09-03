@@ -1,26 +1,43 @@
-# MyViking
+<p align="center">
+  <img src="docs/img/hero.png" alt="MyViking — 내 코딩 에이전트가 자동으로 채우고 참조하는 나만의 프로젝트 지식 창고" width="100%">
+</p>
 
-**코딩 에이전트를 위한 셀프호스트 컨텍스트 서버.** 한 번 띄워 두면 어느 머신의
-어떤 에이전트든 같은 프로젝트 지식을 공유합니다.
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f6f4f"></a>
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
+  <img alt="Docker one command" src="https://img.shields.io/badge/deploy-docker%20%C2%B7%201%20command-2496ed">
+  <img alt="Self-hosted" src="https://img.shields.io/badge/data-stays%20on%20your%20server-6fbf92">
+  <img alt="Agents" src="https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Cursor%20%C2%B7%20Codex%20%C2%B7%20shell-555">
+</p>
 
-Langfuse 가 LLM 호출을 추적하듯 MyViking 은 **에이전트가 무엇을 알고 시작했는지**를
-추적합니다. 다른 점은 저장한 것을 되돌려 준다는 것입니다 — 규칙·명령·결정·함정을
-쌓아 두고, 다음 요청 때 관련 있는 것만 예산 안에서 골라 넣습니다.
+<p align="center">
+  <b>내 코딩 에이전트가 자동으로 채우고 자동으로 참조하는, 나만의 프로젝트 지식 창고.</b><br>
+  Docker 로 서버 하나를 띄우면 어느 머신의 어떤 에이전트든 같은 창고를 씁니다. 데이터는 전부 내 서버에만 남습니다.
+</p>
 
-```
-             ┌── claude-code @ 노트북 ─┐
-             ├── cursor @ 데스크톱   ─┤   HTTP/MCP    ┌──────────────────┐
-             ├── codex @ CI          ─┼──────────────▶│  MyViking 서버    │
-             └── 직접 만든 에이전트   ─┘                │  (당신의 머신)    │
-                                                     │                  │
-        같은 git remote → 같은 프로젝트 컨텍스트          │ 메모리·프롬프트    │
-        결과 점수 → 메모리 신뢰도 조정                    │ 세션·추적·지표     │
-                                                     └──────────────────┘
-```
+<p align="center">
+  <a href="#빠른-시작--명령-세-개">빠른 시작</a> ·
+  <a href="#화면-둘러보기">화면 둘러보기</a> ·
+  <a href="#docker-로-띄우기-권장">Docker 배포</a> ·
+  <a href="#집-서버를-밖으로-여는-체크리스트-포트포워딩">외부 노출</a> ·
+  <a href="#에이전트-붙이기--claude-code-는-훅으로-권장">에이전트 붙이기</a> ·
+  <a href="#보안">보안</a>
+</p>
 
-목표는 토큰을 줄이는 것이 아니라 **더 빨리 더 나은 답을 얻는 것**입니다. 에이전트가
-매번 저장소를 다시 탐색하고, 이미 정한 규칙을 다시 묻고, 지난주에 밟은 함정을 다시
-밟는 일을 없애는 쪽입니다. 토큰은 그 결과로 줄어들고, 회계는 부수적으로 남깁니다.
+---
+
+보통의 저장 창고와 세 가지가 다릅니다.
+
+- **넣는 쪽이 자동** — 훅이 세션 시작·질문·답변·변경 파일을 알아서 기록합니다.
+  "이거 저장해"라고 말할 필요가 없습니다.
+- **꺼내는 쪽도 자동** — 세션이 시작되면 이전 작업 브리핑을, 질문마다 관련 컨텍스트를
+  에이전트 프롬프트에 먼저 넣어 줍니다. 저장소를 처음부터 다시 훑지 않습니다.
+- **스스로 정리** — 다음 요청이 직전 답변을 채점하고, 그 점수가 쓰인 지식의 신뢰도를
+  올리거나 내립니다. 틀린 것은 가라앉고 맞는 것은 앞으로 나옵니다.
+
+목표는 토큰을 줄이는 것이 아니라 **더 빨리 더 나은 답을 얻는 것**입니다. 매번 저장소를
+다시 탐색하고, 이미 정한 규칙을 다시 묻고, 지난주에 밟은 함정을 다시 밟는 일을 없애는
+쪽입니다. 토큰은 그 결과로 줄어듭니다.
 
 [volcengine/OpenViking](https://github.com/volcengine/OpenViking) 의 세 가지
 아이디어에서 출발했습니다: 컨텍스트를 가상 파일시스템으로 다루기(`jarvis://`),
@@ -28,105 +45,119 @@ L0/L1/L2 티어 로딩, 세션에서 장기 메모리 증류.
 
 ---
 
-## 빠른 시작 — 5분 만에 내 프로젝트에 붙이기
+## 빠른 시작 — 명령 세 개
 
-세 단계입니다: **서버를 띄우고 → 에이전트를 프로젝트에 붙이고 → 평소처럼 일한다.**
-아래는 가장 흔한 경우(Claude Code + 집/회사 서버 한 대)를 그대로 복사해 따라 할 수
-있게 적었습니다. 다른 에이전트·외부 노출·백업은 각 단계에서 자세한 절로 넘어갑니다.
+필요한 것은 서버 머신의 **Docker** 하나입니다. 그 외에는 호스트에 아무것도 설치하지
+않습니다.
 
-### 1. 서버 띄우기 (한 번만, 서버가 될 머신에서)
-
-```bash
-git clone <이 저장소> && cd my-viking
-bash deploy/up.sh                # 로컬 전용 (127.0.0.1:8787)
-# 밖에서도 붙을 거면:  bash deploy/up.sh --public   (API 키를 자동 발급해 줍니다)
-```
-
-`up.sh` 가 빌드·기동·헬스체크까지 하고 끝납니다. 대시보드
-**http://127.0.0.1:8787/** 가 열리면 성공입니다. `--public` 으로 띄웠다면 출력된
-API 키(`jv_...`)를 저장해 두세요 — 다음 단계에서 씁니다. (서버와 에이전트가 같은
-노트북 한 대라면 Docker 없이 [이 방법](#docker-없이)으로 더 가볍게 띄워도 됩니다.)
-
-### 2. 에이전트를 내 프로젝트에 붙이기 (에이전트를 돌리는 머신에서)
-
-**Claude Code 라면 한 줄이면 끝납니다.** 훅이 "세션 시작 → 이전 맥락 주입 / 매
-프롬프트 → 기록 / 턴 종료 → 자동 저장"을 대신 하므로, 에이전트가 도구 호출을
-잊어도 전부 자동입니다.
+### 1. 서버 띄우기 (서버가 될 머신에서, 한 번)
 
 ```bash
-# 아직 PyPI 배포 전이라, 클론한 폴더에서 설치합니다 (얇은 CLI 하나 · 의존성 PyYAML):
-git clone <이 저장소> my-viking && cd my-viking && pip install .
-#   (PyPI 에 올라간 뒤에는 어디서든  pip install my-viking  한 줄)
-
-cd ~/work/my-project                     # 이제 붙일 저장소로 이동해서 (여기서 실행)
-jv agent hooks --install --url http://<서버주소>:8787
-#   밖에 열었다면:  ... --url https://viking.example.com --key jv_...
+git clone https://github.com/senghan1992/my-viking.git && cd my-viking
+bash deploy/up.sh                              # 이 머신에서만 쓸 때 (127.0.0.1:8787)
 ```
 
-이 명령이 저장소의 `.claude/settings.json` 에 훅을 심습니다. **프로젝트는 git
-remote 로 서버가 자동으로 만들고 연결**하므로 따로 등록할 게 없습니다 — 같은
-remote 를 가진 체크아웃은 어느 머신에서든 같은 프로젝트로 붙습니다. (이름을 직접
-정하고 싶으면 서버에서 `jv link -p 이름` 으로 미리 등록해도 됩니다. 선택 사항.)
+밖에서도 붙을 거면 둘 중 하나로 띄우세요. 둘 다 **관리자 API 키를 먼저 발급한 뒤에만**
+바깥에 열고, 키를 한 번 출력합니다(다시 볼 수 없으니 저장).
+
+```bash
+bash deploy/up.sh --domain viking.duckdns.org  # HTTPS (권장) — Caddy 가 인증서를 자동 발급
+bash deploy/up.sh --public                     # 평문 HTTP — 같은 집/사무실 네트워크 안에서만
+```
+
+`--domain` 은 공유기에서 80/443 만 이 머신으로 포워딩하면 됩니다. 도메인이 없으면
+[DuckDNS](https://www.duckdns.org) 같은 무료 DDNS 로 하나 받으세요. 선택한 모드는
+`deploy/.env` 에 남아, 이후 `git pull && bash deploy/up.sh` 가 같은 모드로 업데이트합니다.
+
+끝나면 **대시보드 주소**가 출력됩니다. 열리면 성공입니다.
+
+### 2. 대시보드에서 프로젝트 만들기 (브라우저)
+
+1. 오른쪽 위 칸에 관리자 키를 넣습니다 (로컬 전용이면 필요 없음).
+2. **새 프로젝트** — 이름과 git 주소(선택)를 넣고 만들기.
+3. 카드를 클릭하면 **연결정보**가 나옵니다. 위에서부터 복사하면 됩니다.
+
+<p align="center"><img src="docs/img/dashboard.png" alt="대시보드 첫 화면 — 프로젝트 카드, 새 프로젝트, 저장소 연결" width="92%"></p>
+
+카드를 클릭하면 나오는 연결정보입니다. 복사 버튼 세 번이면 끝납니다.
+
+<p align="center"><img src="docs/img/connect.png" alt="연결정보 — MCP 등록, 자동 캡처 훅, 에이전트 지시문을 복사 버튼으로" width="92%"></p>
+
+다른 사람이나 다른 기기에 줄 설정이면, 연결정보 안의 **"이 프로젝트 전용 키 발급"**
+으로 그 사람 키가 들어간 설정을 만드세요. 나중에 그 키만 폐기할 수 있습니다.
+키 전체는 **연결** 탭에서 봅니다(범위 · 사용 횟수 · 마지막 사용 · 폐기).
+
+### 3. 에이전트 머신에서 자동 기록 켜기 (그 저장소 폴더에서, 한 번)
+
+```bash
+pip install git+https://github.com/senghan1992/my-viking.git   # 얇은 CLI 하나 (의존성 PyYAML)
+cd ~/work/my-project
+jv agent hooks --install --url https://viking.duckdns.org --key jv_...
+```
+
+이 한 줄이 저장소의 `.claude/settings.json` 에 훅을 심습니다. 이제 그 폴더에서
+Claude Code 를 열고 하던 대로 일하면 첫 질문부터 기록이 쌓이고, 다음 세션은 "지난번에
+뭘 했는지" 브리핑을 받고 시작합니다. 프로젝트는 git remote 로 서버가 자동으로 만들고
+연결하므로 따로 등록할 게 없습니다.
+
+```bash
+jv agent hooks --check --url https://viking.duckdns.org --key jv_...   # (선택) 잘 붙었는지
+```
+
+다음 세션의 에이전트가 첫 프롬프트 전에 받는 것입니다. 이미 밟은 함정이 맨 위에 옵니다.
+
+<p align="center"><img src="docs/img/briefing.png" alt="세션 시작 시 자동 주입되는 브리핑 — 주의 항목, 확립된 지식, 최근 작업" width="86%"></p>
 
 > Cursor·Codex 등 **훅이 없는 MCP 클라이언트**나 **MCP 자체가 없는 에이전트**는
-> [에이전트 붙이기](#에이전트-붙이기--claude-code-는-훅으로-권장) 절을 보세요 —
-> `jv agent config` 한 줄, 또는 어떤 에이전트든 되는 셸 브리지로 붙습니다.
-
-### 3. 평소처럼 일하기
-
-그 폴더에서 Claude Code 를 열고 하던 대로 일하면 됩니다. 첫 질문부터 기록이
-쌓이고, 다음에 세션을 새로 켜도 서버가 "지난번에 뭘 했는지"를 브리핑으로 먼저
-넣어 줍니다. 쌓이는 걸 눈으로 보려면 대시보드 **http://<서버주소>:8787/** 를 여세요.
-
-```bash
-jv agent hooks --check --url http://<서버주소>:8787   # (선택) 잘 붙었는지 점검
-```
+> 연결정보 드롭다운에서 그 클라이언트를 고르면 됩니다 — 자세한 건
+> [에이전트 붙이기](#에이전트-붙이기--claude-code-는-훅으로-권장) 절.
 
 ### 그다음 (권장 순서)
 
-1. **백업 연결** — 볼륨을 잃어도 지식은 남습니다.
-   [백업 절](#백업--볼륨이-사라져도-살아남는-사본)
-2. **외부 노출** — 집 서버를 밖에서 쓰려면 TLS 부터.
-   [포트포워딩 체크리스트](#집-서버를-밖으로-여는-체크리스트-포트포워딩)
-3. **품질 올리기** — LLM·임베딩 키를 붙이면 증류·회상이 좋아집니다.
-   [LLM 붙이기](#llm-붙이기-선택)
+1. **백업 연결** — 볼륨을 잃어도 지식은 남습니다. 대시보드 첫 화면의 백업 패널,
+   또는 [백업 절](#백업--볼륨이-사라져도-살아남는-사본).
+2. **품질 올리기** — `deploy/.env` 에 `ANTHROPIC_API_KEY` 를 넣으면 요약·증류가
+   좋아집니다. [LLM 붙이기](#llm-붙이기-선택)
+3. **외부 노출 점검** — [포트포워딩 체크리스트](#집-서버를-밖으로-여는-체크리스트-포트포워딩)
 
 ---
 
 ## Docker 로 띄우기 (권장)
 
-```bash
-git clone <이 저장소> && cd my-viking
-bash deploy/up.sh                # 로컬 전용 (127.0.0.1:8787)
-bash deploy/up.sh --public       # 외부 노출 + API 키 자동 발급
-```
+`deploy/up.sh` 하나가 빌드 → 루프백 기동 → 헬스체크 → (노출 모드면) 키 확인 → 노출까지
+합니다. 다시 실행하면 업데이트이고, 키를 새로 만들지 않습니다.
 
-`up.sh` 가 이미지를 빌드하고 기동한 뒤 헬스체크까지 확인하고, 다음에 실행할
-명령을 알려줍니다. 데이터는 `myviking-data` 볼륨에 남으므로 `docker compose
-down && up` 은 물론 컨테이너를 지워도 살아있습니다. 볼륨이나 호스트 자체를
-잃는 경우는 아래 [백업](#백업--볼륨이-사라져도-살아남는-사본)이 커버합니다.
+| 명령 | 바인딩 | 언제 |
+|---|---|---|
+| `bash deploy/up.sh` | `127.0.0.1:8787` | 서버와 에이전트가 같은 머신 |
+| `bash deploy/up.sh --domain <도메인>` | Caddy 443 → 내부 8787 | 집 서버를 밖에서 쓸 때 (HTTPS) |
+| `bash deploy/up.sh --public` | `0.0.0.0:8787` (평문) | 같은 LAN 안에서만 |
 
 ```
-대시보드   http://127.0.0.1:8787/
-API 문서   http://127.0.0.1:8787/docs
-원격 MCP   http://127.0.0.1:8787/mcp
+대시보드   http://127.0.0.1:8787/     (또는 https://<도메인>/)
+API 문서   .../docs
+원격 MCP   .../mcp
 ```
 
-컨테이너 안에서 명령을 쓰려면:
+운영 명령은 `deploy/` 폴더에서:
 
 ```bash
 cd deploy
-docker compose exec myviking jv key create laptop
-docker compose exec myviking jv review
-docker compose exec myviking jv agent config --client claude-code --url http://내주소:8787
+docker compose logs -f                      # 로그
+docker compose down                         # 중지 (데이터는 볼륨에 남음)
+git pull && bash up.sh                      # 업데이트
+docker compose exec myviking jv key list    # 터미널에서 키 보기 (대시보드 연결 탭과 같음)
+cp .env.example .env                        # LLM 키 등 선택 설정
 ```
+
+데이터는 `myviking-data` 볼륨에 남으므로 `down`/`up` 은 물론 컨테이너를 지워도
+살아있습니다. 볼륨이나 호스트 자체를 잃는 경우는
+[백업](#백업--볼륨이-사라져도-살아남는-사본)이 커버합니다.
 
 이미지는 논루트(`viking`, uid 10001)로 돌고, 컴포즈가 루트 파일시스템을 읽기
 전용으로 잠그며(`/data` 볼륨과 `/tmp` 만 쓰기 가능), 기본 포트 바인딩은
-`127.0.0.1` 입니다. `--public` 은 API 키를 먼저 발급한 뒤에만 외부로 엽니다.
-
-서버 안에서 6시간마다 증류·감쇠가 돌아갑니다(`--maintain-every`, 0 이면 끔).
-별도 스케줄러를 둘 필요가 없습니다.
+`127.0.0.1` 입니다. 서버 안에서 6시간마다 증류·감쇠가 돌아가므로 별도 스케줄러가
+필요 없습니다(`--maintain-every`, 0 이면 끔).
 
 ### Docker 없이
 
@@ -205,21 +236,21 @@ jv backup restore --file /data/pre-restore/myviking-....tar.gz --yes  # 실행 �
 "집에 서버를 두고 회사·카페 어디서든 붙는다"가 이 서비스의 표준 시나리오라서,
 그 순서를 그대로 적어둡니다.
 
-1. **키 먼저, 노출은 나중** — `bash deploy/up.sh --public` 은 API 키를 발급한
-   뒤에만 외부 바인딩으로 엽니다. 키가 생기는 순간 전 API 가 인증을 요구하고,
+1. **키 먼저, 노출은 나중** — `up.sh --domain`/`--public` 은 관리자 API 키를 확인한
+   뒤에만 외부로 엽니다. 키가 생기는 순간 전 API 가 인증을 요구하고,
    틀린 키를 반복하는 IP 는 자동으로 차단됩니다(분당 10회 초과 시 429).
 2. **공유기 포트포워딩** — TLS 를 쓸 거면 80/443 만, 아니면 8787 을 이 머신으로.
 3. **TLS (강력 권장)** — 평문 HTTP 로 열면 API 키와 프로젝트 지식이 그대로
    지나갑니다. 도메인이 없어도 DuckDNS 같은 무료 DDNS 면 됩니다:
    ```bash
-   MYVIKING_DOMAIN=viking.duckdns.org docker compose --profile tls up -d
+   bash deploy/up.sh --domain viking.duckdns.org
    ```
    Caddy 가 인증서를 자동 발급/갱신하고, 에이전트는
    `https://viking.duckdns.org/mcp` 로 붙습니다. 8787 은 포워딩하지 마세요.
-   프록시 뒤에서는 모든 요청이 프록시 IP 로 보이므로, 틀린 키 차단이 진짜
-   클라이언트별로 동작하도록 `MYVIKING_TRUST_PROXY=1` 을 켜세요(그러면
-   `X-Forwarded-For` 의 실제 IP 를 씁니다). 프록시 없이 직접 노출할 땐 켜지
-   마세요 — 헤더를 위조당할 수 있습니다.
+   이 모드는 `MYVIKING_TRUST_PROXY=1` 도 함께 켭니다 — 프록시 뒤에서는 모든 요청이
+   프록시 IP 로 보이므로, 틀린 키 차단이 실제 클라이언트별로 동작하려면 `X-Forwarded-For`
+   를 믿어야 합니다. 프록시 없이 직접 노출(`--public`)할 땐 자동으로 꺼집니다 —
+   헤더를 위조당할 수 있기 때문입니다.
 4. **키는 사람·기기별로** — 대시보드 **연결** 탭에서 이름과 범위(전체 / 특정
    프로젝트)를 정해 발급하고, 마지막 사용 시각을 보고, 안 쓰는 키는 폐기합니다.
    프로젝트 스코프를 걸어 두면 키 하나가 새어도 그 프로젝트 밖은 못 봅니다.
@@ -308,8 +339,8 @@ jarvis_commit(끝) → jarvis_score(평가) 의 전체 루프를 에이전트에
 열려 있습니다:
 
 ```bash
-# 에이전트 머신에 코어만 (의존성 PyYAML 하나). 배포 전이므로 클론 후 설치:
-git clone <이 저장소> my-viking && cd my-viking && pip install .
+# 에이전트 머신에 코어만 (의존성 PyYAML 하나):
+pip install git+https://github.com/senghan1992/my-viking.git
 export MYVIKING_URL=https://viking.example.com
 export MYVIKING_KEY=jv_...
 
@@ -434,13 +465,29 @@ jv config --set retention.traces_days=365   # 예: 트레이스 1년 보관
 jv config --set retention.cache_per_project=0  # 캐시는 정리하지 않음
 ```
 
-## 화면 세 개
+## 화면 둘러보기
+
+사람이 대시보드에서 하는 일은 **프로젝트 만들기와 연결정보 가져가기** 두 가지입니다.
+나머지 탭은 에이전트가 쌓은 것을 들여다보는 창입니다.
 
 | 탭 | 무엇을 하나 |
 |---|---|
-| **프로젝트** | 프로젝트 생성, 연결정보 복사, git remote 등록. **이게 전부입니다** |
+| **프로젝트** | 프로젝트 생성, 연결정보 복사, 저장소(git 주소) 연결 표, 백업 |
+| **연결** | 사람·기기별 접속 키 발급 · 범위 · 사용 이력 · 폐기 |
 | **지식** | 에이전트가 쌓은 것 확인. 원하면 고칠 수 있지만 필수는 아닙니다 |
 | **활동** | 답이 이상하거나 느렸을 때. 단계별 지연과 그 답에 쓰인 지식 |
+
+**지식** — 카테고리별로 무엇이 확립됐고(신뢰), 얼마나 쓰였는지(사용). ⚠ pitfalls 는 브리핑 맨 위로 올라갑니다.
+
+<p align="center"><img src="docs/img/knowledge.png" alt="지식 탭 — 카테고리별 지식, 신뢰도, 사용 횟수" width="92%"></p>
+
+**연결** — 누가 이 서버에 붙을 수 있나. 한 사람이 떠나면 그 키만 폐기합니다.
+
+<p align="center"><img src="docs/img/keys.png" alt="연결 탭 — 접속 키 발급과 목록(범위·사용·마지막 사용·상태)" width="92%"></p>
+
+**활동** — 한 번에 해결된 비율, 응답 시간, 단계별 지연, 작업 세션, 개별 요청.
+
+<p align="center"><img src="docs/img/activity.png" alt="활동 탭 — 응답 품질과 속도, 작업 세션, 개별 요청" width="92%"></p>
 
 **지식** 탭 아래의 "점검이 필요한 것"에는 **자동 규칙이 정할 수 없는 것만**
 올라옵니다 — 미해소 상충, 나쁜 평가를 받은 지식, 여러 번 쓰였지만 평가가 없는

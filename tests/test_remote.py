@@ -262,8 +262,13 @@ def test_remote_cli_fails_loud_without_a_server(capsys, monkeypatch):
 def test_shell_client_connection_block():
     from jarvis.connect import build
 
+    from jarvis.connect import INSTALL_CMD
+
     conn = build("shell", "https://viking.example.com", "backend", key="jv_k")
-    assert "pip install my-viking" in conn.setup
+    # PyPI 에 없는 동안 맨 `pip install my-viking` 은 실패한다 — 설치 명령은 한 상수에서
+    # 나와야 하고, 대시보드도 같은 값을 받는다.
+    assert INSTALL_CMD in conn.setup and "git+https://" in INSTALL_CMD
+    assert conn.to_dict()["install_cmd"] == INSTALL_CMD
     assert "MYVIKING_URL=https://viking.example.com" in conn.setup
     assert "MYVIKING_KEY=jv_k" in conn.setup
     assert "jv remote ctx" in conn.instructions

@@ -24,6 +24,13 @@ from typing import Any
 
 CLIENTS = ("claude-code", "cursor", "codex", "mcp-json", "shell")
 
+# How the *agent's* machine gets the `jv` CLI (thin: PyYAML is the only dep).
+# One constant, because it is printed in four places (dashboard, shell setup,
+# up.sh, README) and the package is not on PyPI yet — a bare `pip install
+# my-viking` fails today, and a beginner following the GUI stops right there.
+REPO_URL = "https://github.com/senghan1992/my-viking"
+INSTALL_CMD = f"pip install git+{REPO_URL}.git"
+
 # Claude Code hook events → `jv hook` subcommands. Hooks are what make capture
 # unconditional: the client runs them whether or not the agent remembers the
 # tools, so every session is recorded even with an empty instruction file.
@@ -117,6 +124,7 @@ class Connection:
             "hooks_setup": self.hooks_setup,
             "hooks_where": self.hooks_where,
             "instructions_hooks": self.instructions_hooks,
+            "install_cmd": INSTALL_CMD,
         }
 
 
@@ -269,7 +277,7 @@ def build(
         # No MCP endpoint at all: the agent shells out to `jv remote ...`.
         key_line = f"export MYVIKING_KEY={key}\n" if key else ""
         setup = (
-            "pip install my-viking          # 코어만 설치됩니다 (의존성: PyYAML 하나)\n"
+            f"{INSTALL_CMD}   # 코어만 설치됩니다 (의존성: PyYAML 하나)\n"
             f"export MYVIKING_URL={base}\n"
             f"{key_line}jv remote brief                # 연결 확인"
         )
