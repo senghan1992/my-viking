@@ -48,8 +48,9 @@ L0/L1/L2 티어 로딩, 세션에서 장기 메모리 증류.
 ## 빠른 시작 — 명령 세 개
 
 필요한 것은 서버 머신의 **Docker** 하나입니다. 그 외에는 호스트에 아무것도 설치하지
-않습니다. 어디에 띄울지(같은 노트북 / 집 서버 / EC2)에 따라 달라지는 부분은
-[어디에 띄우나](#어디에-띄우나--시나리오별-가이드) 절에 따로 정리했습니다.
+않습니다. 어디에 띄울지(같은 노트북 / 집 서버 / EC2 / NAS / VPN / Cloudflare Tunnel / 기존
+프록시 뒤)에 따라 달라지는 부분은 [어디에 띄우나](#어디에-띄우나--시나리오별-가이드) 절에
+따로 정리했습니다. 포트포워딩이 부담스러우면 **E(Tailscale)** 나 **F(Cloudflare Tunnel)** 이 더 쉽습니다.
 
 ### 1. 서버 띄우기 (서버가 될 머신에서, 한 번)
 
@@ -144,8 +145,13 @@ Claude Code 화면에 한 세션당 한 번 `[MyViking] 서버가 요청을 거�
 | 명령 | 바인딩 | 언제 |
 |---|---|---|
 | `bash deploy/up.sh` | `127.0.0.1:8787` | 서버와 에이전트가 같은 머신 |
-| `bash deploy/up.sh --domain <도메인>` | Caddy 443 → 내부 8787 | 집 서버를 밖에서 쓸 때 (HTTPS) |
+| `bash deploy/up.sh --domain <도메인>` | Caddy 443 → 내부 8787 | 포트포워딩·EC2 등 인터넷에 열 때 (HTTPS 자동) |
+| `bash deploy/up.sh --tunnel` | 포트 없음, Cloudflare Tunnel | 포트를 못/안 열 때 (HTTPS, 무료) |
+| `bash deploy/up.sh --public --bind <VPN IP>` | 그 IP 의 8787 만 | Tailscale·WireGuard 로 붙을 때 |
+| `bash deploy/up.sh --behind-proxy` | `127.0.0.1:8787` + XFF 신뢰 | 이미 nginx/Traefik/NPM 이 있을 때 |
 | `bash deploy/up.sh --public` | `0.0.0.0:8787` (평문) | 같은 LAN 안에서만 |
+
+`--dry-run` 을 붙이면 docker 없이 무엇을 할지(모드·바인딩·프록시 신뢰·프로필)만 출력합니다.
 
 ```
 대시보드   http://127.0.0.1:8787/     (또는 https://<도메인>/)
@@ -247,8 +253,18 @@ jv backup restore --file /data/pre-restore/myviking-....tar.gz --yes  # 실행 �
 
 ## 어디에 띄우나 — 시나리오별 가이드
 
-세 가지 배포 형태를 초보·중급·고수 세 사람이 실제로 수행해 보고, 막힌 곳을 고친 뒤 그
-순서대로 적었습니다. 공통 원칙은 하나입니다 — **키 먼저, 노출은 나중.**
+초보·중급·고수 세 사람이 실제로 수행해 보고 막힌 곳을 고친 뒤 그 순서대로 적었습니다.
+공통 원칙은 하나입니다 — **키 먼저, 노출은 나중.** 어느 것을 고를지:
+
+| 상황 | 추천 |
+|---|---|
+| 혼자, 같은 노트북 | **A** |
+| 혼자, 집 서버, 밖에서도 | **E** (Tailscale) — 포트 안 열고 5분 |
+| 집 서버를 남(팀원)에게도 열기 | **F** (Cloudflare Tunnel) 또는 **B** (포트포워딩 + HTTPS) |
+| EC2 · VPS | **C** |
+| 이미 프록시로 여러 서비스 운영 | **G** |
+| NAS 에 두기 | **H** |
+| 팀 | 위 중 하나 + **D** |
 
 ### A. 서버와 에이전트가 같은 노트북
 
@@ -324,6 +340,123 @@ Docker 없이 더 가볍게 띄우려면 [Docker 없이](#docker-없이). 이 �
 - **감시**는 `/health` 의 `degraded` 필드 하나면 됩니다(백업 실패·유지보수 실패·키 DB 유실·
   색인 손상이면 `true`, 사유는 `problems`). UptimeRobot 같은 데서 그 값을 보세요.
 
+### E. 포트포워딩 없이 집 서버에 붙기 ① — Tailscale / WireGuard (개인용 최선)
+
+공유기를 건드리지 않고, 인터넷에 아무것도 노출하지 않고, 인증서도 필요 없습니다. VPN 이
+암호화하므로 평문 HTTP 여도 안전합니다. 혼자 쓰는 집 서버라면 이 방법을 먼저 권합니다.
+
+1. 서버와 노트북(과 휴대폰)에 [Tailscale](https://tailscale.com) 을 설치하고 같은 계정으로 로그인.
+2. 서버의 Tailscale IP(`tailscale ip -4`, `100.x.y.z`)에만 열기:
+   ```bash
+   bash deploy/up.sh --public --bind 100.101.102.103
+   ```
+   LAN 의 다른 기기에는 보이지 않고, 테일넷 안에서만 `http://100.101.102.103:8787` 입니다.
+   MagicDNS 를 켰다면 `http://<서버이름>:8787` 로도 됩니다.
+3. 노트북에서 `jv agent hooks --install --url http://100.101.102.103:8787 --key jv_...`.
+
+대시보드의 "평문 HTTP" 경고 배너는 이 경우 무시해도 됩니다 — 터널 안입니다. 회사 네트워크가
+VPN 을 막으면 F 로.
+
+### F. 포트포워딩 없이 집 서버에 붙기 ② — Cloudflare Tunnel (남에게도 열 때)
+
+도메인이 Cloudflare 에 있으면(무료 플랜) 포트를 하나도 열지 않고 HTTPS 주소를 얻습니다.
+ISP 가 80/443 을 막거나, 공유기 설정을 못 하거나, 팀원에게 URL 만 주고 싶을 때.
+
+1. Cloudflare **Zero Trust → Networks → Tunnels → Create tunnel** (Cloudflared). 토큰을 복사.
+2. 같은 화면의 **Public hostname**: `viking.example.com` → Service **HTTP** · `myviking:8787`.
+3. `deploy/.env`:
+   ```
+   CLOUDFLARE_TUNNEL_TOKEN=eyJ...
+   CLOUDFLARE_DOMAIN=viking.example.com
+   ```
+4. `bash deploy/up.sh --tunnel` → 관리자 키 출력. `curl -I https://viking.example.com/health`.
+   안 되면 `docker compose logs cloudflared`.
+
+Cloudflare 가 실제 클라이언트 IP 를 `X-Forwarded-For` 로 넘기므로 `up.sh` 가 프록시 신뢰를 켭니다.
+원하면 Zero Trust **Access** 정책(이메일 OTP 등)을 앞에 한 겹 더 둘 수 있습니다 — MCP 클라이언트는
+헤더 인증만 하므로 그 경우 Service Token 을 함께 쓰세요.
+
+### G. 이미 리버스 프록시가 있을 때 (nginx / Traefik / Nginx Proxy Manager / 기존 Caddy)
+
+다른 서비스와 함께 한 프록시 뒤에 두는 경우입니다. MyViking 은 업스트림으로만 둡니다.
+
+```bash
+bash deploy/up.sh --behind-proxy --url https://viking.example.com
+```
+
+`127.0.0.1:8787` 에만 열리고 `MYVIKING_TRUST_PROXY=1` 이 켜집니다. 프록시 쪽에서 두 가지만:
+`viking.example.com → http://127.0.0.1:8787`, 그리고 **`X-Forwarded-For` 를 클라이언트 IP 로
+덮어쓰기**(nginx 는 `proxy_set_header X-Forwarded-For $remote_addr;`. `$proxy_add_x_forwarded_for`
+는 덧붙이기라 위조 가능 — 마지막 홉만 믿으므로 그래도 동작은 하지만 덮어쓰는 편이 명확합니다).
+Traefik·Caddy·NPM 은 기본이 안전합니다. 프록시가 같은 compose 네트워크에 있으면 `MYVIKING_PORTS`
+를 비우고 서비스 이름 `myviking:8787` 로 직접 붙여도 됩니다.
+
+### H. NAS (Synology / QNAP / Unraid)
+
+Docker 가 있는 NAS 는 좋은 집 서버입니다. SSH 가 되면 A~F 그대로(`bash deploy/up.sh …`).
+GUI(Container Manager 등)만 쓰고 싶으면:
+
+1. 저장소를 NAS 로 복사하고 `deploy/docker-compose.yml` 을 프로젝트로 등록. 환경변수
+   `MYVIKING_PORTS` 는 비워 두면 `127.0.0.1:8787:8787`(NAS 안에서만) 입니다.
+2. 컨테이너 터미널에서 `jv key create admin` → 키 저장.
+3. 그 다음에 `MYVIKING_PORTS` 를 `8787:8787`(LAN) 또는 Tailscale IP 로 바꾸고 재시작.
+   외부 노출은 NAS 의 리버스 프록시(Synology "로그인 포털 → 고급 → 리버스 프록시")를 쓰고
+   `MYVIKING_TRUST_PROXY=1` 을 환경변수로(G 와 같음).
+
+데이터는 `myviking-data` 볼륨에 있습니다. NAS 스냅샷/Hyper Backup 대상에 Docker 볼륨 경로를
+넣어 두면 MyViking 자체 백업과 이중이 됩니다.
+
+### I. Windows · macOS · 라즈베리파이
+
+- **Windows 서버**: Docker Desktop + **WSL2** 터미널에서 `bash deploy/up.sh`. PowerShell/cmd 에서는
+  `up.sh` 가 돌지 않습니다(Git Bash 는 됩니다). `hostname -I` 가 없어 `--public` 의 안내 주소가
+  `127.0.0.1` 로 나오면 `--url http://<LAN IP>:8787` 로 알려 주세요.
+- **Windows 에이전트 머신**: 훅 명령은 `MYVIKING_URL=… jv hook …` 형식(POSIX)입니다. Claude Code
+  는 Windows 에서 Git Bash 로 훅을 실행하므로 동작하지만, `jv` 가 그 Bash 의 PATH 에 있어야 합니다
+  (`pipx install …` 후 `pipx ensurepath`). `jv agent hooks --check` 로 확인하세요.
+- **macOS 서버(Mac mini)**: Docker Desktop 또는 OrbStack. `--public` 은 `ipconfig getifaddr en0` 로
+  LAN IP 를 잡습니다. 잠들지 않게 `caffeinate` 또는 에너지 설정.
+- **라즈베리파이 / ARM**: 이미지가 `python:3.12-slim` 기반이라 arm64 에서 그대로 빌드됩니다
+  (첫 빌드 수 분). `numpy` 도 휠이 있습니다. 32-bit(armv7) 는 권하지 않습니다. SD 카드보다 SSD 에
+  Docker 데이터를 두세요 — SQLite 쓰기가 잦습니다.
+
+### J. 서버 이사 (노트북 → 집 서버, 집 → 클라우드)
+
+지식은 볼륨 하나에 있습니다. 옮기는 건 백업 한 번, 복원 한 번입니다.
+
+```bash
+# 옛 서버
+docker compose exec myviking jv backup config --provider local --path /data/_move
+docker compose exec myviking jv backup run                    # /data/_move/myviking-…tar.gz
+docker cp $(docker compose ps -q myviking):/data/_move ./move # 꺼내기 (또는 Drive 백업이 있으면 생략)
+
+# 새 서버 — 먼저 띄우고, 멈춘 상태에서 복원
+bash deploy/up.sh --domain viking.duckdns.org
+docker compose stop myviking
+docker compose run --rm -v "$PWD/move:/move" myviking jv backup restore --file /move/myviking-….tar.gz --yes
+docker compose start myviking
+```
+
+키·별칭·작업 이력·전역 선호까지 함께 옵니다(모두 아카이브 안). 에이전트 머신에서는 훅의
+`--url` 만 새 주소로 다시 `--install` 하면 됩니다(키는 그대로 유효). Google Drive 백업을
+쓰고 있었다면 새 서버에서 `jv backup connect` 후 `jv backup restore --yes` 로 최신본을 끌어옵니다.
+
+### K. CI 에서 도는 에이전트 (GitHub Actions 등)
+
+봇도 기록을 남기고 브리핑을 받을 수 있습니다. 사람 키와 섞지 마세요.
+
+1. 연결 탭에서 `ci-<저장소>` 이름으로 **그 프로젝트만** 범위의 키 발급 → 저장소 Secret.
+2. 워크플로에서:
+   ```yaml
+   - run: pipx install git+https://github.com/senghan1992/my-viking.git
+   - run: jv remote brief          # 최근 작업·주의사항을 로그에
+     env: { MYVIKING_URL: https://viking.example.com, MYVIKING_KEY: ${{ secrets.MYVIKING_KEY }} }
+   ```
+   에이전트 스텝(Claude Code Action 등)에는 셸 브리지 지시문(`jv agent config --client shell`)을
+   넣습니다. 훅은 대화형 세션용이라 CI 에서는 `jv remote …` 가 맞습니다.
+3. 대시보드 활동 탭에서 `agent` 가 `shell@runner…` 로 구분되고, 키별 사용 횟수는 연결 탭에서 봅니다.
+   러너 IP 가 매번 바뀌므로 틀린 키로 반복 실패하면 그 IP 만 잠기고 다른 사람은 영향이 없습니다.
+
 ## 문제가 생기면 — 증상별 대응
 
 | 증상 | 원인 | 확인·해결 |
@@ -338,6 +471,10 @@ Docker 없이 더 가볍게 띄우려면 [Docker 없이](#docker-없이). 이 �
 | 서버 로그에 `색인 DB 가 손상되어 옆으로 치웠습니다` | index.db 손상 | 메모리는 파일에서 자동 재색인. 키·작업 이력은 `jv backup restore` 로 |
 | 모든 요청이 503 "API 키 DB 가 없습니다" | index.db 가 지워짐(인증이 켜져 있던 서버) | 백업 복원, 또는 서버에서 `jv key create admin` 으로 다시 잠금 |
 | `pip install` 이 거부됨 (`externally-managed-environment`) | 시스템 파이썬 보호 | `pipx install git+…` 또는 `pip install --user git+…` 후 `~/.local/bin` 을 PATH 에 |
+| Tailscale 로 붙는데 대시보드가 "평문 HTTP" 경고 | 설계상 경고 | VPN 안이면 무시. 인터넷에 직접 열려 있는 `--public` 이라면 `--domain`/`--tunnel` 로 |
+| Cloudflare Tunnel 이 502 | Public hostname 서비스 주소 오류 | Cloudflare 대시보드에서 `HTTP · myviking:8787` 인지(`localhost` 아님) 확인, `docker compose logs cloudflared` |
+| 프록시 뒤에서 한 사람이 틀리면 전원 429 | 프록시가 XFF 를 안 넘겨 전부 한 IP | `--behind-proxy` 로 다시 띄우고(TRUST_PROXY=1) 프록시가 `X-Forwarded-For` 를 넘기는지 확인 |
+| Windows 에서 훅이 안 돌아감 | Git Bash PATH 에 `jv` 없음 | `pipx ensurepath` 후 터미널 재시작, `jv agent hooks --check` |
 
 ## 에이전트 붙이기 — 클라이언트별
 
