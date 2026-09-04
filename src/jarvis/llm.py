@@ -73,6 +73,21 @@ class LLM:
     def _base(self) -> str:
         return (self.cfg.base_url or _DEFAULT_BASE.get(self.cfg.provider, "")).rstrip("/")
 
+    def _chat_url(self) -> str:
+        """OpenAI 호환 요청 경로. 기본은 {base}/chat/completions.
+
+        Databricks Serving 처럼 base_url 이 곧 엔드포인트(…/invocations)인
+        게이트웨이는 /chat/completions 경로가 존재하지 않는다. 그 경우
+        ``path="/"`` 로 base_url 그 자체로 POST 한다.
+        """
+        base = self._base()
+        path = self.cfg.path
+        if path == "/":
+            return base
+        if path:
+            return base + "/" + path.lstrip("/")
+        return base + "/chat/completions"
+
     def _anthropic(self, prompt: str, system: str, max_tokens: int | None) -> LLMResult:
         import httpx
 
@@ -118,7 +133,7 @@ class LLM:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         resp = httpx.post(
-            self._base() + "/chat/completions",
+            self._chat_url(),
             headers=headers,
             json={
                 "model": self.cfg.model,
@@ -129,7 +144,10 @@ class LLM:
         )
         resp.raise_for_status()
         data = resp.json()
-        text = data["choices"][0]["message"].get("content") or ""
+        msg = data["choices"][0]["message"]
+        # DeepSeek 계열 reasoner 는 생각을 reasoning_content 에 쓰고 content 가
+        # 비어 있을 수 있다 — 이 경우 빈 답보다 그 사고 텍스트를 쓴다.
+        text = msg.get("content") or msg.get("reasoning_content") or ""
         usage = data.get("usage", {})
         return LLMResult(
             text,

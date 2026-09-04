@@ -20,6 +20,23 @@ def test_explicit_llm_provider_wins_over_the_anthropic_shortcut(home, monkeypatc
     assert (cfg.llm.provider, cfg.llm.model, cfg.llm.api_key_env) == ("openai", "gpt-x", "OPENAI_API_KEY")
 
 
+def test_llm_custom_base_url_route_through_env(home, monkeypatch):
+    """OpenAI 호환 게이트웨이(Databricks 등)로 우회할 때 base_url 이 살아 있어야
+    한다 — 이 변수가 없으면 클라이언트가 api.openai.com 으로 나간다."""
+    monkeypatch.setenv("JARVIS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("JARVIS_LLM_MODEL", "databricks-deepseek-v4-flash-0731")
+    monkeypatch.setenv("JARVIS_LLM_BASE_URL", "https://gw.example.com/serving-endpoints/deepseek/invocations")
+    monkeypatch.setenv("JARVIS_LLM_PATH", "/")
+    monkeypatch.setenv("JARVIS_LLM_MAX_OUTPUT_TOKENS", "4096")
+    monkeypatch.setenv("OPENAI_API_KEY", "dapi-test")
+    cfg = Config.load(home)
+    assert cfg.llm.base_url == "https://gw.example.com/serving-endpoints/deepseek/invocations"
+    assert cfg.llm.path == "/"
+    assert cfg.llm.max_output_tokens == 4096
+    assert cfg.llm.api_key_env == "OPENAI_API_KEY"
+    assert cfg.api_key("llm") == "dapi-test"
+
+
 def test_embed_provider_gets_model_dim_and_key_env_defaults(home, monkeypatch):
     monkeypatch.setenv("JARVIS_EMBED_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")

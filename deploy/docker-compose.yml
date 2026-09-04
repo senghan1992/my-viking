@@ -36,6 +36,13 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       JARVIS_LLM_PROVIDER: ${JARVIS_LLM_PROVIDER:-}
       JARVIS_LLM_MODEL: ${JARVIS_LLM_MODEL:-}
+      # 회사 게이트웨이·Databricks 등 OpenAI 호환 엔드포인트로 우회할 때
+      JARVIS_LLM_BASE_URL: ${JARVIS_LLM_BASE_URL:-}
+      # base_url 이 곧 엔드포인트(…/invocations)면 "/" — 요청을 그대로 보냅니다. 기본: /chat/completions
+      JARVIS_LLM_PATH: ${JARVIS_LLM_PATH:-}
+      # reasoner(deepseek 계열)는 사고 토큰을 따로 씁니다. 사고만 가득 찬 응답이
+      # 보이면 이 상한을 4096 등으로 올리세요 (기본 2048).
+      JARVIS_LLM_MAX_OUTPUT_TOKENS: ${JARVIS_LLM_MAX_OUTPUT_TOKENS:-}
       # 의미 기반 회상(동의어·다른 표현). 비우면 오프라인 해시 임베딩.
       #   openai: JARVIS_EMBED_PROVIDER=openai + OPENAI_API_KEY
       #   ollama: JARVIS_EMBED_PROVIDER=ollama + JARVIS_EMBED_BASE_URL=http://host.docker.internal:11434/v1

@@ -31,6 +31,9 @@ class LLMConfig:
     model: str = "claude-sonnet-5"
     api_key_env: str = "ANTHROPIC_API_KEY"
     base_url: str = ""
+    # 요청 경로. 기본은 base_url 뒤의 /chat/completions. Databricks Serving 처럼
+    # base_url 이 곧 엔드포인트(…/invocations)면 "/" 로 요청 그 자체를 맞춘다.
+    path: str = ""
     max_output_tokens: int = 2048
     timeout: float = 60.0
 
@@ -263,14 +266,21 @@ class Config:
         the README and .env.example have promised that all along.
         """
         env = os.environ
-        for section, prefix in ((self.llm, "JARVIS_LLM_"), (self.embed, "JARVIS_EMBED_")):
-            for field_name in ("provider", "model", "api_key_env", "base_url"):
+        for section, prefix, fields in (
+            (self.llm, "JARVIS_LLM_", ("provider", "model", "api_key_env", "base_url", "path")),
+            (self.embed, "JARVIS_EMBED_", ("provider", "model", "api_key_env", "base_url")),
+        ):
+            for field_name in fields:
                 val = env.get(prefix + field_name.upper(), "")
                 if val:
                     setattr(section, field_name, val.strip())
         dim = env.get("JARVIS_EMBED_DIM", "")
         if dim.strip().isdigit() and int(dim) > 0:
             self.embed.dim = int(dim)
+        # reasoner(deepseek 등)는 사고 토큰을 따로 쓰므로 출력 상한을 올릴 수 있게.
+        out = env.get("JARVIS_LLM_MAX_OUTPUT_TOKENS", "")
+        if out.strip().isdigit() and int(out) > 0:
+            self.llm.max_output_tokens = int(out)
         if (
             self.llm.provider in ("", "none")
             and not env.get("JARVIS_LLM_PROVIDER")
