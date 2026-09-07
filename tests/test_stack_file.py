@@ -1,0 +1,73 @@
+"""배포 파일 계약: docker-compose.yml(up.sh 용) 과 stack.yml(직접 관리·Portainer 용).
+
+같은 서비스가 두 파일에 나뉘어 정의되므로, 한쪽에만 보안/운영 기본값이 빠지는
+갈림을 방지한다. Portainer 는 환경변수 치환을 지원하지만 스택을 복붙해서 쓰는
+사람은 ${VAR} 을 보면 당황하므로, stack.yml 은 치환 없이 자기 완결이어야 한다.
+"""
+
+from __future__ import annotations
+
+import pathlib
+
+import yaml
+
+DEPLOY = pathlib.Path(__file__).resolve().parents[1] / "deploy"
+
+SHARED = {
+    "restart": "unless-stopped",
+    "read_only": True,
+    "security_opt": ["no-new-privileges:true"],
+    "tmpfs": ["/tmp"],
+}
+
+
+def _myviking(name: str):
+    data = yaml.safe_load((DEPLOY / name).read_text(encoding="utf-8"))
+    svc = data["services"]["myviking"]
+    # short form ("myviking-data:/data") 을 long form 과 같은 모양으로
+    if isinstance(svc.get("volumes"), list):
+        svc["volumes"] = {
+            v.split(":")[0]: {"type": "volume", "target": v.split(":", 1)[1]}
+            for v in svc["volumes"]
+        }
+    return data, svc
+
+
+def _healthcheck(svc):
+    parts = svc["healthcheck"]["test"]
+    joined = " ".join(parts) if isinstance(parts, list) else str(parts)
+    assert "/health" in joined, "헬스체크가 /health 를 봐야 한다"
+
+
+def test_compose_and_stack_share_the_service_contract():
+    for name in ("docker-compose.yml", "stack.yml"):
+        _, svc = _myviking(name)
+        assert svc["image"] == "myviking:latest", name
+        for key in ("restart", "read_only", "security_opt", "tmpfs"):
+            assert svc.get(key) == SHARED[key], f"{name}: {key} 기본값이 다름"
+        assert svc["volumes"]["myviking-data"]["target"] == "/data", name
+        assert svc["environment"]["JARVIS_HOME"] == "/data", name
+        _healthcheck(svc)
+        # 실제 사용하는 포트는 컨테이너 안 8787 (호스트 바인딩은 운영자가 정한다)
+        ports = svc["ports"] if isinstance(svc["ports"], list) else [svc["ports"]]
+        assert any(":8787" in p or p.endswith("8787") for p in ports), name
+
+
+def test_stack_file_is_self_contained_no_env_indirection():
+    """Portainer 에 복붙하는 사람은 ${VAR} 을 못 본다 — 치환 없이 열려야 한다."""
+    text = (DEPLOY / "stack.yml").read_text(encoding="utf-8")
+    assert "${" not in text, "stack.yml 은 환경변수 치환이 없어야 한다"
+    assert 'container_name: myviking' in text
+    data, svc = _myviking("stack.yml")
+    assert "build" not in svc, "stack.yml 은 이미지 사용 (빌드는 서버에서 한 번)"
+    assert data["name"] == "myviking", "up.sh 와 오가도 볼륨이 이어지도록 같은 프로젝트 이름"
+
+
+def test_compose_default_port_is_loopback_until_up_sh_says_otherwise():
+    """키가 없는 동안 인증 없이 열려 있으므로, 기본 바인딩은 루프백이어야 한다."""
+    data, svc = _myviking("docker-compose.yml")
+    ports = svc["ports"]
+    assert len(ports) == 1
+    port_line = ports[0] if isinstance(ports[0], str) else str(ports[0])
+    assert "MYVIKING_PORTS" in port_line
+    assert "127.0.0.1:8787:8787" in port_line

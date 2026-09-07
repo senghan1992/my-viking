@@ -398,6 +398,27 @@ bash deploy/up.sh --behind-proxy --url https://viking.example.com
 Traefik·Caddy·NPM 은 기본이 안전합니다. 프록시가 같은 compose 네트워크에 있으면 `MYVIKING_PORTS`
 를 비우고 서비스 이름 `myviking:8787` 로 직접 붙여도 됩니다.
 
+#### G-2. 포트·프록시를 내가 관리할 때 (Portainer · docker compose up -d)
+
+`up.sh` 의 모드/포트 주입 없이, 자기 인프라에서 포트와 TLS 를 직접 관리하고 싶으면
+`deploy/stack.yml` 하나로 끝납니다 — Portainer 스택에 붙여넣거나 직접 실행합니다:
+
+```bash
+cd my-viking && docker compose build          # 이미지를 한 번만 (Docker Hub 에 없음)
+docker compose -f deploy/stack.yml up -d      # 또는 Portainer 에 stack.yml 복붙
+```
+
+`stack.yml` 안에서 **`ports:` 줄과 환경변수를 자기 환경에 맞게 바로 고치면 됩니다**
+(치환 변수가 없습니다). 예: 모든 인터페이스에 열려면 `"127.0.0.1:8787:8787"` 을
+`"8787:8787"` 로. Tailscale/VPN IP 만 열려면 `"100.64.0.5:8787:8787"`. 포트포워딩·
+TLS 는 자기 공유기/LB/Portainer 포트 퍼블리싱에서 관리하세요. 컨테이너 안 포트는
+항상 8787 입니다.
+
+주의 두 가지는 `stack.yml` 머리말에도 있습니다: ① 외부에 열기 **전에**
+`docker compose exec myviking jv key create admin` 으로 키부터 만들 것 (키가 없으면
+인증 없이 열린 창), ② 프록시 뒤에 둘 때는 `MYVIKING_TRUST_PROXY=1` (틀린 키 차단이
+실제 클라이언트 IP 기준이 됩니다).
+
 ### H. NAS (Synology / QNAP / Unraid)
 
 Docker 가 있는 NAS 는 좋은 집 서버입니다. SSH 가 되면 A~F 그대로(`bash deploy/up.sh …`).

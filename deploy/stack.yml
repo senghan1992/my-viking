@@ -1,0 +1,73 @@
+# MyViking — 직접 관리용 스택 (Portainer · 자기 인프라)
+#
+# up.sh 없이, 자기가 포트·프록시·TLS 를 관리하는 환경(Portainer 스택,
+# Nginx Proxy Manager, 클라우드 LB 등)에서 띄울 때 쓰는 단일 파일입니다.
+# 변수 치환 없이 여기서 바로 고칩니다 — 아래 'ports' 와 'environment' 만 보면 됩니다.
+#
+# 1) 서버에서 이미지를 한 번만 빌드합니다:
+#      cd my-viking && docker compose build
+#    (이미지를 빌드하지 않으면 myviking:latest 를 Docker Hub 에서 찾다가 실패합니다)
+# 2) 이 파일을 Portainer 스택(또는 docker compose -f deploy/stack.yml up -d)로 띄웁니다.
+# 3) 바깥에서 붙을 거면 열기 *전에* 관리자 키부터 만드세요:
+#      docker compose exec myviking jv key create admin
+#    (키가 없는 동안은 인증 없이 열린 창입니다. 키는 한 번만 출력됩니다)
+# 4) 프록시(NPM 등) 뒤에 둘 때는 아래 MYVIKING_TRUST_PROXY=1 — 틀린 키 차단이
+#    실제 클라이언트 IP 기준이 됩니다. 프록시 없이 직접 노출하는데 1 로 두면 안 됩니다.
+#
+# 포트 — 여기서 자기 환경에 맞게 바꾸세요:
+#   "127.0.0.1:8787:8787"   이 머신에서만 (안전한 기본값)
+#   "8787:8787"             모든 인터페이스 (공유기/클라우드 포트포워딩용)
+#   "100.64.0.5:8787:8787"  특정 IP 만 (Tailscale/VPN)
+# 8787 을 다른 포트로 바꿔도 됩니다. 포트포워딩은 자기 인프라(공유기·LB·
+# Portainer 의 port publishing)에서 관리하세요. 서비스는 항상 내부 8787 입니다.
+#
+# name 을 docker-compose.yml 과 같게 두어, up.sh 로 띄웠다가 이 파일로 옮겨도
+# 데이터 볼륨(myviking_myviking-data) 이 그대로 연결됩니다. 둘을 동시에 띄우면
+# 컨테이너 이름이 겹쳐 거부됩니다 — 그것이 정상입니다.
+
+name: myviking
+
+services:
+  myviking:
+    image: myviking:latest
+    container_name: myviking
+    ports:
+      - "127.0.0.1:8787:8787"   # ← 여기를 자기 포워딩에 맞게 고치세요
+    volumes:
+      - myviking-data:/data
+    environment:
+      JARVIS_HOME: /data
+      # 품질 (선택, 없어도 완전히 동작합니다) — 요약·증류를 LLM 기반으로:
+      ANTHROPIC_API_KEY: ""
+      JARVIS_LLM_PROVIDER: ""
+      JARVIS_LLM_MODEL: ""
+      # 의미 회상 (선택) — openai + OPENAI_API_KEY, 또는 ollama + JARVIS_EMBED_BASE_URL
+      JARVIS_EMBED_PROVIDER: ""
+      JARVIS_EMBED_MODEL: ""
+      JARVIS_EMBED_BASE_URL: ""
+      OPENAI_API_KEY: ""
+      # 프록시(NPM 등) 뒤에서만 1:
+      MYVIKING_TRUST_PROXY: ""
+    # 호스트에서 도는 Ollama 를 컨테이너에서 부를 수 있게 (Linux 필요)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request as u; u.urlopen('http://127.0.0.1:8787/health').read()
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    # 루트 파일시스템 읽기 전용 — /data 볼륨과 /tmp 만 씁니다.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  myviking-data:
