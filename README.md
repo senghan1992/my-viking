@@ -59,21 +59,15 @@ L0/L1/L2 티어 로딩, 세션에서 장기 메모리 증류.
 ### 1. 서버 띄우기 (서버가 될 머신에서, 한 번)
 
 ```bash
-git clone https://github.com/senghan1992/my-viking.git && cd my-viking
-bash deploy/up.sh                              # 이 머신에서만 쓸 때 (127.0.0.1:8787)
+git clone https://github.com/senghan1992/my-viking.git && cd my-viking/deploy
+docker compose up -d                 # 이미지가 없으면 자동 빌드 → 8787 을 엽니다
 ```
 
-밖에서도 붙을 거면 둘 중 하나로 띄우세요. 둘 다 **관리자 API 키를 먼저 발급한 뒤에만**
-바깥에 열고, 키를 한 번 출력합니다(다시 볼 수 없으니 저장). 다시 실행해도 키를 새로
-만들지 않습니다.
-
-```bash
-bash deploy/up.sh --domain viking.duckdns.org  # HTTPS (권장) — Caddy 가 인증서를 자동 발급
-bash deploy/up.sh --public                     # 평문 HTTP — 같은 집/사무실 네트워크 안에서만
-```
-
-끝나면 **대시보드 주소**와 다음 할 일이 출력됩니다. `--domain` 은 포트포워딩(또는
-보안 그룹)과 DNS 가 끝나야 열립니다 — 그 순서는 시나리오 절에 있습니다.
+대시보드는 **http://<이 머신 IP>:8787/** 입니다. 포트포워딩은 이 서비스가 하지
+않습니다 — 사내 LAN 이면 포트만 열려 있으면 끝이고, 밖(인터넷)에서 붙게 하려면
+**공유기·방화벽·LB 의 8787 → 이 머신 포워딩은 운영자가 알아서** 하세요. 자동
+HTTPS(도메인)까지 맡기고 싶으면 `bash deploy/up.sh --domain …` 을 대신 쓰면
+됩니다 (그 땐 8787 은 루프백으로 닫히고 Caddy 만 밖으로 나갑니다).
 
 ### 2. 대시보드 열어 보기 (브라우저)
 
@@ -146,6 +140,23 @@ Claude Code 화면에 한 세션당 한 번 `[MyViking] 서버가 요청을 거�
 
 ## Docker 로 띄우기 (권장)
 
+### 가장 간단한 기본 — 그냥 compose
+
+```bash
+cd my-viking/deploy && docker compose up -d
+```
+
+빌드 → 기동 → 헬스체크까지 알아서 되고, **모든 인터페이스의 8787** 이 열립니다:
+사내 LAN 의 다른 기기가 http://<서버 IP>:8787/ 로 바로 붙고, 밖(인터넷)에서 붙게
+하려면 **포트포워딩(공유기·방화벽·LB 의 8787 → 이 머신)은 운영자가 알아서** 하면
+됩니다. 이 머신에서만 쓰려면 compose 의 `ports:` 를 `127.0.0.1:8787:8787` 로
+바꾸세요. 포트를 다른 번호로 바꿔도 됩니다 (컨테이너 안은 항상 8787).
+
+**키를 만들기 전에는 인증 없이 열려 있습니다** — 열린 채로 두기 전에 관리자
+키부터 만드세요: `docker compose exec myviking jv key create admin` (키는 한 번만
+출력됩니다. 대시보드 '연결' 탭에서도 발급 가능).
+
+자동 HTTPS·DuckDNS·Cloudflare Tunnel 등 모드 처리가 필요하면 `up.sh` 를 씁니다:
 `deploy/up.sh` 하나가 빌드 → 루프백 기동 → 헬스체크 → (노출 모드면) 키 확인 → 노출까지
 합니다. 다시 실행하면 업데이트이고, 키를 새로 만들지 않습니다.
 
@@ -183,8 +194,9 @@ cp .env.example .env                        # LLM 키 등 선택 설정
 
 이미지는 논루트(`viking`, uid 10001)로 돌고, 컴포즈가 루트 파일시스템을 읽기
 전용으로 잠그며(`/data` 볼륨과 `/tmp` 만 쓰기 가능), 기본 포트 바인딩은
-`127.0.0.1` 입니다. 서버 안에서 6시간마다 증류·감쇠가 돌아가므로 별도 스케줄러가
-필요 없습니다(`--maintain-every`, 0 이면 끔).
+`0.0.0.0:8787`(모든 인터페이스 — 사내 LAN/포트포워딩용) 입니다. 이 머신 전용으로
+닫으려면 위 기본 경로의 `127.0.0.1:8787:8787` 을 쓰세요. 서버 안에서 6시간마다
+증류·감쇠가 돌아가므로 별도 스케줄러가 필요 없습니다(`--maintain-every`, 0 이면 끔).
 
 ### Docker 없이
 
@@ -409,10 +421,10 @@ docker compose -f deploy/stack.yml up -d      # 또는 Portainer 에 stack.yml �
 ```
 
 `stack.yml` 안에서 **`ports:` 줄과 환경변수를 자기 환경에 맞게 바로 고치면 됩니다**
-(치환 변수가 없습니다). 예: 모든 인터페이스에 열려면 `"127.0.0.1:8787:8787"` 을
-`"8787:8787"` 로. Tailscale/VPN IP 만 열려면 `"100.64.0.5:8787:8787"`. 포트포워딩·
-TLS 는 자기 공유기/LB/Portainer 포트 퍼블리싱에서 관리하세요. 컨테이너 안 포트는
-항상 8787 입니다.
+(치환 변수가 없습니다). 기본은 모든 인터페이스 `"8787:8787"` — 사내 LAN 에서
+바로 접속되고, 이 머신에서만 쓰려면 `"127.0.0.1:8787:8787"` 로. Tailscale/VPN IP
+만 열려면 `"100.64.0.5:8787:8787"`. 밖(인터넷)은 포트포워딩·TLS 를 자기
+공유기/LB/Portainer 포트 퍼블리싱에서 관리하세요. 컨테이너 안 포트는 항상 8787 입니다.
 
 주의 두 가지는 `stack.yml` 머리말에도 있습니다: ① 외부에 열기 **전에**
 `docker compose exec myviking jv key create admin` 으로 키부터 만들 것 (키가 없으면
@@ -424,12 +436,12 @@ TLS 는 자기 공유기/LB/Portainer 포트 퍼블리싱에서 관리하세요.
 Docker 가 있는 NAS 는 좋은 집 서버입니다. SSH 가 되면 A~F 그대로(`bash deploy/up.sh …`).
 GUI(Container Manager 등)만 쓰고 싶으면:
 
-1. 저장소를 NAS 로 복사하고 `deploy/docker-compose.yml` 을 프로젝트로 등록. 환경변수
-   `MYVIKING_PORTS` 는 비워 두면 `127.0.0.1:8787:8787`(NAS 안에서만) 입니다.
+1. 저장소를 NAS 로 복사하고 `deploy/docker-compose.yml` 을 프로젝트로 등록. 포트는
+   기본값이 `8787:8787`(모든 인터페이스 — NAS 의 방화벽/LAN 에서 관리)이고, NAS
+   안에서만 쓰려면 환경변수 `MYVIKING_PORTS=127.0.0.1:8787:8787` 로 바꾸면 됩니다.
 2. 컨테이너 터미널에서 `jv key create admin` → 키 저장.
-3. 그 다음에 `MYVIKING_PORTS` 를 `8787:8787`(LAN) 또는 Tailscale IP 로 바꾸고 재시작.
-   외부 노출은 NAS 의 리버스 프록시(Synology "로그인 포털 → 고급 → 리버스 프록시")를 쓰고
-   `MYVIKING_TRUST_PROXY=1` 을 환경변수로(G 와 같음).
+3. 외부 노출은 NAS 의 리버스 프록시(Synology "로그인 포털 → 고급 → 리버스 프록시")를
+   쓰고 `MYVIKING_TRUST_PROXY=1` 을 환경변수로(G 와 같음).
 
 데이터는 `myviking-data` 볼륨에 있습니다. NAS 스냅샷/Hyper Backup 대상에 Docker 볼륨 경로를
 넣어 두면 MyViking 자체 백업과 이중이 됩니다.

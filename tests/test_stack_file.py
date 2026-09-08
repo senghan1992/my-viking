@@ -61,13 +61,18 @@ def test_stack_file_is_self_contained_no_env_indirection():
     data, svc = _myviking("stack.yml")
     assert "build" not in svc, "stack.yml 은 이미지 사용 (빌드는 서버에서 한 번)"
     assert data["name"] == "myviking", "up.sh 와 오가도 볼륨이 이어지도록 같은 프로젝트 이름"
+    ports = svc["ports"] if isinstance(svc["ports"], list) else [svc["ports"]]
+    assert "8787:8787" in ports[0], "stack.yml 기본도 모든 인터페이스 (운영자가 바꿈)"
 
 
-def test_compose_default_port_is_loopback_until_up_sh_says_otherwise():
-    """키가 없는 동안 인증 없이 열려 있으므로, 기본 바인딩은 루프백이어야 한다."""
+def test_default_port_is_open_on_all_interfaces_for_lan_port_forwarding():
+    """기본은 'compose up -d 만으로 사내 LAN/포트포워딩' — 모든 인터페이스 8787.
+    up.sh 는 MYVIKING_PORTS 로 모드별 바인딩을 덮어쓴다 (루프백/도메인/터널).
+    키가 없으면 인증 없이 열려 있으므로, 열기 전 키 생성은 문서·주석의 몫이다."""
     data, svc = _myviking("docker-compose.yml")
     ports = svc["ports"]
     assert len(ports) == 1
     port_line = ports[0] if isinstance(ports[0], str) else str(ports[0])
     assert "MYVIKING_PORTS" in port_line
-    assert "127.0.0.1:8787:8787" in port_line
+    assert "8787:8787" in port_line
+    assert "127.0.0.1:" not in port_line, "기본은 루프백이 아니라 모든 인터페이스"

@@ -22,11 +22,12 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     image: myviking:latest
-    # 기본은 로컬 전용. 다른 머신의 에이전트가 붙어야 하면 "8787:8787" 로
-    # 바꾸되 반드시 먼저 API 키를 발급하세요.
+    # 기본: 모든 인터페이스의 8787 (사내 LAN·포트포워딩 — 포워딩은 운영자가 관리).
+    # 이 머신에서만 쓰려면 "127.0.0.1:8787:8787" 로 바꾸세요.
+    # 바깥에 열려 있다면 반드시 먼저 API 키를 발급하세요 (키가 없으면 인증 없이 열려 있음).
     ports:
-      # up.sh 가 MYVIKING_PORTS 로 덮어씁니다.
-      - "${MYVIKING_PORTS:-127.0.0.1:8787:8787}"
+      # up.sh 가 MYVIKING_PORTS 로 덮어씁니다. 기본은 모든 인터페이스 8787.
+      - "${MYVIKING_PORTS:-8787:8787}"
     volumes:
       - myviking-data:/data
     # 값은 이 폴더의 .env 에서 읽습니다 (.env.example 참고). 없어도 동작합니다.
