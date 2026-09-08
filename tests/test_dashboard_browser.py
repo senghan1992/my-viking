@@ -148,5 +148,29 @@ def test_three_personas_walk_the_connection_gui(base, browser):
     assert "불러오지 못했습니다" not in pg.inner_text("#error")
     assert pg.is_visible("#cards")
 
+    # ---- 모델 탭: 관리자로 돌아가 설정 저장 → 테스트 → 초기화 - 자체 ----
+    pg.fill("#key", admin_key)
+    pg.dispatch_event("#key", "change")
+    pg.wait_for_timeout(W)
+    pg.click('nav button[data-tab="models"]')
+    pg.wait_for_timeout(W)
+    opts = pg.inner_text("#m-provider")
+    assert "Grok" in opts and "Custom" in opts and "DeepSeek" in opts
+    pg.select_option("#m-provider", "custom")
+    pg.fill("#m-model", "local-probe")
+    pg.fill("#m-base", base)          # 이 테스트 서버 = 죽은 엔드포인트 대역
+    pg.fill("#m-key", "probe-key")
+    pg.click("#m-save")
+    pg.wait_for_timeout(W)
+    assert "저장했습니다" in pg.inner_text("#m-msg")
+    assert "동작 중" in pg.inner_text("#m-status")   # 키가 있는 설정이므로 '구성됨' — 실제 도달 여부는 테스트 버튼이
+    pg.click("#m-test")
+    pg.wait_for_timeout(W + 1500)
+    assert "실패" in pg.inner_text("#m-test-out")
+    assert "저장된 키" in pg.inner_text("#m-key-note")  # 마스킹된 상태만 노출
+    pg.click("#m-reset")               # confirm 은 위에서 자동 수락
+    pg.wait_for_timeout(W)
+    assert "초기화했습니다" in pg.inner_text("#m-reset-msg")
+
     hard = [e for e in errors if "Failed to load resource" not in e]  # 의도된 4xx 응답 로그 제외
     assert not hard, hard

@@ -24,7 +24,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from . import __version__
 from .auth import KeyStore
 from .backup import BackupManager, start_backup_loop
+from .config import EMBED_CATALOG, LLM_CATALOG, EmbedConfig, LLMConfig
 from .connect import CLIENTS, build as build_connection, instruction_file
+from .embed import Embedder
+from .llm import LLM
 from .mcp_core import Handler, tools
 from .models import Uri
 from .service import Jarvis
@@ -140,6 +143,42 @@ class AliasBody(BaseModel):
     alias: str
     project: str
     kind: str = "repo"
+
+
+class LlmSettingsBody(BaseModel):
+    """웹 대시보드 '모델' 탭 — 증류·요약 LLM.
+
+    api_key 는 None(현재 유지) / ""(지우기) / 새 값. 나머지는 폼 전체 상태.
+    """
+
+    provider: str = ""
+    model: str = ""
+    api_key: str | None = None
+    base_url: str = ""
+    path: str = ""
+    max_output_tokens: int = 0
+
+
+class EmbedSettingsBody(BaseModel):
+    """웹 대시보드 '모델' 탭 — 의미 회상 임베딩."""
+
+    provider: str = ""
+    model: str = ""
+    api_key: str | None = None
+    base_url: str = ""
+    dim: int = 0
+
+
+class ProviderTestBody(BaseModel):
+    """저장 전 연결 테스트 — 폼의 값 그대로 한 번 불러 본다."""
+
+    provider: str = ""
+    model: str = ""
+    api_key: str = ""
+    base_url: str = ""
+    path: str = ""
+    max_output_tokens: int = 0
+    dim: int = 0
 
 
 class ResolveBody(BaseModel):
@@ -610,6 +649,203 @@ def create_app(home: str | None = None, allow_origins: list[str] | None = None):
                 "notes": notes,
             },
         }
+
+    # ----- 모델 설정 (웹 대시보드 '모델' 탭) ---------------------------
+    def _settings_snapshot() -> dict[str, Any]:
+        """키는 절대 평문으로 내보내지 않는다 — 존재 여부와 뒤 4자리만."""
+        def mask(k: str) -> str:
+            return ("⋯" + k[-4:]) if k else ""
+
+        llm = jarvis.store.llm
+        embedder = jarvis.store.embedder
+        cfg = jarvis.config
+        return {
+            "llm": {
+                "provider": cfg.llm.provider,
+                "model": cfg.llm.model,
+                "base_url": cfg.llm.base_url,
+                "path": cfg.llm.path,
+                "max_output_tokens": cfg.llm.max_output_tokens,
+                "key": mask(cfg.api_key("llm")),
+                "has_key": bool(cfg.api_key("llm")),
+                "key_env": (LLM_CATALOG.get(cfg.llm.provider) or {}).get("key_env", ""),
+                "ready": llm.available,
+                "web_set": cfg.llm.web_set,
+            },
+            "embed": {
+                "provider": cfg.embed.provider,
+                "model": cfg.embed.model,
+                "base_url": cfg.embed.base_url,
+                "dim": cfg.embed.dim,
+                "key": mask(cfg.api_key("embed")),
+                "has_key": bool(cfg.api_key("embed")),
+                "key_env": (EMBED_CATALOG.get(cfg.embed.provider) or {}).get("key_env", ""),
+                "ready": bool(getattr(embedder, "semantic", False)),
+                "configured": bool(getattr(embedder, "configured_semantic", False)),
+                "probe_error": getattr(embedder, "probe_error", ""),
+                "web_set": cfg.embed.web_set,
+            },
+            "llm_catalog": [
+                {"provider": p, "label": m["label"], "model": m["model"],
+                 "base": m["base"], "key_env": m["key_env"], "needs_key": m["needs_key"],
+                 "custom": m.get("custom", False)}
+                for p, m in LLM_CATALOG.items()
+            ],
+            "embed_catalog": [
+                {"provider": p, "label": m["label"], "model": m["model"],
+                 "base": m["base"], "key_env": m["key_env"], "dim": m.get("dim", 0),
+                 "needs_key": m["needs_key"], "custom": m.get("custom", False)}
+                for p, m in EMBED_CATALOG.items()
+            ],
+        }
+
+    @app.get("/settings")
+    def settings_get(request: Request) -> dict[str, Any]:
+        return _settings_snapshot()
+
+    @app.post("/settings/llm")
+    def settings_llm_set(body: LlmSettingsBody, request: Request) -> dict[str, Any]:
+        _require_admin(request)
+        llm = jarvis.config.llm
+        if body.provider and body.provider not in LLM_CATALOG and body.provider != "none":
+            raise HTTPException(400, f"알 수 없는 제공자: {body.provider}")
+        llm.provider = body.provider or ""
+        catalog = LLM_CATALOG.get(body.provider) if body.provider else None
+        if body.model:
+            llm.model = body.model
+        elif catalog and catalog.get("model"):
+            llm.model = catalog["model"]
+        else:
+            llm.model = ""
+        if body.base_url:
+            llm.base_url = body.base_url
+        elif body.provider:
+            llm.base_url = ""  # 제공자 기본값 사용
+        if body.path:
+            llm.path = body.path
+        elif body.provider:
+            llm.path = ""
+        if body.max_output_tokens > 0:
+            llm.max_output_tokens = body.max_output_tokens
+        if body.api_key is not None:
+            llm.api_key = body.api_key.strip()
+        # 제공자 기본 키 환경변수로 맞춰서, 웹 키가 없으면 env 폴백이 동작하게.
+        key_env = (LLM_CATALOG.get(body.provider) or {}).get("key_env", "")
+        if body.provider and key_env:
+            llm.api_key_env = key_env
+        llm.web_set = True
+        jarvis.config.save()
+        jarvis.store.llm = LLM.from_config(jarvis.config)
+        return _settings_snapshot()
+
+    @app.post("/settings/embed")
+    def settings_embed_set(body: EmbedSettingsBody, request: Request) -> dict[str, Any]:
+        _require_admin(request)
+        embed = jarvis.config.embed
+        if body.provider and body.provider not in EMBED_CATALOG and body.provider != "hashing":
+            raise HTTPException(400, f"알 수 없는 제공자: {body.provider}")
+        embed.provider = body.provider or "hashing"
+        if body.model:
+            embed.model = body.model
+        elif body.provider and body.provider != "hashing":
+            embed.model = (EMBED_CATALOG.get(body.provider) or {}).get("model", "")
+        else:
+            embed.model = ""
+        if body.base_url:
+            embed.base_url = body.base_url
+        elif body.provider:
+            embed.base_url = ""
+        if body.api_key is not None:
+            embed.api_key = body.api_key.strip()
+        key_env = (EMBED_CATALOG.get(body.provider) or {}).get("key_env", "")
+        if body.provider and key_env:
+            embed.api_key_env = key_env
+        if body.dim > 0:
+            embed.dim = body.dim
+        embed.web_set = True
+        jarvis.config.save()
+        jarvis.store.embedder = Embedder.from_config(jarvis.config)
+        if jarvis.store.embedder.configured_semantic:
+            # 프로브를 한 번 돌려 죽은 엔드포인트를 이 자리에서 알리고,
+            # 벡터 차원·유사도 기준선을 배운다. 색인 서명이 바뀌면 자동 재색인.
+            jarvis.store.embedder.similarity_floor
+        try:
+            jarvis.store._ensure_index_fresh()
+        except Exception:
+            _log.exception("임베딩 교체 후 재색인 실패")
+        return _settings_snapshot()
+
+    @app.post("/settings/reset")
+    def settings_reset(request: Request) -> dict[str, Any]:
+        """웹 설정을 지우고 환경변수(또는 기본값) 동작으로 돌아간다."""
+        _require_admin(request)
+        cfg = jarvis.config
+        for sec in (cfg.llm, cfg.embed):
+            for f in ("provider", "model", "base_url", "path", "dim", "api_key"):
+                if hasattr(sec, f):
+                    setattr(sec, f, "" if f != "dim" else 512)
+            sec.web_set = False
+        cfg.embed.provider = "hashing"
+        cfg.apply_env()  # 초기화면 환경변수가 다시 부트스트랩한다
+        cfg.save()
+        jarvis.store.llm = LLM.from_config(cfg)
+        jarvis.store.embedder = Embedder.from_config(cfg)
+        try:
+            jarvis.store._ensure_index_fresh()
+        except Exception:
+            _log.exception("초기화 후 재색인 실패")
+        return _settings_snapshot()
+
+    @app.post("/settings/llm/test")
+    def settings_llm_test(body: ProviderTestBody, request: Request) -> dict[str, Any]:
+        import time as _time
+
+        _require_admin(request)
+        probe = LLMConfig(
+            provider=body.provider or jarvis.config.llm.provider,
+            model=body.model or jarvis.config.llm.model,
+            base_url=body.base_url or jarvis.config.llm.base_url,
+            path=body.path if body.path is not None else jarvis.config.llm.path,
+            max_output_tokens=body.max_output_tokens or jarvis.config.llm.max_output_tokens,
+            timeout=20.0,
+        )
+        key = body.api_key or jarvis.config.api_key("llm")
+        llm = LLM(probe, key)
+        started = _time.monotonic()
+        res = llm.complete("한 단어로만 답하세요: 연결 확인", max_tokens=16)
+        return {
+            "ok": res.ok and bool(res.text.strip()),
+            "ms": int((_time.monotonic() - started) * 1000),
+            "text": res.text.strip()[:200],
+            "error": res.error,
+        }
+
+    @app.post("/settings/embed/test")
+    def settings_embed_test(body: ProviderTestBody, request: Request) -> dict[str, Any]:
+        import time as _time
+
+        _require_admin(request)
+        probe = EmbedConfig(
+            provider=body.provider or jarvis.config.embed.provider,
+            model=body.model or jarvis.config.embed.model,
+            base_url=body.base_url or jarvis.config.embed.base_url,
+            dim=body.dim or jarvis.config.embed.dim,
+        )
+        key = body.api_key or jarvis.config.api_key("embed")
+        emb = Embedder(probe, key)
+        started = _time.monotonic()
+        try:
+            vecs = emb.embed_batch(["연결 테스트"])
+            ok = emb.probe_error == "" and bool(vecs and vecs[0])
+            return {
+                "ok": ok,
+                "ms": int((_time.monotonic() - started) * 1000),
+                "dim": len(vecs[0]) if vecs and vecs[0] else 0,
+                "error": emb.probe_error or "",
+            }
+        except Exception as exc:
+            return {"ok": False, "ms": int((_time.monotonic() - started) * 1000),
+                    "dim": 0, "error": f"{type(exc).__name__}: {exc}"[:200]}
 
     # ----- remote MCP (Streamable HTTP) --------------------------------
     @app.post("/mcp")

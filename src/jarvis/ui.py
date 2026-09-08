@@ -158,6 +158,7 @@ DASHBOARD_HTML = r"""<!doctype html>
 <nav>
   <button data-tab="projects" class="on">프로젝트</button>
   <button data-tab="connections">연결</button>
+  <button data-tab="models">모델</button>
   <button data-tab="knowledge">지식<span class="n" id="badge" hidden></span></button>
   <button data-tab="activity">활동</button>
 </nav>
@@ -201,6 +202,88 @@ DASHBOARD_HTML = r"""<!doctype html>
     <section>
       <h2>접속 키 — 누가 이 서버에 연결할 수 있나</h2>
       <div class="panel pad" id="keys-panel">불러오는 중...</div>
+    </section>
+  </div>
+
+  <!-- ============ 모델 (LLM · 임베딩 설정) ============ -->
+  <div class="tab" id="tab-models">
+    <section>
+      <h2>증류·요약 LLM — 질문/답변을 메모리로 압축하는 모델
+        <span class="chip" id="m-status"></span></h2>
+      <div class="panel pad">
+        <div class="split">
+          <div class="fld"><label>제공자</label><select id="m-provider"></select></div>
+          <div class="fld"><label>모델</label><input id="m-model" placeholder="예: claude-sonnet-5"></div>
+        </div>
+        <div class="split">
+          <div class="fld"><label>API 키</label>
+            <div class="row">
+              <input id="m-key" type="password" style="flex:1" placeholder="새 키를 입력 (비워 두면 기존 키 유지)">
+              <button class="small" id="m-clear">키 지우기</button>
+            </div>
+            <div style="color:var(--muted);font-size:11.5px;margin-top:3px" id="m-key-note"></div>
+          </div>
+          <div class="fld"><label>Base URL (비우면 제공자 기본값 — Custom/게이트웨이는 필수)</label>
+            <input id="m-base" placeholder="https://.../invocations"></div>
+        </div>
+        <div class="split">
+          <div class="fld"><label>요청 경로 (기본 /chat/completions, Databricks 는 /)</label>
+            <input id="m-path" placeholder="/chat/completions"></div>
+          <div class="fld"><label>최대 출력 토큰 (reasoner 계열은 4096 권장)</label>
+            <input id="m-tokens" type="number" min="1" step="128"></div>
+        </div>
+        <div class="row">
+          <button class="primary" id="m-save">저장</button>
+          <button id="m-test">연결 테스트</button>
+          <span id="m-msg"></span>
+          <span id="m-test-out" style="color:var(--muted);font-size:12.5px"></span>
+        </div>
+        <div class="why" id="m-why" hidden></div>
+      </div>
+    </section>
+    <section>
+      <h2>의미 회상 임베딩 — "릴리스는 어떻게 해?"가 "배포 명령"을 찾게 하는 모델
+        <span class="chip" id="e-status"></span></h2>
+      <div class="panel pad">
+        <div class="split">
+          <div class="fld"><label>제공자</label><select id="e-provider"></select></div>
+          <div class="fld"><label>모델</label><input id="e-model" placeholder="예: text-embedding-3-small"></div>
+        </div>
+        <div class="split">
+          <div class="fld"><label>API 키</label>
+            <div class="row">
+              <input id="e-key" type="password" style="flex:1" placeholder="새 키를 입력 (비워 두면 기존 키 유지)">
+              <button class="small" id="e-clear">키 지우기</button>
+            </div>
+            <div style="color:var(--muted);font-size:11.5px;margin-top:3px" id="e-key-note"></div>
+          </div>
+          <div class="fld"><label>Base URL (Custom 은 필수)</label>
+            <input id="e-base" placeholder="https://.../v1"></div>
+        </div>
+        <div class="row">
+          <div class="fld" style="flex:1"><label>벡터 차원 (모델이 정해 주면 자동, 비워 둠)</label>
+            <input id="e-dim" type="number" min="0" step="64" placeholder="자동"></div>
+        </div>
+        <div class="row">
+          <button class="primary" id="e-save">저장</button>
+          <button id="e-test">연결 테스트</button>
+          <span id="e-msg"></span>
+          <span id="e-test-out" style="color:var(--muted);font-size:12.5px"></span>
+        </div>
+        <div class="why" id="e-why" hidden></div>
+      </div>
+    </section>
+    <section>
+      <h2>웹 설정 초기화</h2>
+      <div class="panel pad">
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;line-height:1.7">
+          여기서 정한 값은 서버 설정 파일에 저장되어 <b>환경변수보다 우선</b>합니다.
+          초기화하면 웹 설정이 지워지고 <code>deploy/.env</code> 의 환경변수(또는 기본값)
+          동작으로 돌아갑니다.
+        </div>
+        <div class="row"><button id="m-reset">웹 설정 초기화 (환경변수로 복귀)</button>
+          <span id="m-reset-msg" style="color:var(--muted)"></span></div>
+      </div>
     </section>
   </div>
 
@@ -1354,6 +1437,7 @@ async function load() {
     await boot();
     if (tab === "projects") { renderProjects(); await loadAliases(); await loadBackup(); }
     else if (tab === "connections") await loadKeys();
+    else if (tab === "models") await loadModels();
     else if (tab === "knowledge") await loadKnowledge();
     else await loadActivity();
   } catch (e) {
@@ -1373,6 +1457,153 @@ $("k-project").onchange = loadKnowledge;
 $("a-project").onchange = loadActivity;
 $("days").onchange = loadActivity;
 window.openMemory = openMemory;
+
+// ---------------- 모델 설정 (LLM · 임베딩) ----------------
+let SETTINGS = null;
+const touched = { m: false, e: false };   // 모델 옵션을 사용자가 직접 입력했는지
+const clearKey = { m: false, e: false };   // "키 지우기" 눌렀는지
+
+function fillProviderSelect(prefix, catalog, current, noneVal, noneLabel) {
+  const sel = $(prefix + "-provider");
+  sel.innerHTML = `<option value="${esc(noneVal)}">${esc(noneLabel)}</option>` +
+    catalog.map((c) =>
+      `<option value="${esc(c.provider)}" ${c.provider === current ? "selected" : ""}>${esc(c.label)}` +
+      (c.custom ? " — base URL·키 직접 입력" : "") + `</option>`).join("");
+  if (!catalog.some((c) => c.provider === current)) sel.value = noneVal;
+}
+
+function keyNote(prefix) {
+  const s = prefix === "m" ? SETTINGS.llm : SETTINGS.embed;
+  const parts = [];
+  if (s.has_key) parts.push(`저장된 키 끝 ${esc(s.key)} — 새로 입력하면 교체, 비워 두면 유지`);
+  if (s.key_env) parts.push(`환경변수 ${esc(s.key_env)} 폴백 가능`);
+  $(prefix + "-key-note").textContent = parts.join(" · ");
+  $(prefix + "-clear").style.display = s.has_key ? "" : "none";
+}
+
+function currentForm(prefix) {
+  const base = {
+    provider: $(prefix + "-provider").value,
+    model: $(prefix + "-model").value.trim(),
+    base_url: $(prefix + "-base").value.trim(),
+  };
+  if (prefix === "m") {
+    base.path = $(prefix + "-path").value.trim();
+    base.max_output_tokens = Number($(prefix + "-tokens").value) || 0;
+  } else {
+    base.dim = Number($(prefix + "-dim").value) || 0;
+  }
+  const key = $(prefix + "-key").value;
+  if (key) base.api_key = key;                 // 새 키 입력
+  else if (clearKey[prefix]) base.api_key = ""; // 지우기
+  return base;
+}
+
+async function loadModels() {
+  try { SETTINGS = await api("/settings"); }
+  catch (e) {
+    if (isAuthErr(e)) { $("error").innerHTML = authHelpPanel(); return; }
+    $("error").innerHTML = `<div class="err">모델 설정을 불러오지 못했습니다: ${esc(e.message)}</div>`;
+    return;
+  }
+  fillProviderSelect("m", SETTINGS.llm_catalog, SETTINGS.llm.provider, "none", "없음/환경변수");
+  fillProviderSelect("e", SETTINGS.embed_catalog, SETTINGS.embed.provider, "hashing", "해싱(오프라인)");
+  $("m-model").value = SETTINGS.llm.model || "";
+  $("m-base").value = SETTINGS.llm.base_url || "";
+  $("m-path").value = SETTINGS.llm.path || "";
+  $("m-tokens").value = SETTINGS.llm.max_output_tokens || "";
+  $("e-model").value = SETTINGS.embed.model || "";
+  $("e-base").value = SETTINGS.embed.base_url || "";
+  $("e-dim").value = (SETTINGS.embed.provider === "hashing" || !SETTINGS.embed.dim) ? "" : SETTINGS.embed.dim;
+  $("m-key").value = ""; $("e-key").value = "";
+  touched.m = touched.e = false; clearKey.m = clearKey.e = false;
+  keyNote("m"); keyNote("e");
+  $("m-status").textContent = SETTINGS.llm.ready ? "동작 중" : "미설정";
+  $("m-status").className = "chip " + (SETTINGS.llm.ready ? "ok" : "warn");
+  $("e-status").textContent = SETTINGS.embed.ready ? "동작 중"
+    : SETTINGS.embed.configured ? "엔드포인트 오류" : "미설정";
+  $("e-status").className = "chip " + (SETTINGS.embed.ready ? "ok"
+    : SETTINGS.embed.configured ? "bad" : "warn");
+  $("m-reset-msg").textContent = (SETTINGS.llm.web_set || SETTINGS.embed.web_set)
+    ? "웹 설정이 적용 중입니다 (환경변수보다 우선)" : "";
+  const why = [];
+  if (SETTINGS.llm.provider && SETTINGS.llm.provider !== "none" && !SETTINGS.llm.ready)
+    why.push("LLM: 제공자가 설정됐지만 키가 없어 동작하지 않습니다 — 키를 입력하고 저장하세요.");
+  if (!SETTINGS.llm.provider && !SETTINGS.llm.ready && !SETTINGS.llm.web_set)
+    why.push("LLM 미설정: 증류·요약이 규칙 기반으로 동작합니다 (동작은 하지만 요약 품질이 낮습니다).");
+  if (SETTINGS.embed.provider !== "hashing" && !SETTINGS.embed.ready)
+    why.push(`임베딩: '${esc(SETTINGS.embed.provider)}' 엔드포인트에 닿지 않습니다 — ${esc(SETTINGS.embed.probe_error || "키·주소 확인")}`);
+  $("m-why").hidden = !why.length;
+  $("m-why").textContent = why.join(" ");
+}
+
+async function saveModels(prefix) {
+  const msg = $(prefix + "-msg");
+  msg.textContent = "저장 중..."; msg.style.color = "var(--muted)";
+  try {
+    SETTINGS = await api(`/settings/${prefix === "m" ? "llm" : "embed"}`,
+      { method: "POST", body: JSON.stringify(currentForm(prefix)) });
+    msg.textContent = "저장했습니다."; msg.style.color = "var(--accent)";
+    $(prefix + "-key").value = "";
+    touched[prefix] = false; clearKey[prefix] = false;
+    keyNote(prefix);
+    await load();   // 품질 칩·상태 갱신
+  } catch (e) {
+    msg.textContent = String(e.message).startsWith("403")
+      ? "키 관리는 전체 접근(관리자) 키로만 가능합니다" : e.message;
+    msg.style.color = "var(--bad)";
+  }
+}
+
+async function testModels(prefix) {
+  const out = $(prefix + "-test-out");
+  out.textContent = "테스트 중..."; out.style.color = "var(--muted)";
+  const body = currentForm(prefix);
+  body.api_key = $(prefix + "-key").value || "";   // 입력한 키로 먼저 시도
+  try {
+    const r = await api(`/settings/${prefix === "m" ? "llm" : "embed"}/test`,
+      { method: "POST", body: JSON.stringify(body) });
+    if (r.ok) {
+      out.textContent = `✓ 연결됨 (${r.ms}ms)` + (r.text ? ` — ${esc(r.text.slice(0, 70))}` : "") +
+        (r.dim ? ` · 차원 ${r.dim}` : "");
+      out.style.color = "var(--accent)";
+    } else {
+      out.textContent = `✗ 실패 (${r.ms}ms): ${esc(r.error || "응답이 비어 있음")}`;
+      out.style.color = "var(--bad)";
+    }
+  } catch (e) {
+    out.textContent = `✗ ${esc(e.message)}`; out.style.color = "var(--bad)";
+  }
+}
+
+["m", "e"].forEach((prefix) => {
+  $(prefix + "-provider").onchange = () => {
+    const list = (SETTINGS || {})[prefix === "m" ? "llm_catalog" : "embed_catalog"] || [];
+    const cat = list.find((c) => c.provider === $(prefix + "-provider").value);
+    if (cat && cat.model && !touched[prefix]) $(prefix + "-model").value = cat.model;
+    if (cat && !cat.custom) $(prefix + "-base").value = "";  // 제공자 기본값 사용
+    $(prefix + "-key").value = ""; clearKey[prefix] = false;
+  };
+  $(prefix + "-save").onclick = () => saveModels(prefix);
+  $(prefix + "-test").onclick = () => testModels(prefix);
+  $(prefix + "-model").oninput = () => { touched[prefix] = true; };
+  $(prefix + "-base").oninput = () => { touched[prefix] = true; };
+  $(prefix + "-key").oninput = () => { touched[prefix] = true; };
+  $(prefix + "-clear").onclick = () => {
+    $(prefix + "-key").value = ""; clearKey[prefix] = true; touched[prefix] = true;
+    $(prefix + "-key-note").textContent = "저장하면 키가 지워지고 환경변수(또는 없음)로 동작합니다.";
+  };
+});
+$("m-reset").onclick = async () => {
+  if (!confirm("웹에서 정한 LLM·임베딩 설정을 지우고 환경변수 동작으로 돌아갈까요?")) return;
+  try {
+    SETTINGS = await api("/settings/reset", { method: "POST" });
+    await load();   // 폼·상태 새로 채움
+    $("m-reset-msg").textContent = "초기화했습니다.";
+  } catch (e) {
+    $("m-reset-msg").textContent = e.message;
+  }
+};
 load();
 </script>
 </body>

@@ -326,6 +326,11 @@ def test_every_post_route_parses_its_body(client):
         "/backup/connect/poll": None,
         "/backup/disconnect": None,
         "/backup/run": None,
+        "/settings/llm": {"provider": "openai"},
+        "/settings/embed": {"provider": "hashing"},
+        "/settings/reset": None,
+        "/settings/llm/test": {"provider": "openai", "model": "gpt-4o"},
+        "/settings/embed/test": {"provider": "openai", "model": "text-embedding-3-small"},
     }
     posts = [
         r.path

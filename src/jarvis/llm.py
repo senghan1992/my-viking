@@ -19,6 +19,9 @@ _DEFAULT_BASE = {
     "anthropic": "https://api.anthropic.com/v1",
     "openai": "https://api.openai.com/v1",
     "volcengine": "https://ark.cn-beijing.volces.com/api/v3",
+    "grok": "https://api.x.ai/v1",
+    "deepseek": "https://api.deepseek.com",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
     "ollama": "http://localhost:11434/v1",
 }
 

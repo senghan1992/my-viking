@@ -13,6 +13,44 @@ ENV_HOME = "JARVIS_HOME"
 DEFAULT_HOME = Path.home() / ".jarvis"
 CONFIG_NAME = "jarvis.yaml"
 
+# 웹 대시보드 '모델' 탭이 보여주는 제공자 목록. custom 은 base_url/키를 직접 채운다.
+LLM_CATALOG: dict[str, dict] = {
+    "anthropic": {"label": "Anthropic Claude", "key_env": "ANTHROPIC_API_KEY",
+                   "model": "claude-sonnet-5", "base": "https://api.anthropic.com/v1", "needs_key": True},
+    "openai": {"label": "OpenAI", "key_env": "OPENAI_API_KEY",
+                "model": "gpt-4o", "base": "https://api.openai.com/v1", "needs_key": True},
+    "grok": {"label": "xAI Grok", "key_env": "XAI_API_KEY",
+              "model": "grok-3", "base": "https://api.x.ai/v1", "needs_key": True},
+    "deepseek": {"label": "DeepSeek", "key_env": "DEEPSEEK_API_KEY",
+                  "model": "deepseek-chat", "base": "https://api.deepseek.com", "needs_key": True},
+    "gemini": {"label": "Google Gemini", "key_env": "GEMINI_API_KEY",
+                "model": "gemini-2.0-flash", "base": "https://generativelanguage.googleapis.com/v1beta/openai",
+                "needs_key": True},
+    "volcengine": {"label": "Volcengine ARK", "key_env": "ARK_API_KEY",
+                    "model": "doubao-seed-1-6-vision", "base": "https://ark.cn-beijing.volces.com/api/v3",
+                    "needs_key": True},
+    "ollama": {"label": "Ollama (로컬)", "key_env": "",
+                "model": "qwen2.5", "base": "http://localhost:11434/v1", "needs_key": False},
+    # custom: base_url·모델·키를 직접 채우는 OpenAI 호환 엔드포인트 (Databricks Serving, 회사 게이트웨이 등)
+    "custom": {"label": "Custom (OpenAI 호환)", "key_env": "", "model": "", "base": "",
+                "needs_key": True, "custom": True},
+}
+
+EMBED_CATALOG: dict[str, dict] = {
+    "openai": {"label": "OpenAI", "key_env": "OPENAI_API_KEY",
+                "model": "text-embedding-3-small", "base": "https://api.openai.com/v1",
+                "dim": 1536, "needs_key": True},
+    "volcengine": {"label": "Volcengine ARK", "key_env": "ARK_API_KEY",
+                    "model": "", "base": "https://ark.cn-beijing.volces.com/api/v3",
+                    "dim": 0, "needs_key": True},
+    "ollama": {"label": "Ollama (로컬)", "key_env": "",
+                "model": "bge-m3", "base": "http://localhost:11434/v1",
+                "dim": 1024, "needs_key": False},
+    "custom": {"label": "Custom (OpenAI 호환)", "key_env": "", "model": "", "base": "",
+                "needs_key": True, "custom": True},
+}
+
+
 
 def jarvis_home() -> Path:
     return Path(os.environ.get(ENV_HOME) or DEFAULT_HOME).expanduser()
@@ -27,7 +65,7 @@ class LLMConfig:
     (storage, retrieval, caching, budgeting) works identically.
     """
 
-    provider: str = "none"  # none | anthropic | openai | volcengine | ollama
+    provider: str = "none"  # none | anthropic | openai | volcengine | grok | deepseek | gemini | ollama | custom
     model: str = "claude-sonnet-5"
     api_key_env: str = "ANTHROPIC_API_KEY"
     base_url: str = ""
@@ -36,15 +74,23 @@ class LLMConfig:
     path: str = ""
     max_output_tokens: int = 2048
     timeout: float = 60.0
+    # 웹 대시보드가 저장한 API 키 (환경변수보다 우선). 설정 파일(0600)에 남는다.
+    api_key: str = ""
+    # 웹 대시보드에서 이 섹션을 정했으면 True — 이후 환경변수가 덮어쓰지 않는다.
+    web_set: bool = False
 
 
 @dataclass
 class EmbedConfig:
-    provider: str = "hashing"  # hashing | openai | volcengine | ollama
+    provider: str = "hashing"  # hashing | openai | volcengine | ollama | custom
     model: str = ""
     api_key_env: str = ""
     base_url: str = ""
     dim: int = 512
+    # 웹 대시보드가 저장한 API 키 (환경변수보다 우선)
+    api_key: str = ""
+    # 웹 대시보드에서 정하면 환경변수가 덮어쓰지 않는다.
+    web_set: bool = False
 
 
 @dataclass
@@ -270,19 +316,23 @@ class Config:
             (self.llm, "JARVIS_LLM_", ("provider", "model", "api_key_env", "base_url", "path")),
             (self.embed, "JARVIS_EMBED_", ("provider", "model", "api_key_env", "base_url")),
         ):
+            # 웹 대시보드에서 정한 섹션은 환경변수가 덮어쓰지 않는다 (웹이 우선).
+            if getattr(section, "web_set", False):
+                continue
             for field_name in fields:
                 val = env.get(prefix + field_name.upper(), "")
                 if val:
                     setattr(section, field_name, val.strip())
         dim = env.get("JARVIS_EMBED_DIM", "")
-        if dim.strip().isdigit() and int(dim) > 0:
+        if dim.strip().isdigit() and int(dim) > 0 and not self.embed.web_set:
             self.embed.dim = int(dim)
         # reasoner(deepseek 등)는 사고 토큰을 따로 쓰므로 출력 상한을 올릴 수 있게.
         out = env.get("JARVIS_LLM_MAX_OUTPUT_TOKENS", "")
-        if out.strip().isdigit() and int(out) > 0:
+        if out.strip().isdigit() and int(out) > 0 and not self.llm.web_set:
             self.llm.max_output_tokens = int(out)
         if (
             self.llm.provider in ("", "none")
+            and not self.llm.web_set
             and not env.get("JARVIS_LLM_PROVIDER")
             and env.get("ANTHROPIC_API_KEY")
         ):
@@ -297,17 +347,26 @@ class Config:
             yaml.safe_dump(self.to_dict(), allow_unicode=True, sort_keys=False),
             encoding="utf-8",
         )
+        # 웹에서 저장한 API 키가 들어 있을 수 있다 — 다른 사용자에게 읽히지 않게.
+        try:
+            self.config_path.chmod(0o600)
+        except OSError:  # pragma: no cover - 권한 설정 불가 플랫폼
+            pass
         return self.config_path
 
     def api_key(self, which: str = "llm") -> str:
-        env = self.llm.api_key_env if which == "llm" else self.embed.api_key_env
-        return os.environ.get(env, "") if env else ""
+        """웹 대시보드가 저장한 키가 최우선, 없으면 환경변수."""
+        sec = self.llm if which == "llm" else self.embed
+        if sec.api_key:
+            return sec.api_key
+        env = os.environ.get(sec.api_key_env, "") if sec.api_key_env else ""
+        return env
 
 
 # Sensible per-provider defaults so `JARVIS_EMBED_PROVIDER=openai` is enough.
 # The vector dimension must match the model: stored vectors are compared by
 # length, and a wrong ``dim`` silently scores every node zero.
-_EMBED_KEY_ENV = {"openai": "OPENAI_API_KEY", "volcengine": "ARK_API_KEY", "ollama": ""}
+_EMBED_KEY_ENV = {"openai": "OPENAI_API_KEY", "volcengine": "ARK_API_KEY", "ollama": "", "custom": ""}
 _EMBED_DEFAULT_MODEL = {"openai": "text-embedding-3-small", "ollama": "bge-m3"}
 EMBED_MODEL_DIMS = {
     "text-embedding-3-small": 1536,
@@ -322,7 +381,14 @@ EMBED_MODEL_DIMS = {
     "snowflake-arctic-embed": 1024,
     "all-minilm": 384,
 }
-_LLM_KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "volcengine": "ARK_API_KEY"}
+_LLM_KEY_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "volcengine": "ARK_API_KEY",
+    "grok": "XAI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
 
 
 def _fill_provider_defaults(cfg: "Config") -> None:
