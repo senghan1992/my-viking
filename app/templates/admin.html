@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}관리자{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>👑 관리자 대시보드</h1>
+  <p class="muted">전체 이용자와 도서관 현황을 봅니다.</p>
+</div>
+
+<div class="stat-row">
+  <div class="stat"><b>{{ stats.users }}</b><span>이용자</span></div>
+  <div class="stat"><b>{{ stats.projects }}</b><span>프로젝트</span></div>
+  <div class="stat stat-green"><b>{{ stats.memories }}</b><span>지식 권수</span></div>
+  <div class="stat"><b>{{ stats.keys }}</b><span>활성 키</span></div>
+</div>
+
+<section class="card">
+  <h2>이용자</h2>
+  <table class="users-table">
+    <thead><tr><th>이름</th><th>이메일</th><th>역할</th><th>프로젝트</th><th>지식</th><th>가입일</th><th></th></tr></thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td><b>{{ u.name }}</b>{% if u.disabled %} <span class="chip chip-red">비활성</span>{% endif %}</td>
+        <td>{{ u.email }}</td>
+        <td>{{ '관리자' if u.role == 'admin' else '이용자' }}</td>
+        <td>{{ u.project_count }}</td>
+        <td>{{ u.memory_count }}</td>
+        <td class="muted small">{{ u.created_at[:10] }}</td>
+        <td>
+          {% if u.id != user.id %}
+          <form method="post" action="/admin/users/{{ u.id }}/toggle" class="inline-form">
+            <button class="btn {{ 'danger' if not u.disabled else 'primary' }} small" type="submit">
+              {{ '비활성화' if not u.disabled else '활성화' }}
+            </button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

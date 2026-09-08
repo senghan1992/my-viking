@@ -1,39 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "my-viking"
-version = "0.1.0"
-description = "MyViking — 코딩 에이전트를 위한 셀프호스트 컨텍스트 서버 (프로젝트별 자가학습 메모리 + 추적)"
+name = "myviking"
+version = "1.0.0"
+description = "사람별 프로젝트 지식 도서관 — coding agent가 자동으로 채우고 참조하는 knowledge library"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-    "pyyaml>=6.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "jinja2>=3.1",
+    "pydantic>=2.0",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
-# The server also carries the dashboard and the remote MCP endpoint.
-server = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2.6"]
-# Optional but recommended: batches vector scoring, cutting retrieval latency
-# by roughly 3x. Results are identical either way.
-speed = ["numpy>=1.26"]
-llm = ["httpx>=0.27"]
-dev = ["pytest>=8.0", "httpx>=0.27", "numpy>=1.26"]
-all = [
-    "fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2.6",
-    "numpy>=1.26", "httpx>=0.27",
-]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [project.scripts]
-jv = "jarvis.cli:main"
-jarvis-server = "jarvis.server:run"
-jarvis-mcp = "jarvis.mcp_server:run"
+jv = "jv.cli:main"
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/jarvis"]
+[tool.setuptools.packages.find]
+include = ["app*", "jv*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]

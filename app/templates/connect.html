@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} 연결{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <div class="crumb"><a href="/">내 도서관</a> › <a href="/projects/{{ project.slug }}">{{ project.name }}</a> ›</div>
+    <h1>🔗 에이전트 연결</h1>
+    <p class="muted">연결하면 세션 시작·질문·답변·변경이 자동으로 기록되고, 다음 세션부터 자동으로 참조됩니다.</p>
+  </div>
+  <a class="btn" href="/projects/{{ project.slug }}">← 서가로</a>
+</div>
+
+<div class="two-col">
+  <section class="card">
+    <h2>🔑 연결 키</h2>
+    <p class="muted small">키는 이 프로젝트 전용입니다. 에이전트마다 따로 발급하고, 더는 안 쓰는 것은 폐기하세요.</p>
+    <ul class="key-list">
+      {% for k in keys %}
+      <li class="{{ 'revoked' if k.revoked_at }}">
+        <span class="chip">{{ k.key_prefix }}…</span>
+        <b>{{ k.name }}</b>
+        <span class="muted small">{{ k.created_at[:16] }}{% if k.revoked_at %} · 폐기 {{ k.revoked_at[:16] }}{% endif %}</span>
+        {% if not k.revoked_at %}
+        <form method="post" action="/projects/{{ project.slug }}/keys/{{ k.id }}/revoke" class="inline-form"
+              onsubmit="return confirm('이 키를 폐기할까요? 이 키로 붙은 에이전트는 즉시 끊깁니다.')">
+          <button class="btn danger small" type="submit">폐기</button>
+        </form>
+        {% endif %}
+      </li>
+      {% else %}
+      <li class="muted small">발급된 키가 없습니다.</li>
+      {% endfor %}
+    </ul>
+    <form method="post" action="/projects/{{ project.slug }}/keys" class="row-form">
+      <input type="text" name="name" placeholder="키 이름 — 예: 내 노트북, 회사 PC, CI" maxlength="40">
+      <button class="btn primary" type="submit">새 키 발급</button>
+    </form>
+    <p class="muted small">발급 직후 <b>한 번만</b> 평문이 보입니다. 서버는 해시만 저장하므로 잃어버리면 다시 발급하세요.</p>
+  </section>
+
+  <section class="card">
+    <h2>⚡ 연결하는 3가지 방법</h2>
+    <div class="steps">
+      <div class="step">
+        <h3>1. Claude Code (자동 캡처 — 권장)</h3>
+        <p class="muted small">에이전트 머신에서 한 번:</p>
+        <pre>pip install git+https://github.com/senghan1992/my-viking.git</pre>
+        <p class="muted small">프로젝트 폴더에서 <code>jv hook install</code> 한 줄이면 세션 시작·질문·답변을 자동 기록합니다.</p>
+      </div>
+      <div class="step">
+        <h3>2. MCP (Cursor·Codex 등)</h3>
+        <p class="muted small">에이전트의 MCP 설정에 추가:</p>
+        <pre>{
+  "mcpServers": {
+    "myviking": {
+      "command": "jv",
+      "args": ["mcp"],
+      "env": {
+        "MYVIKING_URL": "{{ base }}",
+        "MYVIKING_KEY": "jv_...",
+        "MYVIKING_PROJECT": "{{ project.slug }}"
+      }
+    }
+  }
+}</pre>
+      </div>
+      <div class="step">
+        <h3>3. 셸 / 수동 (어떤 에이전트든)</h3>
+        <pre>jv brief -u {{ base }} -k jv_... -p {{ project.slug }}
+jv search "배포 방법" -u {{ base }} -k jv_... -p {{ project.slug }}
+jv remember "규칙" --content "내용" -u {{ base }} -k jv_... -p {{ project.slug }}</pre>
+      </div>
+    </div>
+    <p class="muted small">서버 주소 <code>{{ base }}</code> · 프로젝트 <code>{{ project.slug }}</code></p>
+  </section>
+</div>
+
+<section class="card">
+  <h2>📜 에이전트 지침 (AGENTS.md 에 붙여넣기)</h2>
+  <p class="muted small">지식이 '확인된 사실'과 '검증 전'으로 나뉘어 주입됩니다. 검증 전은 단정하지 말고 확인하세요.</p>
+  <pre class="copy-block">이 프로젝트는 myviking 지식 도서관에 연결되어 있습니다.
+- 세션 시작 시 주입되는 브리핑과 질문마다 주입되는 '관련 지식'은 이전 작업의 축적입니다.
+- ⟨검증 전⟩(fresh) 지식은 사실로 단정하지 말고 코드/문서로 확인하세요.
+- 확립(established) 지식이라도 최근 결과와 어긋나면 "검증 필요" 경고로 표시됩니다.
+- 새로 정한 규칙·함정·결정은 `jv remember "제목" --content "내용"` 또는 MCP 도구로 남기세요.
+- 내 답변이 틀렸음을 알게 되면 같은 제목으로 바른 내용을 남겨 교정하세요.</pre>
+</section>
+{% endblock %}

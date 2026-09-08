@@ -1,130 +1,19 @@
-# MyViking 을 컨테이너로 상시 실행합니다.
-#
-#   cd deploy && docker compose up -d
-#   docker compose exec myviking jv key create laptop   # 외부 노출 시 필수
-#   docker compose logs -f
-#
-# 데이터(메모리·프롬프트·세션·추적)는 myviking-data 볼륨에 남습니다.
-# down/up 은 물론 컨테이너를 지워도 남습니다. 볼륨·호스트를 잃는 경우까지
-# 대비하려면 Google Drive 백업을 연결하세요 (기동 후 언제든):
-#
-#   docker compose exec myviking jv backup connect --client-id ... --client-secret ...
-#   docker compose exec myviking jv backup status
-#
-# 이후 서버가 주기적으로 스냅샷을 올리고 오래된 것은 회전시킵니다.
-# 새 볼륨에 복원: docker compose exec myviking jv backup restore --yes
-
-name: myviking
-
+# 로컬 개발용 — Portainer 배포는 deploy/stack.yml 을 쓰세요.
 services:
-  myviking:
+  viking:
     build:
       context: ..
-      dockerfile: deploy/Dockerfile
-    image: myviking:latest
-    # 기본: 모든 인터페이스의 8787 (사내 LAN·포트포워딩 — 포워딩은 운영자가 관리).
-    # 포트·바인딩은 deploy/.env 의 MYVIKING_PORT / MYVIKING_BIND 로 바꿉니다
-    # (아래 줄이 그것을 읽습니다). 바깥에 열려 있다면 반드시 먼저 API 키를 발급하세요.
-    ports:
-      # up.sh 를 쓰면 up.sh 가 이 두 값을 모드에 맞게 .env 에 기록합니다.
-      - "${MYVIKING_BIND:-0.0.0.0}:${MYVIKING_PORT:-8787}:8787"
-    volumes:
-      - myviking-data:/data
-    # 값은 이 폴더의 .env 에서 읽습니다 (.env.example 참고). 없어도 동작합니다.
-    environment:
-      JARVIS_HOME: /data
-      # 요약·증류 품질을 올리려면 (없어도 완전히 동작합니다). 키만 넣으면 anthropic 이 켜집니다.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      JARVIS_LLM_PROVIDER: ${JARVIS_LLM_PROVIDER:-}
-      JARVIS_LLM_MODEL: ${JARVIS_LLM_MODEL:-}
-      # 회사 게이트웨이·Databricks 등 OpenAI 호환 엔드포인트로 우회할 때
-      JARVIS_LLM_BASE_URL: ${JARVIS_LLM_BASE_URL:-}
-      # base_url 이 곧 엔드포인트(…/invocations)면 "/" — 요청을 그대로 보냅니다. 기본: /chat/completions
-      JARVIS_LLM_PATH: ${JARVIS_LLM_PATH:-}
-      # reasoner(deepseek 계열)는 사고 토큰을 따로 씁니다. 사고만 가득 찬 응답이
-      # 보이면 이 상한을 4096 등으로 올리세요 (기본 2048).
-      JARVIS_LLM_MAX_OUTPUT_TOKENS: ${JARVIS_LLM_MAX_OUTPUT_TOKENS:-}
-      # 의미 기반 회상(동의어·다른 표현). 비우면 오프라인 해시 임베딩.
-      #   openai: JARVIS_EMBED_PROVIDER=openai + OPENAI_API_KEY
-      #   ollama: JARVIS_EMBED_PROVIDER=ollama + JARVIS_EMBED_BASE_URL=http://host.docker.internal:11434/v1
-      JARVIS_EMBED_PROVIDER: ${JARVIS_EMBED_PROVIDER:-}
-      JARVIS_EMBED_MODEL: ${JARVIS_EMBED_MODEL:-}
-      JARVIS_EMBED_BASE_URL: ${JARVIS_EMBED_BASE_URL:-}
-      JARVIS_EMBED_DIM: ${JARVIS_EMBED_DIM:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ARK_API_KEY: ${ARK_API_KEY:-}
-      # Caddy(tls 프로필) 뒤에 있을 때만 1 — 틀린 키 차단이 실제 클라이언트 IP 기준이 됩니다.
-      # up.sh --domain 이 자동으로 켭니다. 프록시 없이 직접 노출할 땐 켜지 마세요.
-      MYVIKING_TRUST_PROXY: ${MYVIKING_TRUST_PROXY:-}
-    # 호스트에서 도는 Ollama 를 컨테이너에서 host.docker.internal 로 부를 수 있게 (Linux 필요, Mac/Win 은 기본).
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    restart: unless-stopped
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import urllib.request as u; u.urlopen('http://127.0.0.1:8787/health').read()
-      interval: 30s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
-    # 이 서비스가 쓰는 것은 자기 데이터 볼륨뿐입니다.
-    read_only: true
-    tmpfs:
-      - /tmp
-    security_opt:
-      - no-new-privileges:true
-
-  # 외부(포트포워딩)로 열 때의 TLS 종료. 켜는 법:
-  #   MYVIKING_DOMAIN=viking.example.com docker compose --profile tls up -d
-  # 공유기에서 80/443 만 포워딩하면 됩니다 — 8787 은 로컬 바인딩 그대로 두세요.
-  # 도메인이 없으면 DuckDNS 같은 무료 DDNS 로 받으면 됩니다.
-  caddy:
-    image: caddy:2
-    profiles: ["tls"]
+      dockerfile: Dockerfile
+    image: myviking:local
+    container_name: myviking
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "${VIKING_PORT:-8787}:8787"
     environment:
-      MYVIKING_DOMAIN: ${MYVIKING_DOMAIN:-}
-      MYVIKING_UPSTREAM: myviking:8787
+      VIKING_DATA: /data
+      VIKING_ALLOW_SIGNUP: "true"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-    depends_on:
-      - myviking
-    security_opt:
-      - no-new-privileges:true
-
-  # DuckDNS 사용자용 (선택): 집 IP 가 바뀌어도 도메인이 따라갑니다. .env 에 DUCKDNS_TOKEN= 을
-  # 넣으면 up.sh --domain 이 함께 띄웁니다. 공유기에 DDNS 메뉴가 있으면 그걸 써도 됩니다.
-  duckdns:
-    image: lscr.io/linuxserver/duckdns:latest
-    profiles: ["duckdns"]
-    restart: unless-stopped
-    environment:
-      SUBDOMAINS: ${DUCKDNS_SUBDOMAIN:-}
-      TOKEN: ${DUCKDNS_TOKEN:-}
-      UPDATE_IP: ipv4
-    security_opt:
-      - no-new-privileges:true
-
-  # 포트를 하나도 열지 않는 외부 노출 (선택): Cloudflare Tunnel. .env 에 CLOUDFLARE_TUNNEL_TOKEN=
-  # 을 넣고 `up.sh --tunnel`. Cloudflare 쪽 Public hostname 은 HTTP · myviking:8787 로.
-  # cloudflared 가 X-Forwarded-For 를 붙이므로 up.sh 가 MYVIKING_TRUST_PROXY=1 을 켭니다.
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    profiles: ["tunnel"]
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
-    depends_on:
-      - myviking
-    security_opt:
-      - no-new-privileges:true
+      - viking-data:/data
 
 volumes:
-  myviking-data:
-  caddy-data:
+  viking-data:

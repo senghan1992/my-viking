@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}내 도서관{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>내 도서관</h1>
+    <p class="muted">프로젝트마다 지식이 자동으로 쌓이는 서가입니다. 새 프로젝트를 만들어 코딩 에이전트를 연결하세요.</p>
+  </div>
+</div>
+
+<div class="shelf-grid">
+  {% for p in projects %}
+  <a class="book-card" href="/projects/{{ p.slug }}">
+    <div class="book-spine">{{ loop.index }}</div>
+    <div class="book-body">
+      <h3>{{ p.name }}</h3>
+      {% if p.description %}<p class="muted small">{{ p.description[:90] }}</p>{% endif %}
+      <div class="meta-line">
+        <span class="chip chip-green">{{ p.memory_count }}권 지식</span>
+        <span class="chip">{{ p.session_count }}회 작업</span>
+        <span class="muted small">{{ p.updated_at[:10] }}</span>
+      </div>
+    </div>
+  </a>
+  {% else %}
+  <div class="empty-shelf">
+    <div class="empty-icon">🪱</div>
+    <h3>아직 서가가 비어 있습니다</h3>
+    <p class="muted">아래에서 첫 프로젝트를 만들면, 에이전트가 일할 때마다 지식이 자동으로 꽂힙니다.</p>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card new-project">
+  <h2>➕ 새 프로젝트 (나만의 지식 서가)</h2>
+  <form method="post" action="/projects" class="row-form">
+    <input type="text" name="name" required placeholder="프로젝트 이름 — 예: 결제 시스템, 블로그, my-app" maxlength="60">
+    <input type="text" name="description" placeholder="한 줄 설명 (선택)" maxlength="500">
+    <button class="btn primary" type="submit">도서관 만들기</button>
+  </form>
+  <p class="muted small">만든 뒤 <b>연결 탭</b>에서 나오는 키와 명령을 코딩 에이전트(Claude Code·Cursor·Codex·MCP)에 붙이면, 이후 작업이 자동으로 기록되고 다음 세션에 자동으로 참조됩니다.</p>
+</div>
+{% endblock %}

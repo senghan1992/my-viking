@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }}{% endblock %}
+{% block content %}
+<div class="page-head project-head">
+  <div>
+    <div class="crumb"><a href="/">내 도서관</a> ›</div>
+    <h1>{{ project.name }} <span class="slug">/{{ project.slug }}</span></h1>
+    {% if project.description %}<p class="muted">{{ project.description }}</p>{% endif %}
+  </div>
+  <div class="project-actions">
+    <a class="btn" href="/projects/{{ project.slug }}/connect">🔗 에이전트 연결</a>
+    <button class="btn ghost small" data-settings-btn>⚙ 설정</button>
+    <form method="post" action="/projects/{{ project.slug }}/delete" class="inline-form"
+          onsubmit="return confirm('프로젝트와 지식 전부를 삭제합니다. 계속할까요?')">
+      <button class="btn danger small" type="submit">삭제</button>
+    </form>
+  </div>
+</div>
+
+<div class="stat-row">
+  <div class="stat"><b>{{ counts.total or 0 }}</b><span>지식 권수</span></div>
+  <div class="stat stat-green"><b>{{ counts.established or 0 }}</b><span>확립</span></div>
+  <div class="stat stat-amber"><b>{{ counts.fresh or 0 }}</b><span>검증 전</span></div>
+  <div class="stat stat-red"><b>{{ counts.contested or 0 }}</b><span>검증 필요</span></div>
+</div>
+
+<div class="two-col">
+  <section class="card library-pane">
+    <div class="pane-head">
+      <h2>📖 서가</h2>
+      <input id="search-box" type="search" placeholder="지식 검색… (관련성 순)" value="{{ q }}">
+      <span class="cat-filter">
+        {% for c in categories %}
+        <a class="{{ 'on' if cat == c }}" href="/projects/{{ project.slug }}?cat={{ c }}">{{ category_labels[c] }}</a>
+        {% endfor %}
+      </span>
+    </div>
+
+    <div id="library-list">
+      {% for m in memories %}
+      <div class="mem-card status-{{ m.status }}" data-mid="{{ m.id }}">
+        <div class="mem-top">
+          <span class="chip">{{ category_labels[m.category] }}</span>
+          <span class="chip status-chip">{{ status_labels[m.status] }}</span>
+          <span class="muted small">{{ m.updated_at[:16] }}</span>
+        </div>
+        <h3 class="mem-title">{{ m.title }}</h3>
+        <p class="muted small mem-summary">{{ m.summary }}</p>
+        <div class="mem-actions">
+          <button class="link-btn" data-view="{{ m.id }}">읽기</button>
+          <button class="link-btn" data-edit="{{ m.id }}">고치기</button>
+          {% if m.status != 'established' %}
+          <button class="link-btn green" data-confirm="{{ m.id }}">확립으로</button>
+          {% endif %}
+          <button class="link-btn red" data-del="{{ m.id }}">삭제</button>
+        </div>
+      </div>
+      {% else %}
+      <div class="empty">아직 지식이 없습니다. 코딩 에이전트를 연결하고 작업을 시작하면 자동으로 쌓입니다.</div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <aside class="side">
+    <section class="card">
+      <h2>🕘 최근 활동</h2>
+      <ul class="event-list">
+        {% for e in events %}
+        <li><span class="muted small">{{ e.created_at[5:16] }}</span> {{ e.detail[:80] }}</li>
+        {% else %}
+        <li class="muted small">아직 활동이 없습니다.</li>
+        {% endfor %}
+      </ul>
+    </section>
+    <section class="card">
+      <h2>🤖 에이전트 세션</h2>
+      <ul class="event-list">
+        {% for s in sessions %}
+        <li><b>{{ s.agent }}</b> — 질문 {{ s.question_count }}회 <span class="muted small">{{ s.started_at[5:16] }}</span></li>
+        {% else %}
+        <li class="muted small">연결 후 세션이 여기에 기록됩니다.</li>
+        {% endfor %}
+      </ul>
+    </section>
+  </aside>
+</div>
+
+{# ── 지식 상세·편집 모달 ── #}
+<div class="modal-back" id="mem-modal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="mm-title">지식</h2>
+      <button class="link-btn" data-close>✕</button>
+    </div>
+    <div id="mm-body" class="modal-body"></div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close>닫기</button>
+    </div>
+  </div>
+</div>
+
+{# ── 설정 모달 ── #}
+<div class="modal-back" id="settings-modal" hidden>
+  <div class="modal">
+    <form method="post" action="/projects/{{ project.slug }}/settings" class="stack">
+      <h2>프로젝트 설정</h2>
+      <label>이름<input type="text" name="name" value="{{ project.name }}" maxlength="60"></label>
+      <label>설명<textarea name="description" rows="3" maxlength="500">{{ project.description }}</textarea></label>
+      <button class="btn primary" type="submit">저장</button>
+      <button type="button" class="btn ghost" data-close>취소</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}새 계정{% endblock %}
+{% block content %}
+<div class="auth-card">
+  <h1>새 도서관 이용자</h1>
+  <p class="muted">가입 즉시 나만의 프로젝트 도서관을 만들 수 있습니다.</p>
+  {% if msg %}<div class="alert">{{ msg }}</div>{% endif %}
+  <form method="post" action="/signup" class="stack">
+    <label>이름<input type="text" name="name" required placeholder="홍길동" maxlength="40"></label>
+    <label>이메일<input type="email" name="email" required placeholder="you@example.com"></label>
+    <label>비밀번호 (6자 이상)<input type="password" name="password" required minlength="6"></label>
+    <button class="btn primary" type="submit">가입하고 시작하기</button>
+  </form>
+  <p class="muted center">이미 계정이 있나요? <a href="/login">로그인</a></p>
+</div>
+{% endblock %}

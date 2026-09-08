@@ -1,74 +1,55 @@
-# MyViking — 직접 관리용 스택 (Portainer · 자기 인프라)
+# ═══════════════════════════════════════════════════════════════════════════
+# myviking — Portainer 스택 (사람별 프로젝트 지식 도서관)
 #
-# up.sh 없이, 자기가 포트·프록시·TLS 를 관리하는 환경(Portainer 스택,
-# Nginx Proxy Manager, 클라우드 LB 등)에서 띄울 때 쓰는 단일 파일입니다.
-# 변수 치환 없이 여기서 바로 고칩니다 — 아래 'ports' 와 'environment' 만 보면 됩니다.
+# 사용법 (Portainer):
+#   1) Stacks → Add stack → 이름 입력 (예: myviking)
+#   2) Build method:
+#      a. "Repository" — 이 저장소 URL + 브랜치 main (스택 파일은 deploy/stack.yml)
+#      b. 또는 "Web editor" 에 이 파일을 붙여넣기
+#   3) Environment variables 에 아래 항목을 채우고 Deploy
 #
-# 1) 서버에서 이미지를 한 번만 빌드합니다:
-#      cd my-viking && docker compose build
-#    (이미지를 빌드하지 않으면 myviking:latest 를 Docker Hub 에서 찾다가 실패합니다)
-# 2) 이 파일을 Portainer 스택(또는 docker compose -f deploy/stack.yml up -d)로 띄웁니다.
-# 3) 바깥에서 붙을 거면 열기 *전에* 관리자 키부터 만드세요:
-#      docker compose exec myviking jv key create admin
-#    (키가 없는 동안은 인증 없이 열린 창입니다. 키는 한 번만 출력됩니다)
-# 4) 프록시(NPM 등) 뒤에 둘 때는 아래 MYVIKING_TRUST_PROXY=1 — 틀린 키 차단이
-#    실제 클라이언트 IP 기준이 됩니다. 프록시 없이 직접 노출하는데 1 로 두면 안 됩니다.
+# 최소 설정: VIKING_PORT (바깥에 열 포트, 기본 8787) 하나면 됩니다.
+# 첫 가입자가 자동으로 관리자가 됩니다. 관리자 이메일을 고정하려면
+# VIKING_ADMIN_EMAILS 에 쉼표 구분으로 넣으세요.
 #
-# 포트 — 여기서 자기 환경에 맞게 바꾸세요:
-#   "8787:8787"             모든 인터페이스 (기본 — 사내 LAN, 다른 기기에서 바로 접속)
-#   "127.0.0.1:8787:8787"   이 머신에서만
-#   "100.64.0.5:8787:8787"  특정 IP 만 (Tailscale/VPN)
-# 8787 을 다른 포트로 바꿔도 됩니다. 밖(인터넷)에서 붙게 하려면 포트포워딩은
-# 자기 인프라(공유기·LB·방화벽·Portainer 의 port publishing)에서 관리하세요 —
-# 이 서비스는 포워딩을 하지 않습니다. 컨테이너 안 포트는 항상 8787 입니다.
-#
-# name 을 docker-compose.yml 과 같게 두어, up.sh 로 띄웠다가 이 파일로 옮겨도
-# 데이터 볼륨(myviking_myviking-data) 이 그대로 연결됩니다. 둘을 동시에 띄우면
-# 컨테이너 이름이 겹쳐 거부됩니다 — 그것이 정상입니다.
+# HTTPS(도메인)가 필요하면 Portainer 에서 Traefik/NPM 같은 역방향 프록시를
+# 이 서비스에 붙이세요. (역방향 프록시 뒤에서는 VIKING_BASE_URL 을 실제
+# 공개 주소로 설정해야 연결 안내가 정확합니다)
+# ═══════════════════════════════════════════════════════════════════════════
 
 name: myviking
 
 services:
-  myviking:
-    image: myviking:latest
+  viking:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: myviking:local
     container_name: myviking
-    ports:
-      - "8787:8787"   # ← 사내 LAN 이면 그대로 (다른 기기: http://<서버 IP>:8787). 이 머신만: 127.0.0.1:8787:8787
-    volumes:
-      - myviking-data:/data
-    environment:
-      JARVIS_HOME: /data
-      # 품질 (선택, 없어도 완전히 동작합니다) — 요약·증류를 LLM 기반으로:
-      ANTHROPIC_API_KEY: ""
-      JARVIS_LLM_PROVIDER: ""
-      JARVIS_LLM_MODEL: ""
-      # 의미 회상 (선택) — openai + OPENAI_API_KEY, 또는 ollama + JARVIS_EMBED_BASE_URL
-      JARVIS_EMBED_PROVIDER: ""
-      JARVIS_EMBED_MODEL: ""
-      JARVIS_EMBED_BASE_URL: ""
-      OPENAI_API_KEY: ""
-      # 프록시(NPM 등) 뒤에서만 1:
-      MYVIKING_TRUST_PROXY: ""
-    # 호스트에서 도는 Ollama 를 컨테이너에서 부를 수 있게 (Linux 필요)
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: unless-stopped
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import urllib.request as u; u.urlopen('http://127.0.0.1:8787/health').read()
-      interval: 30s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
-    # 루트 파일시스템 읽기 전용 — /data 볼륨과 /tmp 만 씁니다.
-    read_only: true
-    tmpfs:
-      - /tmp
-    security_opt:
-      - no-new-privileges:true
+    ports:
+      # 바깥에 열 포트. Portainer 스택 배포 시 Environment variables 에서
+      # VIKING_PORT 를 지정하거나 (기본 8787) 여기를 직접 고치세요.
+      - "${VIKING_PORT:-8787}:8787"
+    environment:
+      VIKING_DATA: /data
+      # ── 인증/가입 ──
+      VIKING_SECRET: "${VIKING_SECRET:-}"            # (선택) 안 쓰면 자동 생성·볼륨에 보관
+      VIKING_ALLOW_SIGNUP: "${VIKING_ALLOW_SIGNUP:-true}"
+      VIKING_FIRST_USER_ADMIN: "${VIKING_FIRST_USER_ADMIN:-true}"
+      VIKING_ADMIN_EMAILS: "${VIKING_ADMIN_EMAILS:-}"
+      # ── 외부 주소 (연결 안내에 표시, 역방향 프록시 뒤에서 권장) ──
+      VIKING_BASE_URL: "${VIKING_BASE_URL:-}"
+      # ── 선택: LLM 요약 (OpenAI 호환 — DeepSeek·Groq·vLLM·Ollama·ARK 모두 가능) ──
+      VIKING_LLM_BASE_URL: "${VIKING_LLM_BASE_URL:-}"
+      VIKING_LLM_API_KEY: "${VIKING_LLM_API_KEY:-}"
+      VIKING_LLM_MODEL: "${VIKING_LLM_MODEL:-}"
+      # ── 선택: 임베딩 (의미 검색. 없으면 키워드 검색으로 동작) ──
+      VIKING_EMBED_BASE_URL: "${VIKING_EMBED_BASE_URL:-}"
+      VIKING_EMBED_API_KEY: "${VIKING_EMBED_API_KEY:-}"
+      VIKING_EMBED_MODEL: "${VIKING_EMBED_MODEL:-}"
+    volumes:
+      - viking-data:/data
 
 volumes:
-  myviking-data:
+  viking-data:
