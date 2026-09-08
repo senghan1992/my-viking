@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 
 import yaml
 
@@ -65,14 +66,38 @@ def test_stack_file_is_self_contained_no_env_indirection():
     assert "8787:8787" in ports[0], "stack.yml 기본도 모든 인터페이스 (운영자가 바꿈)"
 
 
+def _render(line: str, env: dict[str, str]) -> str:
+    """compose 의 ${VAR:-기본값} 치환을 흉내 낸다 — .env 값이 ports 에 어떻게
+    반영되는지를 docker 없이 고정하기 위함."""
+
+    def sub(m: re.Match) -> str:
+        name, default = m.group(1), m.group(2)
+        val = env.get(name, "")
+        return val if val else default
+
+    return re.sub(r"\$\{([A-Z0-9_]+):-([^}]*)\}", sub, line)
+
+
 def test_default_port_is_open_on_all_interfaces_for_lan_port_forwarding():
     """기본은 'compose up -d 만으로 사내 LAN/포트포워딩' — 모든 인터페이스 8787.
-    up.sh 는 MYVIKING_PORTS 로 모드별 바인딩을 덮어쓴다 (루프백/도메인/터널).
+    .env 의 MYVIKING_PORT/MYVIKING_BIND 가 그대로 반영돼야 한다.
     키가 없으면 인증 없이 열려 있으므로, 열기 전 키 생성은 문서·주석의 몫이다."""
-    data, svc = _myviking("docker-compose.yml")
+    _, svc = _myviking("docker-compose.yml")
     ports = svc["ports"]
     assert len(ports) == 1
-    port_line = ports[0] if isinstance(ports[0], str) else str(ports[0])
-    assert "MYVIKING_PORTS" in port_line
-    assert "8787:8787" in port_line
-    assert "127.0.0.1:" not in port_line, "기본은 루프백이 아니라 모든 인터페이스"
+    port_line = ports[0]
+    assert "MYVIKING_BIND" in port_line and "MYVIKING_PORT" in port_line
+    # 기본 (env 없음): 모든 인터페이스 8787
+    assert _render(port_line, {}) == "0.0.0.0:8787:8787"
+    # .env 로 바꾼 값이 그대로 반영
+    assert (
+        _render(port_line, {"MYVIKING_BIND": "127.0.0.1", "MYVIKING_PORT": "9000"})
+        == "127.0.0.1:9000:8787"
+    )
+
+
+def test_env_example_documents_port_and_bind_keys():
+    """.env.example 이 compose 가 읽는 키를 안내해야 한다 — 여기서 갈라지면
+    사용자가 어느 키를 고쳐야 할지 모른다."""
+    text = (DEPLOY / ".env.example").read_text(encoding="utf-8")
+    assert "MYVIKING_PORT=" in text and "MYVIKING_BIND=" in text

@@ -23,11 +23,11 @@ services:
       dockerfile: deploy/Dockerfile
     image: myviking:latest
     # 기본: 모든 인터페이스의 8787 (사내 LAN·포트포워딩 — 포워딩은 운영자가 관리).
-    # 이 머신에서만 쓰려면 "127.0.0.1:8787:8787" 로 바꾸세요.
-    # 바깥에 열려 있다면 반드시 먼저 API 키를 발급하세요 (키가 없으면 인증 없이 열려 있음).
+    # 포트·바인딩은 deploy/.env 의 MYVIKING_PORT / MYVIKING_BIND 로 바꿉니다
+    # (아래 줄이 그것을 읽습니다). 바깥에 열려 있다면 반드시 먼저 API 키를 발급하세요.
     ports:
-      # up.sh 가 MYVIKING_PORTS 로 덮어씁니다. 기본은 모든 인터페이스 8787.
-      - "${MYVIKING_PORTS:-8787:8787}"
+      # up.sh 를 쓰면 up.sh 가 이 두 값을 모드에 맞게 .env 에 기록합니다.
+      - "${MYVIKING_BIND:-0.0.0.0}:${MYVIKING_PORT:-8787}:8787"
     volumes:
       - myviking-data:/data
     # 값은 이 폴더의 .env 에서 읽습니다 (.env.example 참고). 없어도 동작합니다.

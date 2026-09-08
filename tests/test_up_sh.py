@@ -96,3 +96,21 @@ def test_mode_is_remembered_in_env_for_the_next_update(deploy):
 def test_unknown_option_fails_loudly(deploy):
     code, line = dry(deploy, "--pubic")
     assert code == 2 and "알 수 없는 옵션" in line
+
+
+def test_env_port_and_bind_flow_into_compose_and_dry_run(deploy):
+    """요청: .env 에서 포트·바인딩을 바꾸면 docker-compose 에 그대로 반영.
+    up.sh 는 같은 .env 에 모드에 맞게 써 주고, 직접 compose 로 띄울 때도
+    같은 키가 docker-compose.yml 의 ports 줄을 채운다."""
+    # .env 의 MYVIKING_PORT 를 up.sh 도 읽는다
+    code, line = dry(deploy, "--local", env_lines=["MYVIKING_PORT=9000"])
+    assert code == 0
+    assert "bind=127.0.0.1:9000:8787" in line and "port=9000" in line
+    # 이전 버전 .env 의 MYVIKING_PORTS 에서 포트를 물려받는다 (마이그레이션)
+    code, line = dry(deploy, env_lines=["MYVIKING_PORTS=127.0.0.1:9000:8787"])
+    assert code == 0
+    assert "port=9000" in line and "bind=127.0.0.1:9000:8787" in line
+    # dry-run 출력에 포트가 보인다 (기본값) — 위에서 남긴 .env 를 비우고
+    (deploy / ".env").unlink(missing_ok=True)
+    code, line = dry(deploy)
+    assert code == 0 and "port=8787" in line

@@ -9,7 +9,11 @@
 #   bash deploy/up.sh --behind-proxy               # 이미 있는 nginx/Traefik 뒤의 업스트림으로 (127.0.0.1:8787)
 #   bash deploy/up.sh --public --url http://203.0.113.5:8787   # 클라우드: 안내에 쓸 공개 주소 지정
 #   bash deploy/up.sh --dry-run ...                # docker 없이 무엇을 할지 보기만
-#   PORT=9000 bash deploy/up.sh
+#   PORT=9000 bash deploy/up.sh                     # 또는 .env 의 MYVIKING_PORT=9000
+#
+# 포트·바인딩은 deploy/.env 의 MYVIKING_PORT / MYVIKING_BIND 가 docker-compose.yml 의
+# 기본값입니다. up.sh 는 선택한 모드에 맞게 이 두 값을 .env 에 기록하고, 직접
+# `docker compose up -d` 로 띄울 때도 같은 .env 가 그대로 반영됩니다.
 #
 # 필요한 것: docker (compose 포함). 그 외 호스트에 아무것도 설치하지 않습니다.
 # 선택한 모드는 deploy/.env (MYVIKING_MODE) 에 남아, 이후 `git pull && bash deploy/up.sh` 나
@@ -17,7 +21,6 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-PORT="${PORT:-8787}"
 MODE=""      # local | public | domain | tunnel | proxy
 DOMAIN=""; BIND_IP=""; URL_OVERRIDE=""; DRY=""
 while [[ $# -gt 0 ]]; do
@@ -43,6 +46,14 @@ env_set() {  # env_set KEY VALUE — 있으면 바꾸고 없으면 추가
   if grep -q "^$1=" .env; then sed -i.bak "s|^$1=.*|$1=$2|" .env && rm -f .env.bak
   else echo "$1=$2" >> .env; fi
 }
+# 포트는 셸 변수 PORT 또는 MYVIKING_PORT(명령줄) > .env 의 MYVIKING_PORT > 기본 8787 순서.
+# 이전 버전 .env 의 MYVIKING_PORTS 에서도 물려받는다 (마이그레이션).
+ENV_PORT="${MYVIKING_PORT:-$(env_get MYVIKING_PORT)}"
+if [[ -z "$ENV_PORT" && -n "$(env_get MYVIKING_PORTS)" ]]; then
+  IFS=':' read -r seg1 seg2 _ <<<"$(env_get MYVIKING_PORTS)"
+  if [[ "$seg1" =~ ^[0-9]+$ ]]; then ENV_PORT="$seg1"; else ENV_PORT="${seg2:-8787}"; fi  # "8787:8787" | "IP:9000:8787"
+fi
+PORT="${PORT:-${ENV_PORT:-8787}}"
 if [[ -z "$MODE" ]]; then
   MODE="$(env_get MYVIKING_MODE)"
   if [[ -z "$MODE" ]]; then  # 이전 버전의 .env: 도메인/포트로 추정
@@ -69,14 +80,14 @@ LOCAL_BIND="127.0.0.1:${PORT}:8787"
 LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"                  # Linux
 [[ -z "$LAN_IP" ]] && LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || true)" # macOS
 case "$MODE" in
-  local)  BIND="$LOCAL_BIND"; URL="http://127.0.0.1:${PORT}"; TRUST="" ;;
+  local)  BIND="$LOCAL_BIND"; BIND_HOST="127.0.0.1"; URL="http://127.0.0.1:${PORT}"; TRUST="" ;;
   public)
-    if [[ -n "$BIND_IP" ]]; then BIND="${BIND_IP}:${PORT}:8787"; URL="http://${BIND_IP}:${PORT}"
-    else BIND="${PORT}:8787"; URL="http://${LAN_IP:-127.0.0.1}:${PORT}"; fi
+    if [[ -n "$BIND_IP" ]]; then BIND="${BIND_IP}:${PORT}:8787"; BIND_HOST="$BIND_IP"; URL="http://${BIND_IP}:${PORT}"
+    else BIND="${PORT}:8787"; BIND_HOST=""; URL="http://${LAN_IP:-127.0.0.1}:${PORT}"; fi
     TRUST="" ;;
-  domain) BIND="$LOCAL_BIND"; URL="https://${DOMAIN}"; TRUST=1 ;;          # 8787 은 로컬, Caddy 만 밖으로
-  tunnel) BIND="$LOCAL_BIND"; URL="https://${CF_DOMAIN:-<Cloudflare 도메인>}"; TRUST=1 ;;
-  proxy)  BIND="$LOCAL_BIND"; URL="${URL_OVERRIDE:-https://<프록시 도메인>}"; TRUST=1 ;;
+  domain) BIND="$LOCAL_BIND"; BIND_HOST="127.0.0.1"; URL="https://${DOMAIN}"; TRUST=1 ;;          # 8787 은 로컬, Caddy 만 밖으로
+  tunnel) BIND="$LOCAL_BIND"; BIND_HOST="127.0.0.1"; URL="https://${CF_DOMAIN:-<Cloudflare 도메인>}"; TRUST=1 ;;
+  proxy)  BIND="$LOCAL_BIND"; BIND_HOST="127.0.0.1"; URL="${URL_OVERRIDE:-https://<프록시 도메인>}"; TRUST=1 ;;
 esac
 # hostname -I 는 사설 IP 다. 클라우드(EC2 등)에서는 퍼블릭 IP/도메인이 따로 있으므로 --url 로 덮어쓴다.
 [[ -n "$URL_OVERRIDE" ]] && URL="${URL_OVERRIDE%/}"
@@ -88,7 +99,7 @@ DUCKDNS_TOKEN="$(env_get DUCKDNS_TOKEN)"
 [[ "$MODE" == "tunnel" ]] && PROFILES+=(--profile tunnel)
 
 if [[ -n "$DRY" ]]; then
-  echo "mode=$MODE bind=$BIND url=$URL trust_proxy=${TRUST:-0} profiles=${PROFILES[*]:-none}"
+  echo "mode=$MODE bind=$BIND url=$URL port=$PORT trust_proxy=${TRUST:-0} profiles=${PROFILES[*]:-none}"
   exit 0
 fi
 
@@ -103,9 +114,9 @@ docker compose version > /dev/null 2>&1 || COMPOSE=(docker-compose)
 # 인증은 "첫 키가 만들어지는 순간" 켜진다. 키가 생기기 전에 바깥에 바인딩하면
 # 인증 없이 열린 창이 생기므로, 노출은 키를 확인한 뒤에만 한다.
 echo "▸ 이미지 빌드"
-MYVIKING_PORTS="$LOCAL_BIND" "${COMPOSE[@]}" build --quiet
+MYVIKING_BIND=127.0.0.1 MYVIKING_PORT="$PORT" "${COMPOSE[@]}" build --quiet
 echo "▸ 기동 (${LOCAL_BIND})"
-MYVIKING_PORTS="$LOCAL_BIND" "${COMPOSE[@]}" up -d myviking
+MYVIKING_BIND=127.0.0.1 MYVIKING_PORT="$PORT" "${COMPOSE[@]}" up -d myviking
 
 echo "▸ 상태 확인"
 healthy() {
@@ -139,8 +150,11 @@ fi
 # 꺼지면 바깥 사용자 전부가 한 IP 로 보여 한 사람의 틀린 키가 모두를 잠근다).
 "${COMPOSE[@]}" --profile tls --profile duckdns --profile tunnel stop caddy duckdns cloudflared >/dev/null 2>&1 || true
 env_set MYVIKING_MODE "$MODE"
-env_set MYVIKING_PORTS "$BIND"
+env_set MYVIKING_BIND "$BIND_HOST"
+env_set MYVIKING_PORT "$PORT"
 env_set MYVIKING_BIND_IP "$BIND_IP"
+# 이전 버전 .env 의 MYVIKING_PORTS 는 이제 MYVIKING_BIND/PORT 로 기록되므로 정리한다.
+sed -i.bak '/^MYVIKING_PORTS=/d' .env && rm -f .env.bak
 env_set MYVIKING_DOMAIN "$([[ "$MODE" == "domain" ]] && echo "$DOMAIN" || echo "")"
 env_set MYVIKING_TRUST_PROXY "$TRUST"
 [[ "$MODE" == "domain" && -n "$DUCKDNS_TOKEN" ]] && env_set DUCKDNS_SUBDOMAIN "${DOMAIN%%.duckdns.org}"
