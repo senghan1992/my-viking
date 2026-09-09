@@ -222,12 +222,10 @@ def _hook_session_start(url: str, key: str, project: str, session_id: str) -> di
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "sessionStart": {
-                "context": data.get("orientation", ""),
-                "instructions": "위 브리핑의 '확립된 지식'은 이전 작업이 뒷받침한 내용입니다. "
-                                "'검증 필요'는 단정하지 말고 확인하세요. 작업 중 새 규칙·함정·결정을 "
-                                "알게 되면 jv remember (또는 도구)로 남기세요.",
-            },
+            "additionalContext": data.get("orientation", "") + "\n\n" + (
+                "위 브리핑의 '확립된 지식'은 이전 작업이 뒷받침한 내용입니다. "
+                "'검증 필요'는 단정하지 말고 확인하세요. 작업 중 새 규칙·함정·결정을 "
+                "알게 되면 jv remember (또는 도구)로 남기세요."),
         }
     }
 

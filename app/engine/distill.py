@@ -14,6 +14,7 @@ from .. import db
 from .redact import redact
 from .tiers import make_keywords, make_overview, make_summary
 from .tokens import keywords
+from . import llm
 
 CATEGORIES = ("knowledge", "commands", "pitfalls", "decisions")
 
@@ -79,12 +80,14 @@ def _store_memory(
         """INSERT INTO memories(project_id, category, title, summary, overview, content,
            status, trust, keywords, source, corrects, session_ref, created_at, updated_at)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+
         (
             project_id, category, title[:200], summary, overview, content[:50000],
             status, 0.7 if confirmed else 0.0, db.jdumps(kws), source,
             corrects, session_ref[:100], now, now,
         ),
     )
+    llm.save_embeddings(mid, f"{title} {content}")
     return mid
 
 
@@ -138,6 +141,7 @@ def commit(
                updated_at=?, session_ref=? WHERE id=?""",
             (title[:200], summary, overview, answer[:50000], db.jdumps(kws), now, session_id[:100], match["id"]),
         )
+        llm.save_embeddings(match["id"], f"{title} {answer}")
         _attach_files(match["id"], files)
         _append_evidence(match["id"], "updated", "같은 주제의 새 작업으로 본문 갱신")
         return {"created": 0, "updated": match["id"], "superseded": 0, "memory_id": match["id"]}

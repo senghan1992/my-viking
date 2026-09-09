@@ -150,3 +150,25 @@ def test_export_markdown(client, user1):
     assert r.status_code == 200
     assert "# 내보내기" in r.text
     assert "규칙" in r.text
+
+
+def test_commit_persists_embedding(client, user1, monkeypatch):
+    c, _ = client
+    c.post("/login", data={"email": "a@test.com", "password": "password1"})
+    slug = create_project(c, "임베딩")
+    raw = create_key(c, slug)
+
+    from app.config import config
+    from app.engine import llm
+
+    monkeypatch.setattr(config, "embed_api_key", "test-key")
+    monkeypatch.setattr(llm, "embed", lambda text: [1.0, 0.0])
+    h = auth_h(c, raw)
+    c.post(f"/api/v1/projects/{slug}/commit", headers=h, json={
+        "question": "결제 재시도 정책", "answer": "지수 백오프로 재시도한다.",
+        "session_id": "s1", "agent": "test"})
+
+    from app import db
+
+    row = db.one("SELECT embedding FROM memories ORDER BY id DESC LIMIT 1")
+    assert row["embedding"] not in (None, "", "[]")

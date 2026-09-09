@@ -11,6 +11,7 @@ from .. import db
 from ..deps import get_project_or_404, login_required, require_owner
 from ..engine import redact as redact_engine
 from ..engine import tiers, trust as trust_engine
+from ..engine import llm
 from ..security import generate_api_key
 
 router = APIRouter(tags=["projects"])
@@ -144,6 +145,7 @@ def memory_update(slug: str, mid: int, user: dict = Depends(login_required),
         (title, category, content, summary, overview, db.now(), mid),
     )
     from ..engine.tokens import keywords
+    llm.save_embeddings(mid, f"{title} {content}")
     db.execute("UPDATE memories SET keywords=? WHERE id=?", (db.jdumps(keywords(f"{title} {content}")), mid))
     return RedirectResponse(f"/projects/{slug}?msg=지식을 수정했습니다.", status_code=303)
 

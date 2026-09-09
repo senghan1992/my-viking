@@ -71,3 +71,17 @@ def test_touched_files(tmp_path):
         {"type": "tool_use", "name": "Read", "input": {"file_path": "src/b.py"}},
     ]}}), encoding="utf-8")
     assert _touched_files(t) == ["src/a.py"]
+
+
+def test_session_start_hook_output_schema(monkeypatch):
+    import jv.cli as cli
+
+    monkeypatch.setattr(cli, "_api", lambda *a, **kw: {"orientation": "BRIEF-TEXT"})
+
+    class Args:
+        pass
+
+    out = cli._hook_session_start("u", "k", "p", "s1")
+    hs = out["hookSpecificOutput"]
+    assert hs["hookEventName"] == "SessionStart"
+    assert "BRIEF-TEXT" in hs["additionalContext"]
