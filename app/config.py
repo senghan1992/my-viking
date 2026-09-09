@@ -1,7 +1,7 @@
 """환경 변수 설정.
 
-모든 설정은 환경 변수 하나로 끝납니다. Portainer 스택에서 environment 만
-고치면 됩니다. (deploy/stack.yml 참고)
+모든 설정은 환경 변수 하나로 끝납니다. docker compose / Portainer 스택에서
+고치면 됩니다. (루트 docker-compose.yml 참고)
 """
 from __future__ import annotations
 

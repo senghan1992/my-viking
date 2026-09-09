@@ -1,7 +1,7 @@
 """선택 사항: LLM / 임베딩 호출 (OpenAI 호환 API).
 
 없어도 전체가 동작합니다 — 요약은 추출식, 검색은 키워드 기반으로 내려갑니다.
-설정돼 있으면 (deploy 스택 environment 의 VIKING_LLM_*) 더 좋은 요약과 의미 검색을
+설정돼 있으면 (docker-compose.yml 의 VIKING_LLM_*) 더 좋은 요약과 의미 검색을
 제공합니다. 모든 호출은 실패 시 None 반환 (조용한 폴백).
 """
 from __future__ import annotations

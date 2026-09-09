@@ -82,7 +82,7 @@ app/            서버 (FastAPI)
   templates/    Jinja2 8개 (서버 렌더 + 가벼운 JS)
   static/       style.css, app.js
 jv/             에이전트 머신용 CLI (훅 설치·4종 이벤트·원격·MCP stdio)
-deploy/         stack.yml (Portainer) · docker-compose.yml · .env.example
+docker-compose.yml   배포 파일 하나 · .env.example
 Dockerfile      단일 스테이지
 tests/          가입→키→에이전트 루프→적응까지 통합 테스트 24건
 ```

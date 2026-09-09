@@ -82,10 +82,10 @@ established ── 같은 제목 교정(사람/에이전트) ──▶ supersede
 | Agent API | `Authorization: Bearer jv_…` | 프로젝트 스코프 — 다른 프로젝트 접근 시 404 |
 | 소유권 | 프로젝트 owner or admin | 그 외 403 |
 
-## 7. 배포 (Portainer)
+## 7. 배포 (Docker)
 
-- `deploy/stack.yml` — 스택 하나. 볼륨 `viking-data` 에 데이터 전부.
-- 환경 변수는 Portainer 의 Environment variables 로 치환 (`${VIKING_PORT:-8787}` 등)
+- 루트 `docker-compose.yml` 하나 — 일반 서버·Portainer 모두 이 파일로 배포.
+- 환경 변수는 `.env`(docker compose) 또는 스택 Environment variables(Portainer) 로 치환 (`${VIKING_PORT:-8787}` 등)
 - 역방향 프록시(Traefik/NPM) 뒤에서는 `VIKING_BASE_URL` 설정 → 연결 안내가 정확해짐
 - 선택 LLM/임베딩: 없으면 추출식 요약·키워드 검색으로 폴백 (전체 기능 동작)
 
@@ -104,7 +104,7 @@ established ── 같은 제목 교정(사람/에이전트) ──▶ supersede
 ```
 app/
   main.py          앱 조립·전역 예외 처리 (웹=리다이렉트, API=JSON)
-  config.py        환경 변수 — deploy/stack.yml 의 environment 와 1:1
+  config.py        환경 변수 — docker-compose.yml 의 environment 와 1:1
   db.py            스키마·마이그레이션(컬럼 추가)·질의 헬퍼
   security.py      PBKDF2 비밀번호 · HMAC 세션 · 키 발급/해시
   deps.py          current_user / login_required / admin_required / bearer_auth
@@ -121,7 +121,7 @@ app/
   templates/       base/login/signup/dashboard/project/connect/key_reveal/admin
   static/          style.css · app.js (검색·모달·복사)
 jv/cli.py          에이전트 머신용 — 훅 설치/점검/4이벤트/원격/MCP stdio
-deploy/            stack.yml(portainer) · docker-compose · .env.example
+docker-compose.yml  배포 파일 하나 · .env.example
 Dockerfile         python:3.12-slim 단일 스테이지
 tests/             24개 — auth/격리/에이전트 루프/적응/마스킹/CLI
 ```

@@ -5,7 +5,7 @@ WORKDIR /srv
 COPY . .
 
 RUN pip install --no-cache-dir . && \
-    rm -rf tests docs deploy examples tools src/jarvis
+    rm -rf tests docs examples tools src/jarvis
 
 ENV VIKING_DATA=/data \
     MYVIKING_IN_CONTAINER=1 \

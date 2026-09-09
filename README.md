@@ -5,7 +5,7 @@
 > 프로젝트마다 에이전트를 연결하면 지식이 쌓입니다.
 
 ```
-   사람들 (여러 명)                    서버 (Docker · Portainer 스택 1개)
+   사람들 (여러 명)                    서버 (Docker 컨테이너 1개)
  ┌─────────────────────┐   HTTPS    ┌──────────────────────────────────┐
  │  브라우저            │──────────▶ │  대시보드 (가입 → 내 프로젝트)     │
  │  ─ 가입/로그인       │            │  · 프로젝트 만들기                │
@@ -33,26 +33,37 @@
 
 ---
 
-## 빠른 시작 — Portainer 배포 (권장)
+## 빠른 시작 — 배포 (Docker 하나면 끝)
 
-### 1. 스택 추가
+배포 파일은 저장소 루트의 **`docker-compose.yml` 하나**입니다. Docker 가 있는
+서버(VPS·NAS·클라우드·Portainer)면 어디든 그대로 씁니다.
 
-Portainer → **Stacks → Add stack** →
+### 방법 A — docker compose (일반 서버)
 
-- 이름: `myviking`
-- Build method: **Repository** → 이 저장소 URL, `main` 브랜치, **Path: `deploy`** (deploy/stack.yml)
-  - 또는 **Web editor** 에 `deploy/stack.yml` 내용을 붙여넣기
+```bash
+git clone https://github.com/senghan1992/my-viking.git
+cd my-viking
+cp .env.example .env      # 선택 — 포트·가입·키 설정 (기본만으로도 동작)
+docker compose up -d --build
+```
+
+### 방법 B — Portainer
+
+Portainer → **Stacks → Add stack** → 이름 `myviking` →
+
+- Build method: **Repository** → 이 저장소 URL, `main` 브랜치 (Path 는 비움 — 루트 docker-compose.yml 자동 인식)
+  - 또는 **Web editor** 에 `docker-compose.yml` 내용을 붙여넣기
 - Environment variables 에서 **`VIKING_PORT`** 만 채우고(기본 8787) **Deploy**
 
-### 2. 열기
+### 열기
 
 `http://<서버 IP>:8787/` → **새 계정 만들기로 가입** (첫 가입자 = 관리자)
 
-### 3. 프로젝트 만들기
+### 프로젝트 만들기
 
 대시보드에서 **새 프로젝트** 생성 → 서가(빈 도서관)가 생깁니다.
 
-### 4. 에이전트 연결
+### 에이전트 연결
 
 프로젝트 → **🔗 에이전트 연결** 탭 → **새 키 발급** → 한 번만 보이는 키와 함께
 설치 명령이 나옵니다. 에이전트 머신에서:
@@ -88,7 +99,10 @@ jv hook install --url http://<서버>:8787 --key jv_xxxx --project <slug>
 
 ---
 
-## 설정 (Portainer environment)
+## 설정 (환경 변수)
+
+docker compose 는 루트의 `.env` 를, Portainer 는 스택의 Environment variables 를
+읽습니다. 값이 같으므로 아래 표만 보면 됩니다.
 
 | 변수 | 기본 | 설명 |
 |---|---|---|
@@ -113,7 +127,7 @@ python -m uvicorn app.main:app --port 8787   # VIKING_DATA=./data VIKING_SECRET=
 pytest                                       # 24 tests — 가입→키→에이전트 루프→적응
 ```
 
-로컬 컨테이너: `docker compose -f deploy/docker-compose.yml up -d`
+로컬 컨테이너: `docker compose up -d`
 
 ## 메모리
 

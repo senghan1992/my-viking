@@ -1,0 +1,34 @@
+# myviking — 단일 컨테이너 배포 파일 (이거 하나면 끝)
+#   · docker compose:  cp .env.example .env → docker compose up -d --build
+#   · Portainer:       Stacks → Add stack → 이 저장소(Repository, Path 비움)
+#                      또는 Web editor 에 이 내용을 붙여넣기 → Deploy
+name: myviking
+
+services:
+  viking:
+    build: .
+    image: myviking:latest
+    restart: unless-stopped
+    ports:
+      - "${VIKING_PORT:-8787}:8787"
+    environment:
+      VIKING_DATA: /data
+      # ── 인증/가입 ──
+      VIKING_SECRET: "${VIKING_SECRET:-}"                  # 비우면 자동 생성(볼륨에 보관)
+      VIKING_ALLOW_SIGNUP: "${VIKING_ALLOW_SIGNUP:-true}"  # 운영 중엔 false 로 닫기
+      VIKING_FIRST_USER_ADMIN: "${VIKING_FIRST_USER_ADMIN:-true}"
+      VIKING_ADMIN_EMAILS: "${VIKING_ADMIN_EMAILS:-}"
+      # ── 공개 주소 (역방향 프록시 뒤에서 권장) ──
+      VIKING_BASE_URL: "${VIKING_BASE_URL:-}"
+      # ── 선택: LLM/임베딩 (OpenAI 호환, 없어도 전체 동작) ──
+      VIKING_LLM_BASE_URL: "${VIKING_LLM_BASE_URL:-https://api.openai.com/v1}"
+      VIKING_LLM_API_KEY: "${VIKING_LLM_API_KEY:-}"
+      VIKING_LLM_MODEL: "${VIKING_LLM_MODEL:-gpt-4o-mini}"
+      VIKING_EMBED_BASE_URL: "${VIKING_EMBED_BASE_URL:-https://api.openai.com/v1}"
+      VIKING_EMBED_API_KEY: "${VIKING_EMBED_API_KEY:-}"
+      VIKING_EMBED_MODEL: "${VIKING_EMBED_MODEL:-text-embedding-3-small}"
+    volumes:
+      - viking-data:/data   # index.db 전부 여기 (백업은 이 볼륨만)
+
+volumes:
+  viking-data:
