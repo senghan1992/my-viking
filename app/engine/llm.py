@@ -1,8 +1,8 @@
 """선택 사항: LLM / 임베딩 호출 (OpenAI 호환 API).
 
 없어도 전체가 동작합니다 — 요약은 추출식, 검색은 키워드 기반으로 내려갑니다.
-설정돼 있으면 (docker-compose.yml 의 VIKING_LLM_*) 더 좋은 요약과 의미 검색을
-제공합니다. 모든 호출은 실패 시 None 반환 (조용한 폴백).
+설정돼 있으면 (docker-compose.yml 의 VIKING_LLM_* 또는 관리자 → 모델 설정 화면) 더
+좋은 요약과 의미 검색을 제공합니다. 모든 호출은 실패 시 None 반환 (조용한 폴백).
 """
 from __future__ import annotations
 
@@ -107,3 +107,66 @@ def load_embedding(row: dict) -> list[float] | None:
         return json.loads(row.get("embedding") or "[]") or None
     except (TypeError, ValueError):
         return None
+
+
+# ── 관리자 화면용: 연결 테스트 / 전체 재색인 ───────────────────────────── #
+def test_llm(base_url: str | None = None, api_key: str | None = None,
+             model: str | None = None) -> tuple[bool, str]:
+    """LLM 연결 테스트 — (성공, 실패 사유). 인자를 비우면 현재 설정을 사용."""
+    base = (base_url or config.llm_base_url or "").rstrip("/")
+    key = config.llm_api_key if api_key is None else api_key
+    model = model or config.llm_model
+    if not base:
+        return False, "Base URL 이 설정되어 있지 않습니다"
+    if not key and "localhost" not in base:
+        return False, "API 키가 설정되어 있지 않습니다"
+    try:
+        r = httpx.post(
+            f"{base}/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 4},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return True, ""
+    except Exception as e:  # 네트워크·인증·모델명 오류 등을 그대로 보여줌
+        return False, str(e)[:200]
+
+
+def test_embed(base_url: str | None = None, api_key: str | None = None,
+               model: str | None = None) -> tuple[bool, str]:
+    """임베딩 연결 테스트 — (성공, 실패 사유). 인자를 비우면 현재 설정을 사용."""
+    base = (base_url or config.embed_base_url or "").rstrip("/")
+    key = config.embed_api_key if api_key is None else api_key
+    model = model or config.embed_model
+    if not base:
+        return False, "Base URL 이 설정되어 있지 않습니다"
+    if not key and "localhost" not in base:
+        return False, "API 키가 설정되어 있지 않습니다"
+    try:
+        r = httpx.post(
+            f"{base}/embeddings",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": model, "input": "ping"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return True, ""
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def reindex_all() -> int:
+    """전체 지식의 임베딩을 재계산. 임베딩 미설정이면 0. (임베딩 설정 변경 후 호출)"""
+    from .. import db
+
+    if not config.embed_api_key and "localhost" not in config.embed_base_url:
+        return 0
+    rows = db.rows("SELECT id, title, content FROM memories WHERE content IS NOT NULL AND content != ''")
+    n = 0
+    for r in rows:
+        vec = embed(f"{r['title']} {r['content'][:4000]}")
+        if vec:
+            db.execute("UPDATE memories SET embedding=? WHERE id=?", (json.dumps(vec), r["id"]))
+            n += 1
+    return n

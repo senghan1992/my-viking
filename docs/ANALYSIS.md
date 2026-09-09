@@ -73,11 +73,11 @@
 ```
 app/            서버 (FastAPI)
   main.py       앱 조립·예외 처리
-  config.py     환경 변수 (Portainer environment 와 1:1)
+  config.py     환경 변수 + 웹 모델 설정 병합 (웹 > env > 기본값)
   db.py         SQLite 스키마·질의
   security.py   비밀번호·세션·API 키
   deps.py       인증 의존성 (웹 세션 / Bearer 키)
-  routes/       web(로그인·대시보드·관리자) / projects(서가·연결·키) / agent(API)
+  routes/       web(로그인·대시보드·관리자) / admin_models(모델 설정) / projects(서가·연결·키) / agent(API)
   engine/       redact·tokens·tiers·retrieve·distill·trust·llm
   templates/    Jinja2 8개 (서버 렌더 + 가벼운 JS)
   static/       style.css, app.js

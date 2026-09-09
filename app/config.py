@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from . import model_settings
+
 
 def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default).strip()
@@ -38,12 +40,8 @@ class Config:
 
         # ── 선택: LLM / 임베딩 (없어도 전부 동작. 있으면 요약·검색 품질이 좋아짐) ──
         # OpenAI 호환 API (OpenAI / Groq / DeepSeek / vLLM / Ollama / Volcengine ARK ...)
-        self.llm_base_url = _env("VIKING_LLM_BASE_URL", "https://api.openai.com/v1")
-        self.llm_api_key = _env("VIKING_LLM_API_KEY")
-        self.llm_model = _env("VIKING_LLM_MODEL", "gpt-4o-mini")
-        self.embed_base_url = _env("VIKING_EMBED_BASE_URL", self.llm_base_url)
-        self.embed_api_key = _env("VIKING_EMBED_API_KEY", self.llm_api_key)
-        self.embed_model = _env("VIKING_EMBED_MODEL", "text-embedding-3-small")
+        # 우선순위: 웹 설정(models.json) > 환경변수 > 기본값. 재시작 없이도 웹에서 변경 가능.
+        model_settings.apply_env(self)  # 1차: 환경변수 기준
 
         self.port = int(_env("VIKING_PORT", "8787"))
 
@@ -64,3 +62,6 @@ class Config:
 
 
 config = Config()
+
+# 2차: 웹 설정(models.json) 덮어쓰기 — 모듈이 완전히 로드된 뒤라 data_dir 기반 파일을 읽을 수 있음
+model_settings.apply_to(config)

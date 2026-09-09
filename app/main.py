@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import db
 from .config import config
-from .routes import agent, projects, web
+from .routes import admin_models, agent, projects, web
 
 app = FastAPI(title="myviking", version="1.0.0", docs_url="/api/docs")
 
@@ -20,6 +20,7 @@ app.state.templates = Jinja2Templates(directory=str(Path(__file__).parent / "tem
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
 app.include_router(web.router)
+app.include_router(admin_models.router)
 app.include_router(projects.router)
 app.include_router(agent.router)
 

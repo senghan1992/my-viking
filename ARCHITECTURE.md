@@ -86,6 +86,7 @@ established ── 같은 제목 교정(사람/에이전트) ──▶ supersede
 
 - 루트 `docker-compose.yml` 하나 — 일반 서버·Portainer 모두 이 파일로 배포.
 - 환경 변수는 `.env`(docker compose) 또는 스택 Environment variables(Portainer) 로 치환 (`${VIKING_PORT:-8787}` 등)
+- LLM/임베딩은 **관리자 → 모델 설정 화면**에서도 설정 가능 (data/models.json, 웹 > env > 기본값, 저장 즉시 적용)
 - 역방향 프록시(Traefik/NPM) 뒤에서는 `VIKING_BASE_URL` 설정 → 연결 안내가 정확해짐
 - 선택 LLM/임베딩: 없으면 추출식 요약·키워드 검색으로 폴백 (전체 기능 동작)
 
@@ -104,11 +105,12 @@ established ── 같은 제목 교정(사람/에이전트) ──▶ supersede
 ```
 app/
   main.py          앱 조립·전역 예외 처리 (웹=리다이렉트, API=JSON)
-  config.py        환경 변수 — docker-compose.yml 의 environment 와 1:1
+  config.py        환경 변수 + 웹 모델 설정 병합 — docker-compose.yml 의 environment 와 1:1
   db.py            스키마·마이그레이션(컬럼 추가)·질의 헬퍼
   security.py      PBKDF2 비밀번호 · HMAC 세션 · 키 발급/해시
   deps.py          current_user / login_required / admin_required / bearer_auth
   routes/web.py    로그인·가입·대시보드·관리자
+  routes/admin_models.py  관리자 → 모델 설정 (LLM/임베딩 웹 관리·연결 테스트·재색인)
   routes/projects.py  서가·지식 CRUD·연결 탭·키·내보내기·설정·삭제
   routes/agent.py  /api/v1/* — brief prepare commit remember score search health
   engine/redact.py 비밀값 마스킹 (대입문 우선 → 키 패턴 → URL/블록)
@@ -117,7 +119,8 @@ app/
   engine/retrieve.py  점수·티어 팩킹·warning 분리·주입 마크다운
   engine/distill.py   질문→제목 압축·카테고리 추정·같은 제목 갱신/대체
   engine/trust.py     상태 기계·evidence·브리핑 섹션
-  engine/llm.py       OpenAI 호환 summarize/embed (조용한 폴백)
+  engine/llm.py       OpenAI 호환 summarize/embed (조용한 폴백) + 테스트·재색인
+  model_settings.py   웹 모델 설정 models.json (0600) — 웹 > env > 기본값
   templates/       base/login/signup/dashboard/project/connect/key_reveal/admin
   static/          style.css · app.js (검색·모달·복사)
 jv/cli.py          에이전트 머신용 — 훅 설치/점검/4이벤트/원격/MCP stdio

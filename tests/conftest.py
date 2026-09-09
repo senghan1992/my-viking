@@ -25,8 +25,10 @@ def client(tmp_path):
     # 테스트마다 깨끗한 DB 사용
     from app import db
     from app.config import config
+    from app import model_settings
 
     config.data_dir = tmp_path
+    model_settings.apply_to(config)  # 이전 테스트의 웹 설정 핫스왑 잔여 제거 (env 기준으로 리셋)
     db.db.path = tmp_path / "index.db"
     db.db.init()
 

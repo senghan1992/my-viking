@@ -80,6 +80,12 @@ main.wrap { padding-top: 26px; padding-bottom: 40px; min-height: 70vh; }
   box-shadow: var(--shadow); margin-bottom: 18px; font-size: 14px;
 }
 .inline-form { display: inline; }
+.admin-tabs { display: flex; gap: 8px; margin: -6px 0 20px; flex-wrap: wrap; }
+.admin-tabs a { padding: 6px 14px; border: 1px solid var(--line); border-radius: 999px; font-size: 13px; color: var(--muted); text-decoration: none !important; }
+.admin-tabs a:hover { border-color: var(--accent); color: var(--accent); }
+.admin-tabs a.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.check-line { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); margin: -4px 0 12px; }
+.check-line input { margin: 0; }
 
 /* ── 폼 ── */
 input[type="text"], input[type="email"], input[type="password"], input[type="search"], textarea {
