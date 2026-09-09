@@ -33,6 +33,20 @@
   <section class="card">
     <h2>{{ icons.icon('book') }} LLM — 지식 한 줄 요약</h2>
     <p class="muted small">OpenAI 호환 주소면 무엇이든 됩니다: {{ providers_hint }}</p>
+    <label>모델 선택
+      <select data-pick="llm">
+        <option value="" data-base="" data-model="">— 직접 입력 (아래 칸에 입력) —</option>
+        {% for r in registered if r.kind == 'llm' %}
+        <option value="{{ r.id }}" data-base="{{ r.base_url }}" data-model="{{ r.model }}">{{ r.name }}</option>
+        {% endfor %}
+        <optgroup label="사전 등록 · 나의 Databricks (pi 와 동일)">
+          {% for m in catalog %}
+          <option value="{{ m.id }}" data-base="{{ m.base_url }}" data-model="{{ m.model }}"{% if m.default %} selected{% endif %}>{{ m.name }}{% if m.default %} · 기본{% endif %}</option>
+          {% endfor %}
+        </optgroup>
+      </select>
+      <span class="muted small">고르면 아래 Base URL·모델이 자동으로 채워집니다. 키는 아래 API 키 칸을 그대로 씁니다.</span>
+    </label>
     <label>Base URL
       <input type="text" name="llm_base_url" value="{{ form.llm_base_url }}" placeholder="https://api.openai.com/v1">
     </label>
@@ -49,6 +63,15 @@
   <section class="card">
     <h2>{{ icons.icon('needle') }} 임베딩 — 의미 검색</h2>
     <p class="muted small">없어도 키워드 검색으로 동작합니다. 주소를 비우면 LLM과 같은 주소를 씁니다.</p>
+    <label>모델 선택
+      <select data-pick="embed">
+        <option value="" data-base="" data-model="">— 직접 입력 (아래 칸에 입력) —</option>
+        {% for r in registered if r.kind == 'embed' %}
+        <option value="{{ r.id }}" data-base="{{ r.base_url }}" data-model="{{ r.model }}">{{ r.name }}</option>
+        {% endfor %}
+      </select>
+      <span class="muted small">고르면 아래 Base URL·모델이 자동으로 채워집니다.</span>
+    </label>
     <label>Base URL
       <input type="text" name="embed_base_url" value="{{ form.embed_base_url }}" placeholder="비우면 LLM과 동일">
     </label>
@@ -76,4 +99,68 @@
     <button class="btn ghost" type="submit">{{ icons.icon('map') }} 전체 재색인</button>
   </form>
 </div>
+
+<section class="card">
+  <h2>{{ icons.icon('plus') }} 커스텀 모델 등록</h2>
+  <p class="muted small">등록하면 위 드롭다운에 바로 나타나고, 고르면 주소·모델이 자동으로 채워집니다.
+    키를 등록할 때 넣지 않으면 위 API 키 칸의 키를 그대로 사용합니다.</p>
+  <form method="post" action="/admin/models/register">
+    <label>용도
+      <select name="kind">
+        <option value="llm">LLM — 지식 한 줄 요약용</option>
+        <option value="embed">임베딩 — 의미 검색용</option>
+      </select>
+    </label>
+    <label>모델 이름
+      <input type="text" name="name" placeholder="예: 회사 LLM 게이트웨이, 내 vLLM" maxlength="60" required>
+    </label>
+    <label>Base URL
+      <input type="text" name="base_url" placeholder="https://api.example.com/v1" required>
+    </label>
+    <label>모델 ID
+      <input type="text" name="model" placeholder="예: deepseek-chat, claude-sonnet-5" required>
+    </label>
+    <label>API 키 (선택)
+      <input type="password" name="api_key" placeholder="비우면 위 API 키 칸의 키를 사용" autocomplete="new-password">
+    </label>
+    <label>호출 방식
+      <select name="endpoint">
+        <option value="auto">자동 — 주소 뒤에 /chat/completions 또는 /embeddings 를 붙임 (OpenAI 호환)</option>
+        <option value="direct">직접 주소 — 주소 그대로 호출 (Databricks Serving 등 /invocations)</option>
+      </select>
+      <span class="muted small">자동이 기본이며, 주소가 <code>/invocations</code> 로 끝나면 자동으로 직접 호출로 판단합니다.</span>
+    </label>
+    <div class="row-form">
+      <button class="btn primary" type="submit">{{ icons.icon('plus') }} 등록</button>
+    </div>
+  </form>
+
+  <h3 style="margin-top:26px">등록된 모델</h3>
+  {% if registered %}
+  <div class="table-scroll">
+    <table class="users-table">
+      <thead><tr><th>이름</th><th>용도</th><th>주소</th><th>모델</th><th>키</th><th></th></tr></thead>
+      <tbody>
+        {% for r in registered %}
+        <tr>
+          <td><b>{{ r.name }}</b></td>
+          <td><span class="chip">{{ 'LLM' if r.kind == 'llm' else '임베딩' }}</span></td>
+          <td><code>{{ r.base_url }}</code></td>
+          <td><code>{{ r.model }}</code></td>
+          <td>{{ model_settings.mask(r.api_key) if r.api_key else '—' }}</td>
+          <td>
+            <form method="post" action="/admin/models/registered/{{ r.id }}/delete" class="inline-form"
+                  onsubmit="return confirm('등록을 삭제할까요? 적용 중인 설정은 그대로 남습니다.')">
+              <button class="btn danger small" type="submit">{{ icons.icon('trash', 'ic-18') }} 삭제</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted small">아직 등록한 모델이 없습니다. 위 폼으로 등록하세요.</p>
+  {% endif %}
+</section>
 {% endblock %}

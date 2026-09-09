@@ -141,6 +141,19 @@
       }));
   });
 
+  // ── 모델 선택 드롭다운 → 주소/모델 자동 채움 (관리자 → 모델 설정) ──
+  document.querySelectorAll("[data-pick]").forEach((sel) => {
+    sel.addEventListener("change", () => {
+      const opt = sel.selectedOptions[0];
+      if (!opt) return;
+      const p = sel.dataset.pick; // llm | embed
+      const base = document.querySelector(`input[name="${p}_base_url"]`);
+      const model = document.querySelector(`input[name="${p}_model"]`);
+      if (base && opt.dataset.base !== undefined) base.value = opt.dataset.base || "";
+      if (model && opt.dataset.model !== undefined) model.value = opt.dataset.model || "";
+    });
+  });
+
   // ── 클립보드 ──
   document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
     await navigator.clipboard.writeText(b.dataset.copy);

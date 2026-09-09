@@ -15,6 +15,31 @@ from ..config import config
 _TIMEOUT = 15.0
 
 
+def _clean(base: str) -> str:
+    """# 와 마지막 / 를 걷어낸 주소."""
+    return (base or "").strip().rstrip("#").rstrip("/")
+
+
+def chat_url(base: str) -> str:
+    """채팅 완성 엔드포인트 URL.
+
+    주소가 이미 완전한 경로(/invocations, /chat/completions 로 끝나면 — Databricks
+    Serving 등 — 그대로 쓰고, 아니면 /chat/completions 를 붙입니다.
+    """
+    b = _clean(base)
+    if b.endswith("/invocations") or b.endswith("/chat/completions"):
+        return b
+    return f"{b}/chat/completions"
+
+
+def embed_url(base: str) -> str:
+    """임베딩 엔드포인트 URL — 완전한 경로면 그대로, 아니면 /embeddings 를 붙임."""
+    b = _clean(base)
+    if b.endswith("/invocations") or b.endswith("/embeddings"):
+        return b
+    return f"{b}/embeddings"
+
+
 def _enabled() -> bool:
     return bool(config.llm_api_key or config.llm_base_url != "https://api.openai.com/v1")
 
@@ -25,7 +50,7 @@ def summarize(title: str, content: str, limit: int = 60) -> str | None:
         return None
     try:
         r = httpx.post(
-            f"{config.llm_base_url}/chat/completions",
+            chat_url(config.llm_base_url),
             headers={"Authorization": f"Bearer {config.llm_api_key}"},
             json={
                 "model": config.llm_model,
@@ -53,7 +78,7 @@ def embed(text: str) -> list[float] | None:
         return None
     try:
         r = httpx.post(
-            f"{config.embed_base_url}/embeddings",
+            embed_url(config.embed_base_url),
             headers={"Authorization": f"Bearer {config.embed_api_key}"},
             json={"model": config.embed_model, "input": text[:4000]},
             timeout=_TIMEOUT,
@@ -122,7 +147,7 @@ def test_llm(base_url: str | None = None, api_key: str | None = None,
         return False, "API 키가 설정되어 있지 않습니다"
     try:
         r = httpx.post(
-            f"{base}/chat/completions",
+            chat_url(base),
             headers={"Authorization": f"Bearer {key}"},
             json={"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 4},
             timeout=10,
@@ -145,7 +170,7 @@ def test_embed(base_url: str | None = None, api_key: str | None = None,
         return False, "API 키가 설정되어 있지 않습니다"
     try:
         r = httpx.post(
-            f"{base}/embeddings",
+            embed_url(base),
             headers={"Authorization": f"Bearer {key}"},
             json={"model": model, "input": "ping"},
             timeout=10,

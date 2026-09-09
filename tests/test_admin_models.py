@@ -70,7 +70,7 @@ def test_invalid_base_url_rejected(client, user1):
     c, _ = client
     r = c.post("/admin/models", data={"llm_base_url": "api.openai.com"}, follow_redirects=False)
     assert r.status_code == 303
-    assert "http(s)://" in r.headers["location"]
+    assert "http(s)://" in unquote(r.headers["location"])
     from app.config import config
     assert config.llm_base_url == "https://api.openai.com/v1"  # 저장 안 됨
 
@@ -119,3 +119,90 @@ def test_reindex_embeds_all_memories(client, user1, monkeypatch):
     from app import db
     n = db.one("SELECT COUNT(*) AS n FROM memories WHERE embedding IS NOT NULL")["n"]
     assert n >= 2
+
+# ── 커스텀 모델 등록 (registered) ───────────────────────── #
+def test_register_custom_model(client, user1, tmp_path):
+    c, _ = client
+    r = c.post("/admin/models/register", data={
+        "kind": "llm", "name": "회사 게이트웨이", "base_url": "https://gw.example.com/v1",
+        "model": "deepseek-chat", "api_key": "sk-reg-5555",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert "등록했습니다" in unquote(r.headers["location"])
+
+    import json
+    from app import model_settings
+    data = json.loads((tmp_path / "models.json").read_text())
+    regs = data["registered"]
+    assert len(regs) == 1
+    assert regs[0]["name"] == "회사 게이트웨이"
+    assert regs[0]["base_url"] == "https://gw.example.com/v1"  # 끝 '/' 제거
+    assert regs[0]["model"] == "deepseek-chat"
+    assert regs[0]["kind"] == "llm"
+    assert regs[0]["api_key"] == "sk-reg-5555"
+
+    # 드롭다운에 노출 + 키 마스킹
+    html = c.get("/admin/models").text
+    assert "회사 게이트웨이" in html
+    assert "https://gw.example.com/v1" in html
+    assert "sk-reg-5555" not in html
+    assert "••••••••5555" in html
+
+    # 기존 설정 저장해도 registered 유지
+    c.post("/admin/models", data={"llm_model": "deepseek-r1"}, follow_redirects=False)
+    data = json.loads((tmp_path / "models.json").read_text())
+    assert len(data["registered"]) == 1
+
+
+def test_register_validation(client, user1):
+    c, _ = client
+    r = c.post("/admin/models/register", data={
+        "kind": "llm", "name": "", "base_url": "gw.example.com", "model": "m"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "이름을 입력" in unquote(r.headers["location"])
+    r = c.post("/admin/models/register", data={
+        "kind": "llm", "name": "x", "base_url": "gw.example.com", "model": "m"}, follow_redirects=False)
+    assert "http(s)://" in unquote(r.headers["location"])
+
+
+def test_delete_registered(client, user1):
+    c, _ = client
+    c.post("/admin/models/register", data={
+        "kind": "embed", "name": "임베딩테스트", "base_url": "https://e.example.com/v1",
+        "model": "emb-1"}, follow_redirects=False)
+    from app import model_settings
+    rid = model_settings.load_registered()[0]["id"]
+    r = c.post(f"/admin/models/registered/{rid}/delete", follow_redirects=False)
+    assert r.status_code == 303 and "지웠습니다" in unquote(r.headers["location"])
+    assert model_settings.load_registered() == []
+
+
+def test_dropdown_catalog_default(client, user1):
+    """pi 에서 가져온 Databricks 카탈로그가 드롭다운에 미리 붙어 있다."""
+    c, _ = client
+    html = c.get("/admin/models").text
+    assert "data-pick=\"llm\"" in html
+    assert "사전 등록 · 나의 Databricks" in html
+    assert "DeepSeek V4 Flash 0731" in html          # 기본 모델
+    assert "/serving-endpoints/databricks-deepseek-v4-flash-0731/invocations" in html
+    assert "data-pick=\"embed\"" in html             # 임베딩용 드롭다운도 존재
+
+
+# ── 엔드포인트 URL 판단 (Databricks 직접 호출 지원) ──────── #
+def test_chat_url_direct_vs_appended():
+    from app.engine.llm import chat_url, embed_url
+    # OpenAI 호환 → /chat/completions 붙임
+    assert chat_url("https://api.openai.com/v1") == "https://api.openai.com/v1/chat/completions"
+    assert chat_url("https://api.deepseek.com/v1/") == "https://api.deepseek.com/v1/chat/completions"
+    # Databricks Serving → 그대로 (뒤에 붙이면 404)
+    assert chat_url("https://h.cloud.databricks.com/serving-endpoints/databricks-kimi-k3/invocations") \
+        == "https://h.cloud.databricks.com/serving-endpoints/databricks-kimi-k3/invocations"
+    # '#' 로 끝나는 pi 스타일 주소도 정리 후 판단
+    assert chat_url("https://h.cloud.databricks.com/serving-endpoints/x/invocations#") \
+        == "https://h.cloud.databricks.com/serving-endpoints/x/invocations"
+    # 완전한 경로를 직접 써도 중복 붙이지 않음
+    assert chat_url("https://x.example.com/v1/chat/completions") == "https://x.example.com/v1/chat/completions"
+    # 임베딩
+    assert embed_url("https://api.openai.com/v1") == "https://api.openai.com/v1/embeddings"
+    assert embed_url("https://h.cloud.databricks.com/serving-endpoints/emb/invocations") \
+        == "https://h.cloud.databricks.com/serving-endpoints/emb/invocations"

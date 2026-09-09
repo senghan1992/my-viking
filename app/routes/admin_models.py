@@ -14,6 +14,7 @@ from .. import model_settings
 from ..config import config
 from ..deps import admin_required
 from ..engine import llm
+from ..model_catalog import catalog
 
 router = APIRouter(tags=["admin_models"])
 
@@ -66,6 +67,7 @@ def models_page(request: Request, user: dict = Depends(admin_required), msg: str
                   "src": ("웹 설정" if web.get("embed_api_key") else
                           ("환경변수" if env.get("VIKING_EMBED_API_KEY", "").strip() else "미설정"))},
     }
+    registered = model_settings.load_registered()
     return request.app.state.templates.TemplateResponse(
         request, "admin_models.html",
         {"request": request, "user": user, "msg": msg, "status": status, "keys": keys,
@@ -73,7 +75,9 @@ def models_page(request: Request, user: dict = Depends(admin_required), msg: str
                   "embed_base_url": config.embed_base_url, "embed_model": config.embed_model},
          "placeholders": {"llm": model_settings.mask(config.llm_api_key) or "API 키 입력",
                           "embed": model_settings.mask(config.embed_api_key) or "API 키 입력"},
-         "providers_hint": _PROVIDERS_HINT},
+         "providers_hint": _PROVIDERS_HINT,
+         "catalog": catalog(), "registered": registered,
+         "model_settings": model_settings},
     )
 
 
@@ -109,6 +113,40 @@ def models_save(user: dict = Depends(admin_required),
     model_settings.save(web)
     model_settings.apply_to(config)  # 핫스왑 — 재시작 없이 즉시 적용
     return RedirectResponse(_flash("/admin/models", "모델 설정을 저장했습니다. 지금부터 적용됩니다."), status_code=303)
+
+
+@router.post("/admin/models/register")
+def model_register(user: dict = Depends(admin_required),
+                   kind: str = Form("llm"), name: str = Form(""),
+                   base_url: str = Form(""), model: str = Form(""),
+                   api_key: str = Form(""), endpoint: str = Form("auto")):
+    """커스텀 모델 등록 — 드롭다운에 나타나며, 고르면 주소/모델이 채워집니다."""
+    name = name.strip()
+    model = model.strip()
+    err = None
+    if not name:
+        err = "모델 이름을 입력하세요."
+    elif _validate_base(base_url, "주소"):
+        err = _validate_base(base_url, "주소")
+    elif not model:
+        err = "모델 ID(이름)를 입력하세요."
+    elif kind not in ("llm", "embed"):
+        err = "용도는 LLM 또는 임베딩이어야 합니다."
+    if err:
+        return RedirectResponse(_flash("/admin/models", err), status_code=303)
+    model_settings.add_registered(kind, name, base_url, model, api_key, endpoint)
+    return RedirectResponse(
+        _flash("/admin/models", f"'{name}' 모델을 등록했습니다. 위 드롭다운에서 골라 쓸 수 있습니다."),
+        status_code=303)
+
+
+@router.post("/admin/models/registered/{rid}/delete")
+def model_registered_delete(rid: str, user: dict = Depends(admin_required)):
+    if model_settings.delete_registered(rid):
+        msg = "등록한 모델을 목록에서 지웠습니다. (변경 후 저장해야 적용됩니다)"
+    else:
+        msg = "모델을 찾을 수 없습니다."
+    return RedirectResponse(_flash("/admin/models", msg), status_code=303)
 
 
 @router.post("/admin/models/test")
