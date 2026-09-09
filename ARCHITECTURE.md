@@ -121,8 +121,8 @@ app/
   engine/trust.py     상태 기계·evidence·브리핑 섹션
   engine/llm.py       OpenAI 호환 summarize/embed (조용한 폴백) + 테스트·재색인
   model_settings.py   웹 모델 설정 models.json (0600) — 웹 > env > 기본값
-  templates/       base/login/signup/dashboard/project/connect/key_reveal/admin
-  static/          style.css · app.js (검색·모달·복사)
+  templates/       base/login/signup/dashboard/project/connect/key_reveal/admin + _icons.html(SVG 아이콘 매크로)
+  static/          style.css (지도 제작실 월드) · app.js · fonts/(EB Garamond 600 자체 호스팅)
 jv/cli.py          에이전트 머신용 — 훅 설치/점검/4이벤트/원격/MCP stdio
 docker-compose.yml  배포 파일 하나 · .env.example
 Dockerfile         python:3.12-slim 단일 스테이지

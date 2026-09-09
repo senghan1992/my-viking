@@ -1,14 +1,16 @@
 {% extends "base.html" %}
 {% block title %}로그인{% endblock %}
 {% block content %}
+{% import "_icons.html" as icons %}
 <div class="auth-card">
-  <h1>📚 도서관 문을 엽니다</h1>
+  <div class="auth-mark">{{ icons.icon('compass', 'ic-32') }}</div>
+  <h1>도서관 문을 엽니다</h1>
   <p class="muted">이메일과 비밀번호로 내 프로젝트 도서관에 들어갑니다.</p>
   {% if msg %}<div class="alert">{{ msg }}</div>{% endif %}
   <form method="post" action="/login" class="stack">
     <label>이메일<input type="email" name="email" required autofocus placeholder="you@example.com"></label>
     <label>비밀번호<input type="password" name="password" required placeholder="••••••••"></label>
-    <button class="btn primary" type="submit">로그인</button>
+    <button class="btn primary" type="submit">{{ icons.icon('out') }} 로그인</button>
   </form>
   {% if allow_signup %}
   <p class="muted center">아직 계정이 없나요? <a href="/signup">새 계정 만들기</a></p>

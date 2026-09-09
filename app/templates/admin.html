@@ -1,14 +1,17 @@
 {% extends "base.html" %}
 {% block title %}관리자{% endblock %}
 {% block content %}
+{% import "_icons.html" as icons %}
 <div class="page-head">
-  <h1>👑 관리자 대시보드</h1>
-  <p class="muted">전체 이용자와 도서관 현황을 봅니다.</p>
+  <div>
+    <h1>{{ icons.icon('compass', 'ic-20') }} 관리자 대시보드</h1>
+    <p class="muted">전체 이용자와 도서관 현황을 봅니다.</p>
+  </div>
 </div>
 
-<nav class="admin-tabs">
-  <a href="/admin" class="on">👥 이용자</a>
-  <a href="/admin/models">⚙ 모델 설정</a>
+<nav class="tabs">
+  <a href="/admin" class="on">{{ icons.icon('users') }} 이용자</a>
+  <a href="/admin/models">{{ icons.icon('gear') }} 모델 설정</a>
 </nav>
 
 <div class="stat-row">

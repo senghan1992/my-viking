@@ -2,6 +2,19 @@
 (() => {
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+  // ── 아이콘 (지도 제작실 문법과 동일한 SVG) ──
+  const ic = (n) => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${
+    { book: '<path d="M12 6C10.2 4.6 8.1 4.2 4.5 4.3v13.9c3.6-.1 5.7.3 7.5 1.7 1.8-1.4 3.9-1.8 7.5-1.7V4.3c-3.6-.1-5.7.3-7.5 1.7Z"/><path d="M12 6v13.9"/>',
+      command: '<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5M13.5 14.5H16.5"/>',
+      alert: '<path d="m12 4.5 8.8 15H3.2Z"/><path d="M12 10.2v4.2"/><circle cx="12" cy="17" r=".5" fill="currentColor" stroke="none"/>',
+      needle: '<path d="m12 4 2.5 5.4L20 12l-5.5 2.6L12 20l-2.5-5.4L4 12l5.5-2.6Z"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
+      check: '<path d="m5 12.8 4.3 4.3L19 7.3"/>',
+      close: '<path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/>',
+    }[n] || ""}</svg>`;
+  const CAT = { knowledge: "지식", commands: "명령", pitfalls: "함정", decisions: "결정" };
+  const CAT_ICON = { knowledge: "book", commands: "command", pitfalls: "alert", decisions: "needle" };
+  const ST = { established: "확립", fresh: "검증 전", contested: "검증 필요" };
+
   // ── 토스트 자동 소멸 ──
   const toast = document.getElementById("toast");
   if (toast) setTimeout(() => { toast.style.opacity = "0"; setTimeout(() => toast.remove(), 400); }, 6000);
@@ -23,12 +36,10 @@
           list.innerHTML = '<div class="empty">관련 지식이 없습니다. 첫 작업이 이 서가의 첫 권이 됩니다.</div>';
           return;
         }
-        const label = { knowledge: "📖 지식", commands: "🛠️ 명령", pitfalls: "⚠️ 함정", decisions: "🧭 결정" };
-        const st = { established: "확립", fresh: "검증 전", contested: "검증 필요" };
         list.innerHTML = data.items.map((m) => `
           <div class="mem-card status-${m.status}">
-            <div class="mem-top"><span class="chip">${label[m.category] || m.category}</span>
-              <span class="chip status-chip">${st[m.status] || m.status}</span></div>
+            <div class="mem-top"><span class="chip">${ic(CAT_ICON[m.category] || "book")} ${CAT[m.category] || m.category}</span>
+              <span class="chip">${ST[m.status] || m.status}</span></div>
             <h3 class="mem-title">${esc(m.title)}</h3>
             <p class="muted small mem-summary">${esc(m.text.slice(0, 140))}</p>
             <div class="mem-actions"><button class="link-btn" data-view="${m.id}">읽기</button></div>
@@ -59,11 +70,12 @@
         mmTitle.textContent = m.title;
         const ev = (m.evidence || []).map((x) => `${x.at.slice(0, 16)} · ${x.kind} — ${x.note}`).join("\n");
         mmBody.innerHTML = `
-          <p><span class="chip">${esc(m.category)}</span> <span class="chip">${esc(m.status)}</span>
+          <p><span class="chip">${ic(CAT_ICON[m.category] || "book")} ${CAT[m.category] || m.category}</span>
+             <span class="chip">${ST[m.status] || m.status}</span>
              <span class="muted small">신뢰 ${m.trust} · 확인 ${m.correct_count} · 반박 ${m.wrong_count} · 사용 ${m.use_count}</span></p>
           <p class="muted small">${esc(m.summary)}</p>
           <hr><pre>${esc(m.content)}</pre>
-          ${ev ? `<div class="mem-detail-evidence">📜 결과 기록\n${esc(ev)}</div>` : ""}`;
+          ${ev ? `<div class="mem-detail-evidence">결과 기록\n${esc(ev)}</div>` : ""}`;
         modal.hidden = false;
       } else if (edit) {
         const r = await fetch(`${base}/memories/${edit.dataset.edit}`);
@@ -74,12 +86,12 @@
             <label>제목<input type="text" name="title" value="${esc(m.title)}" maxlength="200"></label>
             <label>분류
               <select name="category">${["knowledge", "commands", "pitfalls", "decisions"].map((c) =>
-                `<option ${c === m.category ? "selected" : ""} value="${c}">${c}</option>`).join("")}
+                `<option ${c === m.category ? "selected" : ""} value="${c}">${CAT[c]}</option>`).join("")}
               </select></label>
             <label>본문<textarea name="content">${esc(m.content)}</textarea></label>
           </form>`;
         const saveBtn = document.createElement("button");
-        saveBtn.className = "btn primary"; saveBtn.textContent = "저장";
+        saveBtn.className = "btn primary"; saveBtn.innerHTML = `${ic("check")} 저장`;
         saveBtn.addEventListener("click", async () => {
           const form = new FormData(document.getElementById("mem-edit-form"));
           await fetch(`${base}/memories/${m.id}`, { method: "POST", body: form });

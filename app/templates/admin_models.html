@@ -1,19 +1,22 @@
 {% extends "base.html" %}
 {% block title %}모델 설정{% endblock %}
 {% block content %}
+{% import "_icons.html" as icons %}
 <div class="page-head">
-  <h1>⚙ 모델 설정</h1>
-  <p class="muted">LLM(한 줄 요약)·임베딩(의미 검색)을 환경변수 없이도 여기서 연결할 수 있습니다.
-    설정하면 즉시 적용되고, 안 하면 추출식 요약·키워드 검색으로 동작합니다.</p>
+  <div>
+    <h1>{{ icons.icon('gear', 'ic-20') }} 모델 설정</h1>
+    <p class="muted">LLM(한 줄 요약)·임베딩(의미 검색)을 환경변수 없이도 여기서 연결할 수 있습니다.
+      설정하면 즉시 적용되고, 안 하면 추출식 요약·키워드 검색으로 동작합니다.</p>
+  </div>
 </div>
 
-<nav class="admin-tabs">
-  <a href="/admin">👥 이용자</a>
-  <a href="/admin/models" class="on">⚙ 모델 설정</a>
+<nav class="tabs">
+  <a href="/admin">{{ icons.icon('users') }} 이용자</a>
+  <a href="/admin/models" class="on">{{ icons.icon('gear') }} 모델 설정</a>
 </nav>
 
 <section class="card">
-  <h2>현재 적용 중</h2>
+  <h2>{{ icons.icon('map') }} 현재 적용 중</h2>
   <table class="users-table">
     <thead><tr><th>항목</th><th>값</th><th>출처</th></tr></thead>
     <tbody>
@@ -28,7 +31,7 @@
 
 <form method="post" action="/admin/models">
   <section class="card">
-    <h2>LLM — 지식 한 줄 요약</h2>
+    <h2>{{ icons.icon('book') }} LLM — 지식 한 줄 요약</h2>
     <p class="muted small">OpenAI 호환 주소면 무엇이든 됩니다: {{ providers_hint }}</p>
     <label>Base URL
       <input type="text" name="llm_base_url" value="{{ form.llm_base_url }}" placeholder="https://api.openai.com/v1">
@@ -44,7 +47,7 @@
   </section>
 
   <section class="card">
-    <h2>임베딩 — 의미 검색</h2>
+    <h2>{{ icons.icon('needle') }} 임베딩 — 의미 검색</h2>
     <p class="muted small">없어도 키워드 검색으로 동작합니다. 주소를 비우면 LLM과 같은 주소를 씁니다.</p>
     <label>Base URL
       <input type="text" name="embed_base_url" value="{{ form.embed_base_url }}" placeholder="비우면 LLM과 동일">
@@ -61,16 +64,16 @@
   </section>
 
   <div class="row-form">
-    <button class="btn primary" type="submit">💾 저장</button>
+    <button class="btn primary" type="submit">{{ icons.icon('check') }} 저장</button>
   </div>
 </form>
 
 <div class="row-form" style="margin-top:14px">
   <form method="post" action="/admin/models/test" class="inline-form">
-    <button class="btn" type="submit">🔌 연결 테스트 (저장된 설정)</button>
+    <button class="btn" type="submit">{{ icons.icon('link') }} 연결 테스트 (저장된 설정)</button>
   </form>
   <form method="post" action="/admin/models/reindex" class="inline-form">
-    <button class="btn ghost" type="submit">♻ 전체 재색인</button>
+    <button class="btn ghost" type="submit">{{ icons.icon('map') }} 전체 재색인</button>
   </form>
 </div>
 {% endblock %}

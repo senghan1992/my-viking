@@ -8,15 +8,32 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body>
+<!--
+  DIRECTION: Cartographer's Study — 지식의 지도 (seed 2ade5682)
+  THESIS: 지식 도서관은 '지식의 지도'다. 책장 클리셰(크림+세리프+테라코타)도 네온 대시보드도 거부하고,
+          측량실의 문법으로 서가 상태를 읽게 한다.
+  OWN-WORLD: 운모지 바탕+경위선 그리드, 먹색 잉크, 놋쇠 컴퍼스 신호색, 헤어라인 판(plate) 문법,
+          프라운서 세리프(라틴), 단일 SVG 아이콘 문법(1.5 스트로크), ■ 확립·● 검증 전·◆ 검증 필요 지도 표식.
+  STORY: 로그인 → 내 도서관에서 서가 상태를 한 번에 읽고 → 프로젝트로 들어가 지식 권을 읽고 교정한다.
+  FIRST VIEWPORT: 경위선 종이 위 중앙의 판 — 컴퍼스 마크와 세리프 워드마크, 폼 두 줄, 먹색 CTA.
+  FORM: cartographer's study — assigned direction #7, seed 2ade5682
+  FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict,
+          DESIGN.md, and every shipping raster carrying its provenance
+-->
+{% import "_icons.html" as icons %}
 <header class="topbar">
   <div class="wrap topbar-inner">
-    <a class="brand" href="/">📚 <strong>myviking</strong><span class="brand-sub">프로젝트 지식 도서관</span></a>
+    <a class="brand" href="/">
+      {{ icons.icon('compass', 'ic-24') }}
+      <strong>myviking</strong>
+      <span class="brand-sub">프로젝트 지식 도서관</span>
+    </a>
     {% if user %}
     <nav class="nav">
-      <a href="/">내 도서관</a>
-      {% if user.role == 'admin' %}<a href="/admin">관리자</a>{% endif %}
-      <span class="who">{{ user.name }}{% if user.role == 'admin' %} 👑{% endif %}</span>
-      <form method="post" action="/logout" class="inline-form"><button class="btn ghost small" type="submit">로그아웃</button></form>
+      <a href="/">{{ icons.icon('shelf') }} 내 도서관</a>
+      {% if user.role == 'admin' %}<a href="/admin">{{ icons.icon('gear') }} 관리자</a>{% endif %}
+      <span class="who">{{ user.name }}<span class="role-pill" style="margin-left:6px">{% if user.role == 'admin' %}관리자{% else %}이용자{% endif %}</span></span>
+      <form method="post" action="/logout" class="inline-form"><button class="btn ghost small" type="submit">{{ icons.icon('out') }} 로그아웃</button></form>
     </nav>
     {% endif %}
   </div>

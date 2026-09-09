@@ -1,0 +1,52 @@
+{# ── 아이콘 시스템 — 지도 제작실 문법 (24×24, 스트로크 1.5, 라운드 캡) ── #}
+{% macro icon(name, size='') -%}
+{%- set s = 'ic' ~ (' ' ~ size if size else '') -%}
+<svg class="{{ s }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+{%- if name == 'compass' -%}
+  <circle cx="12" cy="12" r="9"/><path d="M12 3.8 13.7 10.3 20.2 12 13.7 13.7 12 20.2 10.3 13.7 3.8 12 10.3 10.3Z"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/>
+{%- elif name == 'shelf' -%}
+  <path d="M5 5v12.5M5 17.5h14M9.5 4.5v13M14 6.5v11M19 7v10.5M4 20h16"/>
+{%- elif name == 'book' -%}
+  <path d="M12 6C10.2 4.6 8.1 4.2 4.5 4.3v13.9c3.6-.1 5.7.3 7.5 1.7 1.8-1.4 3.9-1.8 7.5-1.7V4.3c-3.6-.1-5.7.3-7.5 1.7Z"/><path d="M12 6v13.9"/>
+{%- elif name == 'command' -%}
+  <rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5M13.5 14.5H16.5"/>
+{%- elif name == 'alert' -%}
+  <path d="m12 4.5 8.8 15H3.2Z"/><path d="M12 10.2v4.2"/><circle cx="12" cy="17" r=".5" fill="currentColor" stroke="none"/>
+{%- elif name == 'needle' -%}
+  <path d="m12 4 2.5 5.4L20 12l-5.5 2.6L12 20l-2.5-5.4L4 12l5.5-2.6Z"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/>
+{%- elif name == 'link' -%}
+  <path d="M10.5 13.5a4.2 4.2 0 0 0 6 .4l2.6-2.6a4.2 4.2 0 0 0-6-6L11.7 6.7"/><path d="M13.5 10.5a4.2 4.2 0 0 0-6-.4l-2.6 2.6a4.2 4.2 0 0 0 6 6L12.3 17.3"/>
+{%- elif name == 'gear' -%}
+  <circle cx="12" cy="12" r="3.4"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8"/>
+{%- elif name == 'clock' -%}
+  <circle cx="12" cy="12" r="8.6"/><path d="M12 7v5.2l3.4 2"/>
+{%- elif name == 'bot' -%}
+  <path d="M6.5 10V6.8A1.8 1.8 0 0 1 8.3 5h7.4a1.8 1.8 0 0 1 1.8 1.8V10"/><rect x="4" y="10" width="16" height="9.5" rx="2.5"/><path d="M12 5V3.5M10 3.5h4" /><circle cx="9" cy="14.3" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="14.3" r="1" fill="currentColor" stroke="none"/>
+{%- elif name == 'key' -%}
+  <circle cx="8.5" cy="14.5" r="4"/><path d="M11.5 11.5H20M20 11.5v3.5M17.2 11.5v3.5"/>
+{%- elif name == 'plus' -%}
+  <path d="M12 5.5v13M5.5 12h13"/>
+{%- elif name == 'search' -%}
+  <circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.6 15.6 4.6 4.6"/>
+{%- elif name == 'copy' -%}
+  <rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5.5 14.5H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7.5a2 2 0 0 1 2 2v.5"/>
+{%- elif name == 'close' -%}
+  <path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/>
+{%- elif name == 'trash' -%}
+  <path d="M5.5 7.5h13M9 7.5V6a1.8 1.8 0 0 1 1.8-1.8h2.4A1.8 1.8 0 0 1 15 6v1.5M7.2 7.5l.8 11a1.8 1.8 0 0 0 1.8 1.7h4.4a1.8 1.8 0 0 0 1.8-1.7l.8-11"/>
+{%- elif name == 'back' -%}
+  <path d="M14.5 5.5 8 12l6.5 6.5"/>
+{%- elif name == 'check' -%}
+  <path d="m5 12.8 4.3 4.3L19 7.3"/>
+{%- elif name == 'users' -%}
+  <circle cx="9" cy="8.6" r="3.2"/><path d="M4 19.5c.5-3.2 2.3-4.8 5-4.8s4.5 1.6 5 4.8"/><circle cx="16.6" cy="9.4" r="2.4"/><path d="M16 14.8c2.5.2 3.9 1.9 4.3 4.7"/>
+{%- elif name == 'out' -%}
+  <path d="M9 4.5H7.5A2.5 2.5 0 0 0 5 7v10a2.5 2.5 0 0 0 2.5 2.5H9"/><path d="m13.5 7.5 4.5 4.5-4.5 4.5M18 12H10"/>
+{%- elif name == 'map' -%}
+  <path d="m3.5 6 5-2.5L15 6l5.5-2.5v15L15 21l-6.5-2.5-5 2.5Z"/><path d="M8.5 3.5v15M15 6v15"/>
+{%- elif name == 'shelf-open' -%}
+  <path d="M4 4.5h16v15H4Z" /><path d="M8.5 4.5v15M4 9.5h4.5M13.5 9.5H20"/>
+{%- endif -%}
+</svg>
+{%- endmacro %}
