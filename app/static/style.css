@@ -60,6 +60,8 @@ input, textarea { caret-color: var(--brass-ink); }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
+/* hidden 속성이 display 규칙(예: .modal-back 의 flex)에 덮이지 않도록 */
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 
 body {
