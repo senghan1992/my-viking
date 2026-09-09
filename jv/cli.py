@@ -436,6 +436,193 @@ def mcp(args: argparse.Namespace) -> None:
             error(req_id, -32601, f"알 수 없는 메서드: {method}")
 
 
+# ══════════════════ pi 확장 (설치/점검) ══════════════════ #
+_PI_EXT_FILE = "myviking.ts"
+
+
+def _pi_path() -> Path:
+    """pi 전역 확장 경로 — 호출 시점에 HOME 을 읽어 테스트 격리 가능."""
+    home = os.environ.get("HOME") or str(Path.home())
+    return Path(home) / ".pi" / "agent" / "extensions" / _PI_EXT_FILE
+
+
+_PI_EXT_TEMPLATE = """// myviking — 프로젝트 지식 도서관 pi 확장 ({created})
+// jv pi install 로 생성됨. 키가 들어 있으므로 소유자만 읽을 수 있습니다 (0600).
+// 새로 만들려면: jv pi install --url {URL} --key ... --project ... 후 pi 재시작 또는 /reload
+import type {{ ExtensionAPI }} from "@earendil-works/pi-coding-agent";
+import {{ Type }} from "typebox";
+
+const URL = "{URL}";
+const KEY = "{KEY}";
+const PROJECT = "{PROJECT}";
+
+export default function (pi: ExtensionAPI) {{
+  const api = URL.replace(/\\/+$/, "");
+
+  async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {{
+    const r = await fetch(api + path, {{
+      method,
+      headers: {{ Authorization: `Bearer ${{KEY}}`, ...(body ? {{ "Content-Type": "application/json" }} : {{}}) }},
+      body: body ? JSON.stringify(body) : undefined,
+    }});
+    if (!r.ok) throw new Error(`myviking ${{path}}: HTTP ${{r.status}}`);
+    return r.json() as Promise<T>;
+  }}
+
+  const jobs: Array<{{ name: string; label: string; description: string; params: any; run: (p: any) => Promise<string> }}> = [
+    {{
+      name: "viking_brief",
+      label: "Viking 브리핑",
+      description: "프로젝트 도서관의 작업 브리핑(확립 지식·검증 필요·최근 작업)을 가져온다. 세션 시작 시 자동 주입되며, 다시 보려면 호출한다.",
+      params: Type.Object({{}}),
+      async run() {{
+        const b = await call<{{ orientation: string }}>(`/api/v1/projects/${{PROJECT}}/brief?session_id=pi-${{Date.now()}}`);
+        return b.orientation;
+      }},
+    }},
+    {{
+      name: "viking_search",
+      label: "Viking 검색",
+      description: "프로젝트 지식 도서관에서 관련 지식을 검색한다. 막혔거나 규칙·함정이 궁금할 때 호출한다.",
+      params: Type.Object({{ query: Type.String({{ description: "검색어" }}) }}),
+      async run(p) {{
+        const r = await call<{{ items: Array<{{ category: string; title: string; text: string; verified?: boolean }}>; warnings: Array<{{ title: string }}> }}>(
+          `/api/v1/projects/${{PROJECT}}/search?q=${{encodeURIComponent(p.query)}}`);
+        const lines = r.items.map((it) => `[${{it.category}}] ${{it.title}}${{it.verified ? "" : " ⟨검증 전⟩"}}\n${{it.text.slice(0, 500)}}`);
+        for (const w of r.warnings) lines.push(`⚠ [검증 필요] ${{w.title}}`);
+        return lines.length ? lines.join("\n\n") : "관련 지식 없음";
+      }},
+    }},
+    {{
+      name: "viking_remember",
+      label: "Viking 기록",
+      description: "새로 정한 규칙·함정·결정을 지식 도서관에 남긴다. confirmed=true 면 확립으로 기록.",
+      params: Type.Object({{
+        title: Type.String({{ description: "제목" }}),
+        content: Type.String({{ description: "내용" }}),
+        category: Type.Optional(Type.String({{ description: "knowledge|commands|pitfalls|decisions" }})),
+        confirmed: Type.Optional(Type.Boolean()),
+      }}),
+      async run(p) {{
+        const r = await call<{{ uri: string }}>(`/api/v1/projects/${{PROJECT}}/remember`, "POST", {{
+          title: p.title, content: p.content,
+          category: p.category ?? "knowledge", confirmed: !!p.confirmed,
+        }});
+        return `기록됨 → ${{r.uri}}`;
+      }},
+    }},
+    {{
+      name: "viking_score",
+      label: "Viking 채점",
+      description: "주입된 지식이 틀렸으면 memory_id 와 outcome=bad 로 알려 교정하게 한다.",
+      params: Type.Object({{
+        memory_id: Type.Number({{ description: "지식 id" }}),
+        outcome: Type.Optional(Type.String({{ description: "good|bad|settled" }})),
+      }}),
+      async run(p) {{
+        const r = await call<{{ status: string }}>(`/api/v1/projects/${{PROJECT}}/score`, "POST", {{
+          memory_id: p.memory_id, outcome: p.outcome ?? "settled",
+        }});
+        return `상태 ${{r.status}}`;
+      }},
+    }},
+  ];
+
+  for (const job of jobs) {{
+    pi.registerTool({{
+      name: job.name,
+      label: job.label,
+      description: job.description,
+      promptSnippet: `${{job.name}} — ${{job.description.split(".")[0]}}.`,
+      parameters: job.params,
+      async execute(_id, params: any) {{
+        try {{
+          return {{ content: [{{ type: "text", text: await job.run(params) }}] }};
+        }} catch (e) {{
+          return {{ content: [{{ type: "text", text: `myviking 오류: ${{(e as Error).message}}` }}] }};
+        }}
+      }},
+    }});
+  }}
+
+  // 세션 시작 → 브리핑 자동 주입 (새 세션/시작 시에만)
+  pi.on("session_start", async (event) => {{
+    if (event.reason !== "startup" && event.reason !== "new") return;
+    try {{
+      const b = await call<{{ orientation: string }}>(`/api/v1/projects/${{PROJECT}}/brief?session_id=pi-${{Date.now()}}`);
+      await pi.sendMessage(
+        {{ customType: "myviking-brief", content: b.orientation, display: false }},
+        {{ deliverAs: "nextTurn" }});
+    }} catch {{
+      // 서버에 닿지 않아도 코딩 세션은 계속된다
+    }}
+  }});
+}}
+"""
+
+
+def _pi_path() -> Path:
+    """pi 전역 확장 경로 — 호출 시점에 HOME 을 읽어 테스트 격리 가능."""
+    home = os.environ.get("HOME") or str(Path.home())
+    return Path(home) / ".pi" / "agent" / "extensions" / _PI_EXT_FILE
+
+
+def pi_install(args: argparse.Namespace) -> None:
+    url, key, project = _env_args(args)
+    if not key:
+        print("⚠ --key 가 필요합니다 (연결 탭에서 발급).", file=sys.stderr)
+        raise SystemExit(2)
+    # 서버 확인 — 틀린 주소/키로 방치되는 것을 막는다
+    try:
+        health = _api(url, key, "GET", "/health")
+        print(f"✓ 서버 확인: {url} · myviking {health.get('version', '?')}")
+    except SystemExit as e:
+        print(f"⚠ 서버 확인 실패: {e}")
+        raise
+
+    text = (_PI_EXT_TEMPLATE
+            .replace("{created}", __import__("datetime").date.today().isoformat())
+            .replace("{URL}", url)
+            .replace("{KEY}", key)
+            .replace("{PROJECT}", project))
+    path = _pi_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    print(f"✓ pi 확장 설치: {path}")
+    print(f"  프로젝트: {project} · 도구: viking_brief/search/remember/score + 세션 시작 자동 브리핑")
+    print("pi 를 재시작하거나 /reload 를 입력하면 바로 사용할 수 있습니다.")
+
+
+def pi_uninstall(args: argparse.Namespace) -> None:
+    path = _pi_path()
+    if path.exists():
+        path.unlink()
+        print(f"✓ pi 확장 제거: {path}")
+    else:
+        print("설치된 pi 확장이 없습니다.")
+
+
+def pi_check(args: argparse.Namespace) -> None:
+    path = _pi_path()
+    if not path.exists():
+        print("pi 확장이 설치되어 있지 않습니다. → jv pi install --url ... --key ... --project ...")
+        return
+    text = path.read_text()
+    url = re.search(r'URL = "([^"]+)"', text)
+    project = re.search(r'PROJECT = "([^"]+)"', text)
+    print(f"✓ pi 확장 설치됨: {path}")
+    print(f"  서버: {url.group(1) if url else '?'} · 프로젝트: {project.group(1) if project else '?'}")
+    mode = path.stat().st_mode & 0o777
+    if mode != 0o600:
+        print(f"  ⚠ 권한이 {oct(mode)} 입니다 — chmod 600 을 권장합니다.")
+    else:
+        print(f"  권한: 0600")
+
+
 # ══════════════════ main ══════════════════ #
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="jv", description="myviking 클라이언트")
@@ -477,6 +664,15 @@ def main(argv: list[str] | None = None) -> None:
     sp.set_defaults(func=remote, cmd="score")
     sp = sub.add_parser("mcp", help="MCP stdio 서버"); hooks_common(sp)
     sp.set_defaults(func=mcp)
+
+    sp = sub.add_parser("pi", help="pi 코딩 에이전트 확장 관리")
+    pisub = sp.add_subparsers(dest="action", required=True)
+    pp = pisub.add_parser("install"); hooks_common(pp)
+    pp.set_defaults(func=pi_install)
+    pp = pisub.add_parser("uninstall")
+    pp.set_defaults(func=pi_uninstall)
+    pp = pisub.add_parser("check"); hooks_common(pp)
+    pp.set_defaults(func=pi_check)
 
     args = p.parse_args(argv)
     fn = getattr(args, "func", None)

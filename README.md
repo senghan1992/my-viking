@@ -66,12 +66,14 @@ Portainer → **Stacks → Add stack** → 이름 `myviking` →
 ### 에이전트 연결
 
 프로젝트 → **🔗 에이전트 연결** 탭 → **새 키 발급** → 한 번만 보이는 키와 함께
-설치 명령이 나옵니다. 에이전트 머신에서:
+설치 안내가 나옵니다. 탭에서 자기 에이전트를 고르고 **단계별 안내**를 따라 하면 됩니다
+(Claude Code 자동 캡처 · pi 확장 · MCP · 셸):
 
 ```bash
 pip install git+https://github.com/senghan1992/my-viking.git
 cd ~/my-project
-jv hook install --url http://<서버>:8787 --key jv_xxxx --project <slug>
+jv hook install --url http://<서버>:8787 --key jv_xxxx --project <slug>   # Claude Code
+jv pi install   --url http://<서버>:8787 --key jv_xxxx --project <slug>   # pi 확장 → /reload
 # ✓ 서버 확인: …  (주소/키가 틀리면 여기서 멈춥니다)
 ```
 

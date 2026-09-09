@@ -127,6 +127,20 @@
     settingsModal.addEventListener("click", (e) => { if (e.target === settingsModal) settingsModal.hidden = true; });
   }
 
+  // ── 도구 선택 탭 (연결 페이지 등) ──
+  document.querySelectorAll("[data-tabs]").forEach((tabbar) => {
+    const key = tabbar.dataset.tabs;
+    const tabs = tabbar.querySelectorAll("[data-tab]");
+    tabs.forEach((t) =>
+      t.addEventListener("click", (e) => {
+        e.preventDefault();
+        tabs.forEach((x) => x.classList.toggle("on", x === t));
+        document.querySelectorAll(`[data-pane="${key}"]`).forEach((p) => {
+          p.hidden = p.dataset.paneId !== t.dataset.tab;
+        });
+      }));
+  });
+
   // ── 클립보드 ──
   document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
     await navigator.clipboard.writeText(b.dataset.copy);

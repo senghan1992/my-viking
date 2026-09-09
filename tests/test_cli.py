@@ -85,3 +85,52 @@ def test_session_start_hook_output_schema(monkeypatch):
     hs = out["hookSpecificOutput"]
     assert hs["hookEventName"] == "SessionStart"
     assert "BRIEF-TEXT" in hs["additionalContext"]
+
+# ══════════════════════ pi 확장 생성 ══════════════════════ #
+def test_pi_install_creates_extension(tmp_path, monkeypatch, capsys):
+    """jv pi install 이 ~/.pi/agent/extensions/myviking.ts 를 생성한다."""
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "_api", lambda *a, **kw: {"version": "1.0.0"})
+
+    class Args:
+        url = "https://viking.example.com"
+        key = "jv_0123456789abcdef01234567"
+        project = "my-app"
+        timeout = "15"
+
+    cli.pi_install(Args())
+    path = tmp_path / ".pi" / "agent" / "extensions" / "myviking.ts"
+    assert path.exists()
+    assert (path.stat().st_mode & 0o777) == 0o600
+    src = path.read_text()
+    assert "https://viking.example.com" in src
+    assert "jv_0123456789abcdef01234567" in src
+    assert "my-app" in src
+    assert "registerTool" in src and "viking_search" in src and "viking_remember" in src
+    assert "session_start" in src and "sendMessage" in src
+
+    # check / uninstall
+    cli.pi_check(Args())
+    out = capsys.readouterr().out
+    assert "설치됨" in out and "0600" in out
+    cli.pi_uninstall(Args())
+    assert not path.exists()
+
+
+def test_pi_install_server_check_fails_without_key(tmp_path, monkeypatch, capsys):
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    class Args:
+        url = "https://viking.example.com"
+        key = ""
+        project = "my-app"
+        timeout = "15"
+
+    import pytest
+    with pytest.raises(SystemExit):
+        cli.pi_install(Args())
+    assert not (tmp_path / ".pi").exists()

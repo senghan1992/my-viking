@@ -6,51 +6,140 @@
   <div>
     <div class="crumb"><a href="/">내 도서관</a> › <a href="/projects/{{ project.slug }}">{{ project.name }}</a> ›</div>
     <h1>{{ icons.icon('link', 'ic-20') }} 에이전트 연결</h1>
-    <p class="muted">연결하면 세션 시작·질문·답변·변경이 자동으로 기록되고, 다음 세션부터 자동으로 참조됩니다.</p>
+    <p class="muted">아래에서 에이전트를 고르고, 단계를 하나씩 따라 하면 됩니다. 연결하면 세션 시작·질문·답변·변경이
+      자동으로 기록되고, 다음 세션부터 자동으로 참조됩니다.</p>
   </div>
   <a class="btn ghost" href="/projects/{{ project.slug }}">{{ icons.icon('back') }} 서가로</a>
 </div>
 
-<div class="two-col">
-  <section class="card">
-    <h2>{{ icons.icon('key') }} 연결 키</h2>
-    <p class="muted small">키는 이 프로젝트 전용입니다. 에이전트마다 따로 발급하고, 더는 안 쓰는 것은 폐기하세요.</p>
-    <ul class="key-list">
-      {% for k in keys %}
-      <li class="{{ 'revoked' if k.revoked_at }}">
-        <span class="chip">{{ k.key_prefix }}…</span>
-        <span class="kname">{{ k.name }}</span>
-        <span class="muted small">{{ k.created_at[:16] }}{% if k.revoked_at %} · 폐기 {{ k.revoked_at[:16] }}{% endif %}</span>
-        {% if not k.revoked_at %}
-        <form method="post" action="/projects/{{ project.slug }}/keys/{{ k.id }}/revoke" class="inline-form"
-              onsubmit="return confirm('이 키를 폐기할까요? 이 키로 붙은 에이전트는 즉시 끊깁니다.')">
-          <button class="btn danger small" type="submit">{{ icons.icon('trash', 'ic-18') }} 폐기</button>
-        </form>
-        {% endif %}
-      </li>
-      {% else %}
-      <li class="muted small">발급된 키가 없습니다.</li>
-      {% endfor %}
-    </ul>
-    <form method="post" action="/projects/{{ project.slug }}/keys" class="row-form">
-      <input type="text" name="name" placeholder="키 이름 — 예: 내 노트북, 회사 PC, CI" maxlength="40">
-      <button class="btn primary" type="submit">{{ icons.icon('key') }} 새 키 발급</button>
-    </form>
-    <p class="muted small">발급 직후 <b>한 번만</b> 평문이 보입니다. 서버는 해시만 저장하므로 잃어버리면 다시 발급하세요.</p>
-  </section>
+{# ── 1단계: 키 발급 ── #}
+<section class="card">
+  <div class="pane-head">
+    <h2>{{ icons.icon('key') }} 1단계 — 연결 키 발급</h2>
+  </div>
+  <p class="muted small">키는 이 프로젝트 전용입니다. 에이전트마다 따로 발급하고, 더는 안 쓰는 것은 폐기하세요.</p>
+  <ul class="key-list">
+    {% for k in keys %}
+    <li class="{{ 'revoked' if k.revoked_at }}">
+      <span class="chip">{{ k.key_prefix }}…</span>
+      <span class="kname">{{ k.name }}</span>
+      <span class="muted small">{{ k.created_at[:16] }}{% if k.revoked_at %} · 폐기 {{ k.revoked_at[:16] }}{% endif %}</span>
+      {% if not k.revoked_at %}
+      <form method="post" action="/projects/{{ project.slug }}/keys/{{ k.id }}/revoke" class="inline-form"
+            onsubmit="return confirm('이 키를 폐기할까요? 이 키로 붙은 에이전트는 즉시 끊깁니다.')">
+        <button class="btn danger small" type="submit">{{ icons.icon('trash', 'ic-18') }} 폐기</button>
+      </form>
+      {% endif %}
+    </li>
+    {% else %}
+    <li class="muted small">아직 키가 없습니다. 아래에서 새 키를 발급하세요.</li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="/projects/{{ project.slug }}/keys" class="row-form">
+    <input type="text" name="name" placeholder="키 이름 — 예: 내 노트북, 회사 PC, CI" maxlength="40">
+    <button class="btn primary" type="submit">{{ icons.icon('key') }} 새 키 발급</button>
+  </form>
+  <p class="muted small">발급 직후 <b>한 번만</b> 평문이 보입니다. 서버는 해시만 저장하므로 잃어버리면 다시 발급하세요.
+    아래 명령의 <code>jv_...</code> 자리에 방금 발급한 키를 붙여 넣습니다.</p>
+</section>
 
-  <section class="card">
-    <h2>{{ icons.icon('link') }} 연결하는 3가지 방법</h2>
+{# ── 2단계: 에이전트 선택 ── #}
+<section class="card tool-guide">
+  <div class="pane-head">
+    <h2>{{ icons.icon('bot') }} 2단계 — 에이전트 고르고 연결하기</h2>
+  </div>
+  <nav class="tabs" data-tabs="tools" style="margin-top:2px">
+    <a href="#claude" data-tab="claude" class="on">Claude Code</a>
+    <a href="#pi" data-tab="pi">pi</a>
+    <a href="#mcp" data-tab="mcp">Cursor·Codex 등 (MCP)</a>
+    <a href="#shell" data-tab="shell">셸 / 수동</a>
+  </nav>
+
+  {# ── Claude Code ── #}
+  <div class="tool-pane" data-pane="tools" data-pane-id="claude">
+    <p class="muted">세션 시작·질문·답변·변경 파일까지 <b>자동으로 캡처</b>되는 가장 완전한 연결입니다.
+      권장 구성이며, 아래 4단계를 한 번만 하면 됩니다.</p>
     <div class="steps">
       <div class="step">
-        <h3><span class="step-num">1</span> Claude Code (자동 캡처 — 권장)</h3>
-        <p class="muted small">에이전트 머신에서 한 번:</p>
+        <h3><span class="step-num">1</span> 에이전트 머신에 jv 설치</h3>
+        <p class="muted small">Claude Code 가 실행되는 컴퓨터의 터미널에서:</p>
         <pre>pip install git+https://github.com/senghan1992/my-viking.git</pre>
-        <p class="muted small">프로젝트 폴더에서 <code>jv hook install</code> 한 줄이면 세션 시작·질문·답변을 자동 기록합니다.</p>
+        <button class="btn small" data-copy="pip install git+https://github.com/senghan1992/my-viking.git">{{ icons.icon('copy') }} 복사</button>
       </div>
       <div class="step">
-        <h3><span class="step-num">2</span> MCP (Cursor·Codex 등)</h3>
-        <p class="muted small">에이전트의 MCP 설정에 추가:</p>
+        <h3><span class="step-num">2</span> 나의 프로젝트 폴더에서 연결</h3>
+        <p class="muted small"><code>jv_...</code> 자리에 방금 발급한 키를 붙여 넣으세요. 연결되면 서버 확인 메시지가 나옵니다.</p>
+        <pre>jv hook install --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
+        <button class="btn small" data-copy="jv hook install --url {{ base }} --key jv_... --project {{ project.slug }}">{{ icons.icon('copy') }} 복사</button>
+        <p class="muted small"><span style="color:var(--green)">✓ 확인:</span> 설치 후 <code>jv hook check</code> 를 실행하면
+          SessionStart 등 4개 이벤트가 설치되어 있다고 나옵니다.</p>
+      </div>
+      <div class="step">
+        <h3><span class="step-num">3</span> Claude Code 로 작업 시작</h3>
+        <p class="muted small">이 폴더에서 평소처럼 Claude Code 를 쓰면 끝입니다. 자동으로 일어나는 일:</p>
+        <ul class="muted small" style="margin:4px 0 0;padding-left:18px">
+          <li>세션 시작 → 지난 작업 브리핑 자동 주입</li>
+          <li>질문마다 → 관련 지식만 골라 주입 (검증 전은 단정하지 않도록 표시)</li>
+          <li>작업 종료 → 지식 자동 증류·기록, 틀린 지식은 '검증 필요'로 강등</li>
+        </ul>
+      </div>
+      <div class="step">
+        <h3><span class="step-num">4</span> 확인</h3>
+        <p class="muted small">서가로 돌아가 보세요. 작업이 끝나면 지식 권이 자동으로 쌓여 있습니다.</p>
+      </div>
+    </div>
+  </div>
+
+  {# ── pi ── #}
+  <div class="tool-pane" data-pane="tools" data-pane-id="pi" hidden>
+    <p class="muted">pi 전용 확장을 설치하면 <b>세션 시작마다 브리핑이 자동으로 주입</b>되고,
+      대화 중 <code>viking_search</code>·<code>viking_remember</code> 같은 도구를 에이전트가 직접 사용합니다.</p>
+    <div class="steps">
+      <div class="step">
+        <h3><span class="step-num">1</span> jv 설치 (확장 생성기)</h3>
+        <p class="muted small">확장을 만들어 주는 jv CLI 를 한 번 설치합니다:</p>
+        <pre>pip install git+https://github.com/senghan1992/my-viking.git</pre>
+        <button class="btn small" data-copy="pip install git+https://github.com/senghan1992/my-viking.git">{{ icons.icon('copy') }} 복사</button>
+      </div>
+      <div class="step">
+        <h3><span class="step-num">2</span> pi 확장 생성</h3>
+        <p class="muted small"><code>jv_...</code> 자리에 방금 발급한 키를 붙여 넣으세요.
+          <code>~/.pi/agent/extensions/myviking.ts</code> 파일이 만들어지고, 키가 들어 있어 소유자(0600)만 읽습니다.</p>
+        <pre>jv pi install --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
+        <button class="btn small" data-copy="jv pi install --url {{ base }} --key jv_... --project {{ project.slug }}">{{ icons.icon('copy') }} 복사</button>
+      </div>
+      <div class="step">
+        <h3><span class="step-num">3</span> pi 재시작 또는 /reload</h3>
+        <p class="muted small">확장을 불러오려면 pi 를 껐다 켜거나, pi 안에서 <code>/reload</code> 를 입력하세요.</p>
+      </div>
+      <div class="step">
+        <h3><span class="step-num">4</span> 확인</h3>
+        <p class="muted small">새 세션을 열면 브리핑이 자동으로 주입됩니다. 작업 중에는 이렇게 쓰세요:</p>
+        <ul class="muted small" style="margin:4px 0 0;padding-left:18px">
+          <li>"지금까지 쌓인 지식 브리핑 줘" → <code>viking_brief</code></li>
+          <li>"결제 재시도 관련 지식 검색해줘" → <code>viking_search</code></li>
+          <li>"이 규칙을 기억해: 배포는 화요일만" → <code>viking_remember</code></li>
+        </ul>
+        <p class="muted small" style="margin-top:6px">참고: pi 는 대화 기반이라 지식 자동 증류(commit)는 Claude Code 훅이 더 완전합니다.
+          중요 규칙·함정은 위 도구로 직접 남기면 됩니다.</p>
+      </div>
+    </div>
+  </div>
+
+  {# ── MCP ── #}
+  <div class="tool-pane" data-pane="tools" data-pane-id="mcp" hidden>
+    <p class="muted">MCP 를 지원하는 에이전트(Cursor·Codex 등)는 JSON 하나로 연결됩니다.
+      브리핑·검색·기록을 도구로 호출할 수 있지만, 세션 자동 캡처는 없습니다.</p>
+    <div class="steps">
+      <div class="step">
+        <h3><span class="step-num">1</span> jv 설치</h3>
+        <pre>pip install git+https://github.com/senghan1992/my-viking.git</pre>
+        <button class="btn small" data-copy="pip install git+https://github.com/senghan1992/my-viking.git">{{ icons.icon('copy') }} 복사</button>
+      </div>
+      <div class="step">
+        <h3><span class="step-num">2</span> 에이전트의 MCP 설정에 추가</h3>
+        <p class="muted small">설정 파일(예: Cursor → Settings → MCP, Codex → <code>mcp.json</code>)에 아래를 붙여 넣고
+          <code>MYVIKING_KEY</code> 에 방금 발급한 키를 넣으세요:</p>
         <pre>{
   "mcpServers": {
     "myviking": {
@@ -64,17 +153,55 @@
     }
   }
 }</pre>
+        <button class="btn small" data-copy='{
+  "mcpServers": {
+    "myviking": {
+      "command": "jv",
+      "args": ["mcp"],
+      "env": {
+        "MYVIKING_URL": "{{ base }}",
+        "MYVIKING_KEY": "jv_...",
+        "MYVIKING_PROJECT": "{{ project.slug }}"
+      }
+    }
+  }
+}'>{{ icons.icon('copy') }} 복사</button>
       </div>
       <div class="step">
-        <h3><span class="step-num">3</span> 셸 / 수동 (어떤 에이전트든)</h3>
-        <pre>jv brief -u {{ base }} -k jv_... -p {{ project.slug }}
-jv search "배포 방법" -u {{ base }} -k jv_... -p {{ project.slug }}
-jv remember "규칙" --content "내용" -u {{ base }} -k jv_... -p {{ project.slug }}</pre>
+        <h3><span class="step-num">3</span> 확인</h3>
+        <p class="muted small">에이전트에 "지식 브리핑 줘"라고 물어보면 <code>viking_brief</code> 도구가 동작합니다.
+          도구 목록: <code>viking_brief</code> · <code>viking_search</code> · <code>viking_remember</code> · <code>viking_score</code></p>
       </div>
     </div>
-    <p class="muted small">서버 주소 <code>{{ base }}</code> · 프로젝트 <code>{{ project.slug }}</code></p>
-  </section>
-</div>
+  </div>
+
+  {# ── 셸 / 수동 ── #}
+  <div class="tool-pane" data-pane="tools" data-pane-id="shell" hidden>
+    <p class="muted">어떤 에이전트든 터미널 명령으로 도서관을 쓰는 방법입니다. 자동화는 없지만 가장 확실합니다.</p>
+    <div class="steps">
+      <div class="step">
+        <h3><span class="step-num">1</span> jv 설치</h3>
+        <pre>pip install git+https://github.com/senghan1992/my-viking.git</pre>
+        <button class="btn small" data-copy="pip install git+https://github.com/senghan1992/my-viking.git">{{ icons.icon('copy') }} 복사</button>
+      </div>
+      <div class="step">
+        <h3><span class="step-num">2</span> 자주 쓰는 명령</h3>
+        <p class="muted small">시작할 때 브리핑:</p>
+        <pre>jv brief -u {{ base }} -k jv_... -p {{ project.slug }}</pre>
+        <p class="muted small">막혔을 때 검색:</p>
+        <pre>jv search "배포 방법" -u {{ base }} -k jv_... -p {{ project.slug }}</pre>
+        <p class="muted small">알게 된 규칙 기록:</p>
+        <pre>jv remember "릴리스는 화요일에만" --content "배포 동결은 월요일." -u {{ base }} -k jv_... -p {{ project.slug }}</pre>
+        <button class="btn small" data-copy="jv brief -u {{ base }} -k jv_... -p {{ project.slug }}">명령 복사</button>
+      </div>
+      <div class="step">
+        <h3><span class="step-num">3</span> 팁</h3>
+        <p class="muted small">자주 쓰는 명령은 에이전트의 지침(<code>AGENTS.md</code>)에 넣어두거나 셸 별칭으로
+          만들어 두면 편합니다. <code>jv --help</code> 로 전체 명령을 볼 수 있습니다.</p>
+      </div>
+    </div>
+  </div>
+</section>
 
 <section class="card">
   <h2>{{ icons.icon('copy') }} 에이전트 지침 (AGENTS.md 에 붙여넣기)</h2>
@@ -83,7 +210,7 @@ jv remember "규칙" --content "내용" -u {{ base }} -k jv_... -p {{ project.sl
 - 세션 시작 시 주입되는 브리핑과 질문마다 주입되는 '관련 지식'은 이전 작업의 축적입니다.
 - ⟨검증 전⟩(fresh) 지식은 사실로 단정하지 말고 코드/문서로 확인하세요.
 - 확립(established) 지식이라도 최근 결과와 어긋나면 "검증 필요" 경고로 표시됩니다.
-- 새로 정한 규칙·함정·결정은 `jv remember "제목" --content "내용"` 또는 MCP 도구로 남기세요.
+- 새로 정한 규칙·함정·결정은 `jv remember "제목" --content "내용"` 또는 도구로 남기세요.
 - 내 답변이 틀렸음을 알게 되면 같은 제목으로 바른 내용을 남겨 교정하세요.</pre>
 </section>
 {% endblock %}

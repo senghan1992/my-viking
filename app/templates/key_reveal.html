@@ -9,8 +9,9 @@
 
   <pre class="key-box" id="new-key">{{ key }}</pre>
 
-  <h2>{{ icons.icon('link') }} Claude Code 에 바로 붙이기</h2>
-  <p class="muted small">에이전트 머신의 프로젝트 폴더에서 실행하세요.</p>
+  <h2>{{ icons.icon('link') }} 에이전트에 연결하기 (Claude Code — 에이전트 머신의 프로젝트 폴더에서)</h2>
+  <p class="muted small">pi·Cursor 등 다른 에이전트는 <a href="/projects/{{ project.slug }}/connect">연결 탭</a>에서
+    <b>에이전트 선택 → 단계별 안내</b>를 따르세요.</p>
   <pre>jv hook install --url {{ base }} --key {{ key }} --project {{ project.slug }}</pre>
 
   <h2>{{ icons.icon('command') }} MCP 설정에 붙여넣기</h2>
