@@ -22,7 +22,7 @@ name: myviking
 services:
   viking:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     image: myviking:local
     container_name: myviking
