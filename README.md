@@ -101,6 +101,25 @@ pi 안에서는 `/myviking`(상태/목록) · `/myviking use`(폴더 기본값�
 (이 세션 해제) · `/myviking remove`(저장된 연결 삭제) 로 같은 일을 할 수
 있습니다. 연결이 없는 세션에서 pi 는 지식 도서관 없이 그냥 자유롭게 쓰입니다.
 
+**jcode(J-Code)는 폴더 단위로 붙습니다** — pi 와 같은 연결 저장소(`~/.myviking/`)
+를 쓰고, 설치가 3가지를 만듭니다: ① `~/.jcode/config.toml` 의 `[hooks]`
+(turn_end 마다 질문→답 자동 기록, 이미 직접 설정한 이벤트는 보존),
+② `~/.jcode/skills/myviking/SKILL.md` (세션 시작 시 `jv brief` 사용법),
+③ `~/.jcode/mcp.json` (viking_brief·search·remember·score MCP 도구):
+
+```bash
+jv jcode install --url ... --key ...      # 연결 저장 + 폴더 링크 + 훅/스킬/MCP 설치
+jv jcode check                              # 훅·스킬·MCP·서버 인증 점검
+jv jcode status                             # 이 폴더 연결 + 연동 상태
+jv jcode list / jv jcode switch <이름>     # 저장된 연결 목록 / 폴더 전환 (MCP env 도 갱신)
+jv jcode disconnect                         # 폴더 연결 해제
+jv jcode remove <이름>                     # 연결 삭제 (키 포함) + 연동 제거
+jv jcode uninstall                          # 연동만 제거 (연결은 유지)
+```
+
+세션 안에서 에이전트는 `jv brief`(브리핑) · `jv search "개념"`(검색) ·
+`jv remember`(기록) · `jv score`(교정) 을 인자 없이 폴더 연결만으로 씁니다.
+
 > MCP(Cursor·Codex 등)는 연결 탭의 JSON 을, 셸 전용 에이전트는 `jv search/remember`
 > 를 쓰면 됩니다. 어떤 에이전트든 연결됩니다.
 

@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.parse
@@ -58,6 +59,46 @@ def _env_args(args: argparse.Namespace) -> tuple[str, str, str]:
     if not url or not key:
         raise SystemExit("jv: MYVIKING_URL / MYVIKING_KEY 가 필요합니다 (--url, --key 또는 환경 변수).")
     return url, key, project
+
+
+def _req_conn(args: argparse.Namespace) -> tuple[str, str, str]:
+    """url/key/project 결정 — 명시 인자·환경변수 다음에 폴더 연결(.myviking-connection.json)을 폴백.
+
+    jcode 스킬이 jv brief/search/remember/score 를 폴더마다 아무 인자 없이 쓰게 해 준다.
+    """
+    url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
+    key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
+    project = (getattr(args, "project", "") or os.environ.get("MYVIKING_PROJECT") or "").strip()
+    if url and key and project:
+        return url, key, project
+    if not url or not key:
+        conn = _folder_conn(Path(getattr(args, "cwd", "") or os.getcwd()))
+        if conn:
+            return conn["url"], conn["key"], conn["project"]
+    raise SystemExit("jv: MYVIKING_URL / MYVIKING_KEY 가 필요합니다 (--url, --key, 환경 변수, "
+                     "또는 연결된 프로젝트 폴더에서 실행: jv pi install / jv jcode install)")
+
+
+def _folder_conn(cwd: Path) -> dict | None:
+    """폴더에서 위로 올라가며 .myviking-connection.json 을 찾아 저장된 연결을 돌려준다."""
+    home = Path(os.environ.get("HOME") or str(Path.home()))
+    conns = _load_conns()
+    if not conns:
+        return None
+    dir_ = cwd.resolve()
+    for _ in range(12):
+        link = dir_ / _PI_LINK_FILE
+        if link.exists():
+            try:
+                cid = json.loads(link.read_text()).get("connection")
+            except (OSError, ValueError):
+                cid = None
+            if cid:
+                return next((c for c in conns if c.get("id") == cid), None)
+        if dir_ == home or dir_.parent == dir_:
+            return None
+        dir_ = dir_.parent
+    return None
 
 
 def _prompt(msg: str) -> str:
@@ -359,7 +400,7 @@ def _agent_name() -> str:
 
 # ══════════════════ 원격 명령 ══════════════════ #
 def remote(args: argparse.Namespace) -> None:
-    url, key, project = _env_args(args)
+    url, key, project = _req_conn(args)
     if args.cmd == "brief":
         data = _api(url, key, "GET", f"/projects/{project}/brief")
         print(data.get("orientation", ""))
@@ -969,16 +1010,11 @@ def _install_hub_extension() -> Path:
     return path
 
 
-def pi_install(args: argparse.Namespace) -> None:
-    """새 연결 저장 + 현재 폴더 연결 + 허브 확장 설치. (프로젝트마다 실행)
+def _connect_flow(url: str, key: str, project: str, cwd: Path) -> dict:
+    """연결 확정 공통 흐름 (pi/jcode 설치가 공유):
 
-    인자를 다 몰라도 됩니다 — 빠진 값은 물어보고, --project 는 키로 자동 식별됩니다.
+    프로젝트 자동 식별(/api/v1/me) → 서버·키 인증 → 연결 저장소 저장 → 이 폴더 링크 저장.
     """
-    url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
-    key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
-    project = (getattr(args, "project", "") or os.environ.get("MYVIKING_PROJECT") or "").strip()
-    cwd = Path(getattr(args, "cwd", "") or os.getcwd())
-
     if not url:
         conns_hint = _load_conns()
         hint = conns_hint[0]["url"] if conns_hint else "http://ip:포트 — 프로젝트를 만든 서버"
@@ -1010,9 +1046,10 @@ def pi_install(args: argparse.Namespace) -> None:
 
     # 1) 연결 저장소 (~/.myviking/connections.json, 키 포함 0600)
     conns = [c for c in _load_conns() if c.get("id") != _conn_id(url, project)]
-    conns.insert(0, {"id": _conn_id(url, project), "name": name, "url": url,
-                     "key": key, "project": project, "folder": str(cwd),
-                     "updated_at": __import__("datetime").date.today().isoformat()})
+    conn = {"id": _conn_id(url, project), "name": name, "url": url,
+            "key": key, "project": project, "folder": str(cwd),
+            "updated_at": __import__("datetime").date.today().isoformat()}
+    conns.insert(0, conn)
     _save_conns(conns)
 
     # 2) 이 폴더 연결 (비밀 없음 — git 의 HEAD 같은 파일)
@@ -1023,12 +1060,27 @@ def pi_install(args: argparse.Namespace) -> None:
         print(f"⚠ 폴더 연결 파일을 쓸 수 없습니다: {e}", file=sys.stderr)
         raise SystemExit(1)
 
-    # 3) 허브 확장 (전역 1개) — 구버전이면 최신 템플릿으로 덮어씀
-    hub = _install_hub_extension()
-
     print(f"✓ 서버 확인: {url} · 프로젝트 {project} · {name}")
     print(f"✓ 연결 저장: {_pi_conns_path()} (키 0600, 현재 {len(conns)}개 연결)")
     print(f"✓ 이 폴더 기본 연결: {cwd} → {name} ({_PI_LINK_FILE})")
+    return conn
+
+
+def pi_install(args: argparse.Namespace) -> None:
+    """새 연결 저장 + 현재 폴더 연결 + 허브 확장 설치. (프로젝트마다 실행)
+
+    인자를 다 몰라도 됩니다 — 빠진 값은 물어보고, --project 는 키로 자동 식별됩니다.
+    """
+    url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
+    key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
+    project = (getattr(args, "project", "") or os.environ.get("MYVIKING_PROJECT") or "").strip()
+    cwd = Path(getattr(args, "cwd", "") or os.getcwd())
+
+    _connect_flow(url, key, project, cwd)
+
+    # 3) 허브 확장 (전역 1개) — 구버전이면 최신 템플릿으로 덮어씀
+    hub = _install_hub_extension()
+
     print(f"✓ pi 허브 확장: {hub}")
     print("이 폴더의 기본 연결로 저장했습니다. pi 세션은 기본이 자유 사용이므로,")
     print("  세션에서 /myviking use 로 적용하거나 /myviking connect·switch 로 직접 연결하세요.")
@@ -1039,30 +1091,32 @@ def pi_list(args: argparse.Namespace) -> None:
     _print_conns(_load_conns(), Path(args.cwd or os.getcwd()))
 
 
-def pi_switch(args: argparse.Namespace) -> None:
-    """저장된 연결로 현재 폴더를 바꿔 연결 (git checkout 느낌)."""
-    conns = _load_conns()
-    cwd = Path(args.cwd or os.getcwd())
-    q = (getattr(args, "name", "") or "").strip().lower()
+def _resolve_conn_name(conns: list[dict], q: str, cwd: Path, verb: str) -> dict:
+    """이름/슬러그/id 로 저장된 연결을 찾는다 (switch/remove 공용)."""
+    q = (q or "").strip().lower()
     if q:
         hit = [c for c in conns if q in str(c.get("name", "")).lower()
                or q in str(c.get("project", "")).lower() or q in str(c.get("id", "")).lower()]
         if len(hit) == 1:
-            conn = hit[0]
-        elif len(hit) > 1:
-            _print_conns(conns, cwd)
-            print(f"\n'{q}' 에 해당하는 연결이 여러 개입니다 — 이름/슬러그로 더 정확히 지정하세요.")
-            raise SystemExit(2)
-        else:
-            _print_conns(conns, cwd)
-            print(f"\n'{q}' 를 찾지 못했습니다.")
-            raise SystemExit(2)
-    elif len(conns) == 1:
-        conn = conns[0]
-    else:
+            return hit[0]
         _print_conns(conns, cwd)
-        print("\n연결 이름을 지정하세요 — 예: jv pi switch 데이터자판기")
+        if len(hit) > 1:
+            print(f"\n'{q}' 에 해당하는 연결이 여러 개입니다 — 이름/슬러그로 더 정확히 지정하세요.")
+        else:
+            print(f"\n'{q}' 를 찾지 못했습니다.")
         raise SystemExit(2)
+    if len(conns) == 1:
+        return conns[0]
+    _print_conns(conns, cwd)
+    print(f"\n{verb}할 연결 이름을 지정하세요 — 예: jv pi switch 데이터자판기")
+    raise SystemExit(2)
+
+
+def pi_switch(args: argparse.Namespace) -> None:
+    """저장된 연결로 현재 폴더를 바꿔 연결 (git checkout 느낌)."""
+    conns = _load_conns()
+    cwd = Path(args.cwd or os.getcwd())
+    conn = _resolve_conn_name(conns, getattr(args, "name", "") or "", cwd, "바꿀")
 
     _pi_link_path(cwd).write_text(json.dumps({"connection": conn["id"]}, ensure_ascii=False, indent=2))
     print(f"✓ 이 폴더의 기본 연결을 '{conn.get('name') or conn['project']}' 프로젝트로 바꿨습니다: {cwd}")
@@ -1083,26 +1137,7 @@ def pi_remove(args: argparse.Namespace) -> None:
     """저장된 연결 삭제 (키 포함). 현재 폴더가 그 연결을 가리키면 링크도 함께 해제."""
     conns = _load_conns()
     cwd = Path(args.cwd or os.getcwd())
-    q = (getattr(args, "name", "") or "").strip().lower()
-    if q:
-        hit = [c for c in conns if q in str(c.get("name", "")).lower()
-               or q in str(c.get("project", "")).lower() or q in str(c.get("id", "")).lower()]
-        if len(hit) == 1:
-            conn = hit[0]
-        elif len(hit) > 1:
-            _print_conns(conns, cwd)
-            print(f"\n'{q}' 에 해당하는 연결이 여러 개입니다 — 이름/슬러그로 더 정확히 지정하세요.")
-            raise SystemExit(2)
-        else:
-            _print_conns(conns, cwd)
-            print(f"\n'{q}' 를 찾지 못했습니다.")
-            raise SystemExit(2)
-    elif len(conns) == 1:
-        conn = conns[0]
-    else:
-        _print_conns(conns, cwd)
-        print("\n삭제할 연결 이름을 지정하세요 — 예: jv pi remove 데이터자판기")
-        raise SystemExit(2)
+    conn = _resolve_conn_name(conns, getattr(args, "name", "") or "", cwd, "삭제할")
 
     rest = [c for c in conns if c.get("id") != conn["id"]]
     _save_conns(rest)
@@ -1167,7 +1202,502 @@ def pi_check(args: argparse.Namespace) -> None:
         _verify_server(conn["url"], conn["key"], conn["project"])
         print(f"✓ 서버 연결·인증: {conn['url']} · 프로젝트 {conn['project']}")
     except SystemExit as e:
-        print(f"⚠ 서버 연결/키 확인 실패: {e}")# ══════════════════ main ══════════════════ #
+        print(f"⚠ 서버 연결/키 확인 실패: {e}")# ══════════════════ jcode (J-Code 에이전트) 연동 ══════════════════ #
+_JCODE_VERSION = "myviking-jcode-v1"
+_JCODE_HOOK_EVENTS = ("session_start", "session_end", "turn_end")
+_JCODE_HOOK_KEYSET = set(_JCODE_HOOK_EVENTS) | {"turn_start", "pre_tool", "post_tool"}
+
+
+def _jcode_home() -> Path:
+    home = os.environ.get("HOME") or str(Path.home())
+    return Path(home) / ".jcode"
+
+
+def _jcode_config() -> Path:
+    return _jcode_home() / "config.toml"
+
+
+def _jcode_launcher() -> Path:
+    return _jcode_home() / "myviking-hook.sh"
+
+
+def _jcode_skill() -> Path:
+    return _jcode_home() / "skills" / "myviking" / "SKILL.md"
+
+
+def _jcode_mcp_file() -> Path:
+    return _jcode_home() / "mcp.json"
+
+
+def _jcode_marker() -> Path:
+    return _jcode_home() / ".myviking.json"
+
+
+def _jcode_log_file() -> Path:
+    home = os.environ.get("HOME") or str(Path.home())
+    return Path(home) / ".myviking" / "logs" / "jcode-hook.jsonl"
+
+
+def _jv_command() -> str:
+    exe = shutil.which("jv")
+    if exe:
+        return exe
+    return "jv"  # PATH 에 있으면 그대로 — 훅은 셸 파싱으로 실행된다
+
+
+def _jcode_hook_cmd() -> str:
+    """[hooks] 값으로 기록되는 명령 — 런처 경로 하나로 고정 (pip 재설치에도 안전)."""
+    return str(_jcode_launcher())
+
+
+def _jcode_log(event: str, session_id: str, note: str, ok: bool = True) -> None:
+    try:
+        f = _jcode_log_file()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        lines = f.read_text(encoding="utf-8").splitlines() if f.exists() else []
+        lines.append(json.dumps({"ts": __import__("time").strftime("%Y-%m-%dT%H:%M:%S"),
+                                 "event": event, "session_id": session_id,
+                                 "ok": bool(ok), "note": note[:200]}, ensure_ascii=False))
+        f.write_text("\n".join(lines[-300:]) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _toml_set_hooks(text: str, command: str) -> tuple[str, list[str], list[str]]:
+    """config.toml 의 [hooks] 섹션에 우리 훅을 채운다.
+
+    이미 사용자 값이 있는 이벤트는 건드리지 않는다. → (새 텍스트, 설정한 이벤트, 건너뛴 이벤트)
+    """
+    lines = text.split("\n")
+    hook_idx = next((i for i, l in enumerate(lines) if l.strip() == "[hooks]"), None)
+    if hook_idx is None:
+        block = "[hooks]\n" + "\n".join(f'{e} = "{command}"' for e in _JCODE_HOOK_EVENTS) + "\n"
+        return text.rstrip("\n") + "\n\n" + block, list(_JCODE_HOOK_EVENTS), []
+    end = len(lines)
+    for i in range(hook_idx + 1, len(lines)):
+        if lines[i].startswith("["):
+            end = i
+            break
+    body, existing = [], {}
+    for line in lines[hook_idx + 1:end]:
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", line)
+        if m and m.group(1) in _JCODE_HOOK_KEYSET:
+            existing[m.group(1)] = len(body)
+            body.append((m.group(1), m.group(2)))
+        else:
+            body.append((None, line))
+    set_keys, skipped = [], []
+    for ev in _JCODE_HOOK_EVENTS:
+        idx = existing.get(ev)
+        if idx is None:
+            body.append((ev, f'"{command}"'))
+            set_keys.append(ev)
+            continue
+        _, raw = body[idx]
+        m = re.match(r"^\s*(\"[^\"]*\"|'[^']*')\s*(#.*)?$", raw)
+        cur = m.group(1)[1:-1] if m else raw.strip().strip('"').strip("'")
+        if cur.strip():
+            skipped.append(ev)
+        else:
+            body[idx] = (ev, f'"{command}"')
+            set_keys.append(ev)
+    out = lines[:hook_idx + 1] + [f"{k} = {v}" if k else v for k, v in body] + lines[end:]
+    return "\n".join(out), set_keys, skipped
+
+
+def _toml_unset_hooks(text: str, command: str) -> tuple[str, int]:
+    """우리 값이 들어간 훅 이벤트를 빈 값으로 되돌린다. → (새 텍스트, 제거 수)"""
+    lines = text.split("\n")
+    hook_idx = next((i for i, l in enumerate(lines) if l.strip() == "[hooks]"), None)
+    if hook_idx is None:
+        return text, 0
+    end = len(lines)
+    for i in range(hook_idx + 1, len(lines)):
+        if lines[i].startswith("["):
+            end = i
+            break
+    removed = 0
+    for i in range(hook_idx + 1, end):
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\"[^\"]*\"|'[^']*')\s*(#.*)?$", lines[i])
+        if m and m.group(2)[1:-1] == command:
+            lines[i] = f'{m.group(1)} = ""'
+            removed += 1
+    return "\n".join(lines), removed
+
+
+def _mcp_merge(conn: dict) -> dict:
+    """~/.jcode/mcp.json 병합 — myviking 서버를 갱신하고 다른 서버는 보존."""
+    data: dict = {}
+    if _jcode_mcp_file().exists():
+        try:
+            data = json.loads(_jcode_mcp_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+    servers = data.get("servers")
+    if not isinstance(servers, dict):
+        servers = {}
+    servers["myviking"] = {
+        "command": _jv_command(),
+        "args": ["mcp"],
+        "env": {"MYVIKING_URL": conn["url"], "MYVIKING_KEY": conn["key"],
+                "MYVIKING_PROJECT": conn["project"]},
+        "shared": True,
+    }
+    data["servers"] = servers
+    return data
+
+
+def _mcp_remove() -> bool:
+    """mcp.json 의 myviking 서버 제거 — 변경했으면 True."""
+    if not _jcode_mcp_file().exists():
+        return False
+    try:
+        data = json.loads(_jcode_mcp_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict) or not isinstance(data.get("servers"), dict):
+        return False
+    if "myviking" not in data["servers"]:
+        return False
+    del data["servers"]["myviking"]
+    _jcode_mcp_file().write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    return True
+
+
+_JCODE_SKILL_MD = """---
+name: myviking
+description: 프로젝트 지식 도서관(myviking). 세션 시작 시 jv brief 로 이전 작업 브리핑을 확인하고, 막힐 때 jv search, 새로 정한 규칙·함정·결정은 jv remember, 틀린 지식은 jv score 로 교정한다. 질문→답은 자동으로 기록된다.
+---
+
+# myviking — 프로젝트 지식 도서관
+
+이 폴더가 myviking 프로젝트에 연결되어 있으면 (`jv jcode status` 로 확인) 아래 CLI 를 쓴다.
+**질문→답은 매 턴 자동으로 도서관에 기록**되므로 직접 기록할 필요 없고, 중요한 것만 남기면 된다.
+
+## 세션 시작 (반드시)
+- `jv brief` 실행 → 지난 작업 브리핑(확립된 지식·검증 필요·최근 작업)을 확인하고 시작한다.
+
+## 작업 중
+- 막혔거나 규칙·함정이 궁금할 때: `jv search "<개념>"`
+- 새로 정한 규칙·함정·결정: `jv remember "<제목>" --content "<내용>" --category knowledge|commands|pitfalls|decisions`
+- 틀린 지식 발견: `jv score <id> bad` · 확립 확인: `jv score <id> good`
+- 연결 상태: `jv jcode status`
+
+## 주의
+- 브리핑의 '검증 필요' 지식은 사실로 단정하지 말고 확인 후 사용한다.
+- 도구가 '연결 없음'을 알리면 그대로 두면 된다 (자유 사용 세션).
+"""
+
+
+def _jcode_integration_installed() -> bool:
+    """마커 버전 일치 + [hooks] 에 우리 훅이 들어 있는지 확인."""
+    try:
+        marker = json.loads(_jcode_marker().read_text())
+    except (OSError, ValueError):
+        return False
+    if marker.get("version") != _JCODE_VERSION:
+        return False
+    if not _jcode_config().exists():
+        return False
+    text = _jcode_config().read_text(encoding="utf-8")
+    cmd = _jcode_hook_cmd()
+    return sum(1 for ev in _JCODE_HOOK_EVENTS if f'{ev} = "{cmd}"' in text or cmd in text) >= 1
+
+
+def _jcode_write_integration(conn: dict) -> tuple[Path, list[str], list[str]]:
+    """jcode 연동 파일 4종 설치 — (런처, 설정된 이벤트, 건너뛴 이벤트)"""
+    home = _jcode_home()
+    home.mkdir(parents=True, exist_ok=True)
+
+    # 1) 런처 (이벤트는 환경변수로 전달 — 모든 이벤트가 같은 명령)
+    launcher = _jcode_launcher()
+    cmd = _jv_command()
+    launcher.write_text(
+        "#!/usr/bin/env bash\n"
+        "# myviking — J-Code 훅 (jv jcode install/remove 가 관리 — 직접 편집 금지)\n"
+        'export PATH="$PATH"\n'
+        f'exec "{cmd}" jcode-hook\n')
+    try:
+        launcher.chmod(0o755)
+    except OSError:
+        pass
+
+    # 2) [hooks] — 이미 사용자가 채운 이벤트는 보존 (값은 런처 경로)
+    cfg = _jcode_config()
+    old = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+    text, set_keys, skipped = _toml_set_hooks(old, _jcode_hook_cmd())
+    if text != old:
+        cfg.write_text(text, encoding="utf-8")
+
+    # 3) 스킬 (지식 도서관 사용법 — 비밀 없음)
+    skill = _jcode_skill()
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    skill.write_text(_JCODE_SKILL_MD, encoding="utf-8")
+
+    # 4) MCP 서버 (연결 env 포함 — jcode 전용, shared)
+    (_jcode_mcp_file().parent).mkdir(parents=True, exist_ok=True)
+    _jcode_mcp_file().write_text(json.dumps(_mcp_merge(conn), ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 5) 마커
+    _jcode_marker().write_text(json.dumps(
+        {"version": _JCODE_VERSION, "launcher": str(launcher), "events": list(set_keys)},
+        ensure_ascii=False, indent=2), encoding="utf-8")
+    return launcher, set_keys, skipped
+
+
+def jcode_install(args: argparse.Namespace) -> None:
+    """연결 저장 + 폴더 연결 + jcode 연동(훅·스킬·MCP) 설치."""
+    url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
+    key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
+    project = (getattr(args, "project", "") or os.environ.get("MYVIKING_PROJECT") or "").strip()
+    cwd = Path(getattr(args, "cwd", "") or os.getcwd())
+
+    conn = _connect_flow(url, key, project, cwd)
+    launcher, set_keys, skipped = _jcode_write_integration(conn)
+
+    print(f"✓ jcode 훅 런처: {launcher}")
+    if skipped:
+        print(f"⚠ 이미 설정된 훅 이벤트는 건드리지 않았습니다: {', '.join(skipped)} "
+              f"(직접 쓴 값 유지 — /myviking 자동 기록은 그 이벤트만 제외)")
+    print("✓ jcode 스킬: ~/.jcode/skills/myviking/SKILL.md (브리핑·검색·기록 사용법)")
+    print("✓ jcode MCP: ~/.jcode/mcp.json (myviking 서버 — viking_brief/search/remember/score 도구)")
+    print("jcode 는 훅 설정을 config 재로드 시 다시 읽습니다 — jcode 를 껐다 켜거나")
+    print("  config 변경 후 실행하세요. 세션 시작 시 스킬이 지시하는 대로 jv brief 를 쓰면")
+    print("  지난 작업 브리핑을 받고, 턴이 끝날 때마다 질문→답이 자동으로 도서관에 기록됩니다.")
+    print("  · 연결 관리: jv jcode list / jv jcode switch <이름> / jv jcode remove <이름> / jv jcode check")
+
+
+def jcode_status(args: argparse.Namespace) -> None:
+    cwd = Path(args.cwd or os.getcwd())
+    conn = _folder_conn(cwd)
+    if conn:
+        name = conn.get("name") or conn["project"]
+        print(f"이 폴더({cwd})는 '{name}' 프로젝트({conn['project']})에 연결되어 있습니다.")
+    else:
+        print(f"이 폴더({cwd})는 연결되어 있지 않습니다 (자유 사용). jv jcode install --url ... --key ...")
+    if _jcode_integration_installed():
+        print("✓ jcode 연동: 훅·스킬·MCP 설치됨")
+    else:
+        print("⚠ jcode 연동이 없거나 구버전입니다 → jv jcode install")
+
+
+def jcode_check(args: argparse.Namespace) -> None:
+    cwd = Path(args.cwd or os.getcwd())
+    if not _jcode_integration_installed():
+        print("⚠ jcode 연동이 설치되어 있지 않습니다 → jv jcode install --url ... --key ...")
+        return
+    print(f"✓ jcode 훅: {_jcode_config()} 에 {_JCODE_VERSION} 훅 등록됨")
+    if not _jcode_launcher().exists():
+        print("⚠ 훅 런처가 없습니다 → jv jcode install")
+        return
+    print(f"✓ 훅 런처: {_jcode_launcher()}")
+    if not _jcode_skill().exists():
+        print("⚠ 스킬이 없습니다 → jv jcode install")
+        return
+    print(f"✓ jcode 스킬: {_jcode_skill()}")
+    mcp_ok = False
+    try:
+        data = json.loads(_jcode_mcp_file().read_text()) if _jcode_mcp_file().exists() else {}
+        mcp_ok = isinstance(data.get("servers"), dict) and "myviking" in data["servers"]
+    except (OSError, ValueError):
+        pass
+    print("✓ jcode MCP: ~/.jcode/mcp.json (myviking)" if mcp_ok else "⚠ jcode MCP 항목이 없습니다 → jv jcode install")
+
+    link = _pi_link_path(cwd)
+    if not link.exists():
+        print(f"이 폴더({cwd})는 연결되어 있지 않습니다 (자유 사용) — 다른 프로젝트 폴더에서 실행하거나 jv jcode install/switch")
+        return
+    try:
+        cid = json.loads(link.read_text()).get("connection")
+    except (OSError, ValueError):
+        print("⚠ .myviking-connection.json 을 읽을 수 없습니다.")
+        return
+    conn = next((c for c in _load_conns() if c.get("id") == cid), None)
+    if not conn:
+        print(f"⚠ 이 폴더가 가리키는 연결({cid})이 저장소에 없습니다 → jv jcode install 또는 switch")
+        return
+    print(f"✓ 폴더 연결: {cwd} → {conn.get('name') or conn['project']} ({conn['project']})")
+    try:
+        _verify_server(conn["url"], conn["key"], conn["project"])
+        print(f"✓ 서버 연결·인증: {conn['url']} · 프로젝트 {conn['project']}")
+    except SystemExit as e:
+        print(f"⚠ 서버 연결/키 확인 실패: {e}")
+
+
+def jcode_list(args: argparse.Namespace) -> None:
+    _print_conns(_load_conns(), Path(args.cwd or os.getcwd()))
+
+
+def jcode_switch(args: argparse.Namespace) -> None:
+    """저장된 연결로 이 폴더를 바꿔 연결 (jcode 는 폴더 기준)."""
+    conns = _load_conns()
+    cwd = Path(args.cwd or os.getcwd())
+    conn = _resolve_conn_name(conns, getattr(args, "name", "") or "", cwd, "바꿀")
+    _pi_link_path(cwd).write_text(json.dumps({"connection": conn["id"]}, ensure_ascii=False, indent=2))
+    # MCP env 도 같은 연결을 보게 갱신 (설치돼 있으면)
+    if _jcode_mcp_file().exists():
+        _jcode_mcp_file().write_text(json.dumps(_mcp_merge(conn), ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"✓ 이 폴더의 기본 연결을 '{conn.get('name') or conn['project']}' 프로젝트로 바꿨습니다: {cwd}")
+    print("jcode 에서 쓰는 세션은 껐다 켜거나 config 를 다시 읽게 해야 새 폴더 연결을 씁니다.")
+
+
+def jcode_disconnect(args: argparse.Namespace) -> None:
+    cwd = Path(args.cwd or os.getcwd())
+    link = _pi_link_path(cwd)
+    if not link.exists():
+        print("이 폴더는 연결되어 있지 않습니다.")
+        return
+    link.unlink()
+    print(f"✓ 이 폴더의 기본 연결을 해제했습니다: {cwd} — jcode 세션은 자유 사용입니다")
+
+
+def jcode_uninstall(args: argparse.Namespace) -> None:
+    """jcode 연동(훅·스킬·MCP)만 제거 — 저장된 연결은 남긴다."""
+    removed = 0
+    if _jcode_config().exists():
+        text, removed = _toml_unset_hooks(_jcode_config().read_text(encoding="utf-8"), _jcode_hook_cmd())
+        if removed:
+            _jcode_config().write_text(text, encoding="utf-8")
+    if _jcode_launcher().exists():
+        _jcode_launcher().unlink()
+    if _jcode_skill().exists():
+        _jcode_skill().unlink()
+        try:
+            _jcode_skill().parent.rmdir()
+        except OSError:
+            pass
+    if _mcp_remove():
+        removed += 1
+    if _jcode_marker().exists():
+        _jcode_marker().unlink()
+    print(f"✓ jcode 연동 제거: 훅 {removed}개·런처·스킬·MCP. 저장된 연결은 남아 있습니다 (jv pi list).")
+
+
+def jcode_remove(args: argparse.Namespace) -> None:
+    """저장된 연결 삭제 (키 포함) + jcode 연동 제거 + 링크 정리."""
+    if _jcode_integration_installed():
+        jcode_uninstall(args)
+    conns = _load_conns()
+    cwd = Path(args.cwd or os.getcwd())
+    if conns:
+        conn = _resolve_conn_name(conns, getattr(args, "name", "") or "", cwd, "삭제할")
+        rest = [c for c in conns if c.get("id") != conn["id"]]
+        _save_conns(rest)
+        print(f"✓ 연결 삭제: {conn.get('name') or conn['project']} ({conn['project']} @ {conn['url']}) — 키도 함께 제거했습니다")
+        link = _pi_link_path(cwd)
+        cid = None
+        if link.exists():
+            try:
+                cid = json.loads(link.read_text()).get("connection")
+            except (OSError, ValueError):
+                cid = None
+        if cid == conn["id"]:
+            link.unlink(missing_ok=True)
+            print(f"✓ 이 폴더({cwd})가 그 연결을 가리키고 있어 링크도 함께 해제했습니다 — 자유 사용")
+        elif rest:
+            print("남은 연결:", ", ".join(c.get("name") or c["project"] for c in rest))
+    else:
+        print("저장된 연결이 없습니다.")
+
+
+def jcode_hook(args: argparse.Namespace) -> None:
+    """jcode 훅 이벤트 처리 (런처가 exec). 관찰자 훅이라 항상 exit 0 — fail-open."""
+    event = os.environ.get("JCODE_HOOK_EVENT", "")
+    session_id = os.environ.get("JCODE_HOOK_SESSION_ID", "") or ""
+    cwd = os.environ.get("JCODE_HOOK_CWD") or os.getcwd()
+    note = ""
+    try:
+        payload = json.loads(os.environ.get("JCODE_HOOK_PAYLOAD") or "{}")
+    except ValueError:
+        payload = {}
+
+    conn = _folder_conn(Path(cwd))
+    if not conn:
+        try:
+            url = (os.environ.get("MYVIKING_URL") or "").rstrip("/")
+            key = os.environ.get("MYVIKING_KEY") or ""
+            project = (os.environ.get("MYVIKING_PROJECT") or "").strip()
+            if url and key and project:
+                conn = {"url": url, "key": key, "project": project, "name": project}
+        except Exception:
+            conn = None
+
+    if conn and event == "turn_end":
+        status = os.environ.get("JCODE_HOOK_STATUS", "")
+        answer = (os.environ.get("JCODE_HOOK_LAST_ASSISTANT_TEXT") or "").strip()
+        if status == "ok" and answer:
+            question = _jcode_question_from_payload(payload)
+            if not question and session_id:
+                question = _jcode_question_from_session(session_id)
+            if question and not question.lstrip().startswith("/"):
+                try:
+                    _api(conn["url"], conn["key"], "POST",
+                         f"/projects/{conn['project']}/commit",
+                         json={"question": mask(question)[:2000], "answer": mask(answer)[:20000],
+                               "session_id": session_id, "agent": "jcode"})
+                    note = f"질문 {len(mask(question))}자 → commit"
+                except SystemExit as e:
+                    note = str(e)
+            elif question and question.lstrip().startswith("/"):
+                note = "슬래시 명령 턴 — 기록 안 함"
+            else:
+                note = "질문을 찾지 못함 — 기록 안 함"
+        elif status != "ok":
+            note = f"상태 {status or '?'} — 기록 안 함"
+        else:
+            note = "답변 없음 — 기록 안 함"
+    elif conn is None:
+        note = "연결 없음 (폴더/환경변수)"
+    else:
+        note = f"{event} — 처리 없음"
+
+    _jcode_log(event, session_id, note, ok=(note.startswith("질문") or event != "turn_end"))
+    return None  # exit 0
+
+
+def _jcode_question_from_payload(payload: dict) -> str:
+    for k in ("prompt", "user_prompt", "question"):
+        v = payload.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()[:2000]
+    for k in ("messages", "message"):
+        msgs = payload.get(k)
+        if isinstance(msgs, list) and msgs:
+            for m in reversed(msgs):
+                if isinstance(m, dict) and m.get("role") == "user":
+                    txt = _content_text(m.get("content") or "")
+                    if txt and not txt.lstrip().startswith("<system"):
+                        return txt.strip()[:2000]
+    return ""
+
+
+def _jcode_question_from_session(session_id: str) -> str:
+    """세션 파일에서 마지막 사용자 질문을 찾는다 (system-reminder 제외)."""
+    sdir = _jcode_home() / "sessions"
+    if not sdir.exists():
+        return ""
+    files = sorted(sdir.glob("session_*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if str(data.get("id", "")) != session_id:
+            continue
+        for m in reversed(data.get("messages") or []):
+            if not isinstance(m, dict) or m.get("role") != "user":
+                continue
+            txt = _content_text(m.get("content") or "")
+            if txt and not txt.lstrip().startswith("<system"):
+                return txt.strip()[:2000]
+        return ""
+    return ""
+
+
+
+# ══════════════════ main ══════════════════ #
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="jv", description="myviking 클라이언트")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1233,6 +1763,37 @@ def main(argv: list[str] | None = None) -> None:
     pp = pisub.add_parser("check"); hooks_common(pp)
     pp.add_argument("--cwd", default="")
     pp.set_defaults(func=pi_check)
+
+    sp = sub.add_parser("jcode", help="jcode (J-Code) 에이전트 연동 — 훅·스킬·MCP 설치/상태")
+    jsub = sp.add_subparsers(dest="action", required=True)
+    jp = jsub.add_parser("install", help="연결 저장 + 폴더 연결 + jcode 연동 설치"); hooks_common(jp)
+    jp.add_argument("--cwd", default="")
+    jp.set_defaults(func=jcode_install)
+    jp = jsub.add_parser("list", help="저장된 연결 목록")
+    jp.add_argument("--cwd", default="")
+    jp.set_defaults(func=jcode_list)
+    jp = jsub.add_parser("switch", help="저장된 연결로 이 폴더를 바꿔 연결")
+    jp.add_argument("name", nargs="?", default="")
+    jp.add_argument("--cwd", default="")
+    jp.set_defaults(func=jcode_switch)
+    jp = jsub.add_parser("disconnect", help="이 폴더의 연결 해제")
+    jp.add_argument("--cwd", default="")
+    jp.set_defaults(func=jcode_disconnect)
+    jp = jsub.add_parser("remove", aliases=["rm"], help="저장된 연결 삭제 (키 포함) + jcode 연동 제거")
+    jp.add_argument("name", nargs="?", default="")
+    jp.add_argument("--cwd", default="")
+    jp.set_defaults(func=jcode_remove)
+    jp = jsub.add_parser("uninstall", help="jcode 연동만 제거 (연결은 유지)")
+    jp.add_argument("--cwd", default="")
+    jp.set_defaults(func=jcode_uninstall)
+    jp = jsub.add_parser("check"); hooks_common(jp)
+    jp.add_argument("--cwd", default="")
+    jp.set_defaults(func=jcode_check)
+    jp = jsub.add_parser("status")
+    jp.add_argument("--cwd", default="")
+    jp.set_defaults(func=jcode_status)
+    sp = sub.add_parser("jcode-hook", help="(내부) J-Code 훅 이벤트 처리 — 런처가 호출")
+    sp.set_defaults(func=jcode_hook)
 
     args = p.parse_args(argv)
     fn = getattr(args, "func", None)
