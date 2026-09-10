@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 
 from .. import db
 from ..config import config
@@ -68,6 +68,71 @@ def signup(request: Request, name: str = Form(""), email: str = Form(""), passwo
     return resp
 
 
+_INSTALL_SH = r"""#!/usr/bin/env bash
+# myviking 자동 연결 (install.sh) — jv 설치(없으면) + 이 폴더를 프로젝트에 연결 + 이 머신의 에이전트 전부 설치
+# 사용법: curl -fsSL __BASE__/install.sh | bash -s -- --url __BASE__ --key jv_... --project <슬러그>
+set -u
+URL=""; KEY=""; PROJECT=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --url) URL="${2:-}"; shift 2;;
+    --key) KEY="${2:-}"; shift 2;;
+    --project) PROJECT="${2:-}"; shift 2;;
+    *) echo "알 수 없는 인자: $1"; exit 2;;
+  esac
+done
+if [ -z "$URL" ] || [ -z "$KEY" ]; then
+  echo "사용법: curl -fsSL __BASE__/install.sh | bash -s -- --url __BASE__ --key jv_... --project <슬러그>"
+  exit 2
+fi
+
+if ! command -v jv >/dev/null 2>&1; then
+  echo "► jv 설치 중 (python3 pip, 잠시 기다리세요)..."
+  (python3 -m pip install --user --quiet git+https://github.com/senghan1992/my-viking.git \
+    || python3 -m pip install --user --break-system-packages --quiet git+https://github.com/senghan1992/my-viking.git \
+    || python3 -m pip install --quiet git+https://github.com/senghan1992/my-viking.git) \
+    && echo "✓ jv 설치 완료" || echo "⚠ jv 설치가 실패했습니다 — 아래에서 계속 시도합니다."
+fi
+# pyenv / --user 설치 경로를 PATH 에 보충 (재부팅에도 살아있는 jv 인지 확인)
+export PATH="$HOME/.local/bin:$PATH"
+if ! command -v jv >/dev/null 2>&1; then
+  for c in "$HOME"/.pyenv/versions/*/bin/jv; do
+    [ -x "$c" ] && { export PATH="$(dirname "$c"):$PATH"; break; }
+  done
+fi
+
+if command -v jv >/dev/null 2>&1; then
+  if [ -n "$PROJECT" ]; then
+    jv connect --url "$URL" --key "$KEY" --project "$PROJECT"
+  else
+    jv connect --url "$URL" --key "$KEY"
+  fi
+else
+  echo "⚠ jv 를 찾지 못했습니다 — python3/pip 가 설치되어 있는지 확인하고,"
+  echo "  pip install git+https://github.com/senghan1992/my-viking.git 후 다시 시도하세요."
+  exit 1
+fi
+"""
+
+
+@router.get("/install.sh")
+def install_script(request: Request):
+    """에이전트 머신용 자동 연결 스크립트 — 키는 포함하지 않고 사용자가 argv 로 넘긴다."""
+    base = _install_base_url(request)
+    return PlainTextResponse(
+        _INSTALL_SH.replace("__BASE__", base),
+        media_type="text/x-shellscript; charset=utf-8",
+        headers={"Content-Disposition": 'inline; filename="install.sh"'},
+    )
+
+
+def _install_base_url(request: Request) -> str:
+    from ..config import config as _config
+    if _config.base_url:
+        return _config.base_url.rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
 @router.post("/logout")
 def logout():
     resp = RedirectResponse("/login", status_code=303)
@@ -85,7 +150,21 @@ def dashboard(request: Request, user: dict = Depends(login_required), msg: str =
            FROM projects p WHERE p.user_id=? ORDER BY p.updated_at DESC""",
         (user["id"],),
     )
-    return request.app.state.templates.TemplateResponse(request, "dashboard.html", {"request": request, "user": user, "projects": projects, "msg": msg},
+    return request.app.state.templates.TemplateResponse(
+        request, "dashboard.html",
+        {"request": request, "user": user, "projects": projects, "msg": msg,
+         "stats": db.one(
+             "SELECT COUNT(DISTINCT m.project_id) AS project_count,"
+             "       COUNT(*) AS memory_count,"
+             "       SUM(CASE WHEN m.status='established' THEN 1 ELSE 0 END) AS estab_count,"
+             "       (SELECT COUNT(*) FROM sessions s JOIN projects p ON p.id=s.project_id"
+             "         WHERE p.user_id=?) AS session_count"
+             "  FROM memories m JOIN projects p ON p.id=m.project_id"
+             " WHERE p.user_id=? AND m.status!='superseded'",
+             (user["id"], user["id"]),
+         ) or {},
+         "has_any_session": any(p["session_count"] > 0 for p in projects),
+        },
     )
 
 

@@ -178,6 +178,12 @@ def hook_install(args: argparse.Namespace) -> None:
 
     cwd = Path(args.cwd or os.getcwd())
     timeout = int(args.timeout or 15)
+    _hook_write(url, key, project, cwd, timeout)
+    print("이제 이 폴더에서 Claude Code 를 열면 기록이 쌓이기 시작합니다.")
+
+
+def _hook_write(url: str, key: str, project: str, cwd: Path, timeout: int = 15) -> Path:
+    """Claude Code 훅을 이 폴더의 .claude/settings.local.json 에 설치 (hook_install/connect 공용)."""
     jv = _self_command()
 
     def command(event: str) -> str:
@@ -205,9 +211,7 @@ def hook_install(args: argparse.Namespace) -> None:
     path.write_text(json.dumps(merged, ensure_ascii=False, indent=2))
     print(f"✓ 훅 설치: {path}")
     print(f"  프로젝트: {project or '자동 감지'} · 이벤트: {', '.join(e for e, _ in HOOK_EVENTS)}")
-    print("이제 이 폴더에서 Claude Code 를 열면 기록이 쌓이기 시작합니다.")
-    if args.key:  # 명령줄에 키를 줬다면 상태에 남지 않게
-        pass
+    return path
 
 
 def _self_command() -> str:
@@ -1087,6 +1091,60 @@ def pi_install(args: argparse.Namespace) -> None:
     print("  · 저장된 연결 관리: jv pi list / jv pi switch <이름> / jv pi remove <이름> / jv pi check")
 
 
+def connect(args: argparse.Namespace) -> None:
+    """만능 연결 — 저장 + 폴더 연결 + 이 머신에 깔린 모든 에이전트를 한 번에.
+
+    Claude Code(훅)·pi(허브 확장)·jcode(훅+스킬+MCP)를 감지해 전부 설치하고,
+    그 외 에이전트(Cursor·Codex 등)용 MCP 설정도 출력한다.
+    """
+    url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
+    key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
+    project = (getattr(args, "project", "") or os.environ.get("MYVIKING_PROJECT") or "").strip()
+    cwd = Path(getattr(args, "cwd", "") or os.getcwd())
+    want = (getattr(args, "agent", "") or "").strip().lower()
+
+    conn = _connect_flow(url, key, project, cwd)
+    done: list[str] = []
+
+    # ── Claude Code: ~/.claude 존재 or claude 실행파일 ──
+    has_claude = (Path.home() / ".claude").exists() or bool(shutil.which("claude"))
+    if want in ("", "claude") and has_claude:
+        _hook_write(conn["url"], conn["key"], conn["project"], cwd, 15)
+        done.append("Claude Code 훅")
+    # ── pi: ~/.pi 존재 or pi 실행파일 ──
+    has_pi = (Path.home() / ".pi").exists() or bool(shutil.which("pi"))
+    if want in ("", "pi") and has_pi:
+        hub = _install_hub_extension()
+        print(f"✓ pi 허브 확장: {hub} (전역 — pi 재시작 후 이 세션은 /myviking use 로 연결)")
+        done.append("pi 확장")
+    # ── jcode: ~/.jcode 존재 ──
+    has_jcode = (Path.home() / ".jcode").exists()
+    if want in ("", "jcode") and has_jcode:
+        launcher, set_keys, skipped = _jcode_write_integration(conn)
+        print(f"✓ jcode 연동: {launcher} · 훅 이벤트 {', '.join(set_keys)}"
+              + (f" · 보존 {', '.join(skipped)}" if skipped else ""))
+        done.append("jcode")
+    # ── MCP (모든 에이전트 공용) ──
+    mcp = json.dumps({"mcpServers": {"myviking": {"command": "jv", "args": ["mcp"],
+        "env": {"MYVIKING_URL": conn["url"], "MYVIKING_KEY": conn["key"],
+                "MYVIKING_PROJECT": conn["project"]}}}}, ensure_ascii=False, indent=2)
+    if want in ("", "mcp"):
+        print("✓ MCP 설정 (Cursor·Codex 등 — 에이전트의 mcp.json 에 붙여넣기):")
+        print(mcp)
+
+    if not done and want not in ("", "mcp"):
+        print("이 머신에서 감지된 에이전트가 없어 자동 설치는 건너뜁니다 (연결은 저장됨).")
+        print("  · Claude Code: ~/.claude 가 필요 · pi: pi 설치 필요 · jcode: ~/.jcode 가 필요")
+        print("  · 원하는 에이전트만: jv connect --agent claude|pi|jcode|mcp")
+    elif done:
+        print(f"설치 완료: {', '.join(done)}")
+    print("다음 단계:")
+    print("  · Claude Code: 이 폴더에서 곧바로 사용")
+    print("  · pi: pi 를 재시작하거나 /reload 후 연결할 세션에서 /myviking use")
+    print("  · jcode: jcode 재시작 (config 재로드) 후 세션 시작 시 jv brief 가 안내됨")
+    print("  · 확인: jv hook check · jv pi check · jv jcode check")
+
+
 def pi_list(args: argparse.Namespace) -> None:
     _print_conns(_load_conns(), Path(args.cwd or os.getcwd()))
 
@@ -1774,6 +1832,12 @@ def main(argv: list[str] | None = None) -> None:
     sp.set_defaults(func=remote, cmd="score")
     sp = sub.add_parser("mcp", help="MCP stdio 서버"); hooks_common(sp)
     sp.set_defaults(func=mcp)
+
+    sp = sub.add_parser("connect", aliases=["c"], help="만능 연결 — 저장 + 폴더 연결 + 감지된 모든 에이전트(Claude Code·pi·jcode·MCP) 설치")
+    hooks_common(sp)
+    sp.add_argument("--agent", default="", help="하나만 설치: claude | pi | jcode | mcp (기본: 전부 감지)")
+    sp.add_argument("--cwd", default="")
+    sp.set_defaults(func=connect)
 
     sp = sub.add_parser("pi", help="pi 코딩 에이전트 확장·프로젝트 연결 관리")
     pisub = sp.add_subparsers(dest="action", required=True)

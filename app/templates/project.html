@@ -20,6 +20,23 @@
   </div>
 </div>
 
+{% if not sessions %}
+<div class="banner">
+  <div class="banner-text">
+    <b>아직 에이전트가 연결되지 않았습니다</b>
+    <span class="muted small">키 발급 → 명령 복사 → 프로젝트 폴더 터미널에 붙여 넣으면 끝입니다. 이후 작업이 자동으로 기록됩니다.</span>
+  </div>
+  <a class="btn primary" href="/projects/{{ project.slug }}/connect">{{ icons.icon('link') }} 1분 연결</a>
+</div>
+{% else %}
+<div class="banner banner-ok">
+  <div class="banner-text">
+    <b><span class="dot" aria-hidden="true"></span>{{ counts.session_count or 0 }}개 세션이 이 서가에 기록되고 있습니다</b>
+    <span class="muted small">세션이 끝날 때마다 지식이 자동 증류·등재됩니다.</span>
+  </div>
+</div>
+{% endif %}
+
 <div class="stat-row">
   <div class="stat"><b>{{ counts.total or 0 }}</b><span>지식 권수</span></div>
   <div class="stat stat-green"><b>{{ counts.established or 0 }}</b><span>확립</span></div>

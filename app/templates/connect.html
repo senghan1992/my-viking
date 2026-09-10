@@ -6,8 +6,8 @@
   <div>
     <div class="crumb"><a href="/">내 도서관</a> › <a href="/projects/{{ project.slug }}">{{ project.name }}</a> ›</div>
     <h1>{{ icons.icon('link', 'ic-20') }} 에이전트 연결</h1>
-    <p class="muted">아래에서 에이전트를 고르고, 단계를 하나씩 따라 하면 됩니다. 연결하면 세션 시작·질문·답변·변경이
-      자동으로 기록되고, 다음 세션부터 자동으로 참조됩니다.</p>
+    <p class="muted">키 발급 → 명령 복사 → 프로젝트 폴더 터미널에 붙여 넣기. 이후 모든 작업이 자동으로 기록되고
+      다음 세션부터 자동으로 참조됩니다.</p>
   </div>
   <a class="btn ghost" href="/projects/{{ project.slug }}">{{ icons.icon('back') }} 서가로</a>
 </div>
@@ -16,8 +16,9 @@
 <section class="card">
   <div class="pane-head">
     <h2>{{ icons.icon('key') }} 1단계 — 연결 키 발급</h2>
+    <span class="chip chip-amber">{{ icons.icon('alert') }} 발급 직후만 평문이 보입니다</span>
   </div>
-  <p class="muted small">키는 이 프로젝트 전용입니다. 에이전트마다 따로 발급하고, 더는 안 쓰는 것은 폐기하세요.</p>
+  {% if keys %}
   <ul class="key-list">
     {% for k in keys %}
     <li class="{{ 'revoked' if k.revoked_at }}">
@@ -35,18 +36,51 @@
     <li class="muted small">아직 키가 없습니다. 아래에서 새 키를 발급하세요.</li>
     {% endfor %}
   </ul>
+  {% endif %}
   <form method="post" action="/projects/{{ project.slug }}/keys" class="row-form">
-    <input type="text" name="name" placeholder="키 이름 — 예: 내 노트북, 회사 PC, CI" maxlength="40">
+    <input type="text" name="name" placeholder="키 이름 — 예: 내 노트북, 회사 PC, CI (선택)" maxlength="40">
     <button class="btn primary" type="submit">{{ icons.icon('key') }} 새 키 발급</button>
   </form>
-  <p class="muted small">발급 직후 <b>한 번만</b> 평문이 보입니다. 서버는 해시만 저장하므로 잃어버리면 다시 발급하세요.
-    아래 명령의 <code>jv_...</code> 자리에 방금 발급한 키를 붙여 넣습니다.</p>
+  <p class="muted small note">발급을 누르면 <b>다음 화면에 키가 이미 들어간 연결 명령</b>이 나옵니다 — 그것을 복사해
+    에이전트 머신의 프로젝트 폴더 터미널에 붙여 넣으면 됩니다 (아래 2단계).</p>
 </section>
 
-{# ── 2단계: 에이전트 선택 ── #}
+{# ── 2단계: 빠른 연결 ── #}
+<section class="card quick-card">
+  <div class="pane-head">
+    <h2>{{ icons.icon('compass') }} 2단계 — 명령 하나 복사·붙여 넣기</h2>
+    <span class="chip chip-green">{{ icons.icon('check') }} 권장</span>
+  </div>
+  <p class="muted small">이 명령은 <b>jv 설치(없으면) + 연결 저장 + 이 머신에 깔린 모든 에이전트(Claude Code·pi·jcode) 설치</b>를
+    한 번에 처리합니다. <code>jv_...</code> 자리에 방금 발급한 키를 붙여 넣으세요 — 발급 직후 화면에서는 키가 박힌 채로 복사됩니다.</p>
+  <pre>curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
+  <div class="row" style="margin-top:2px">
+    <button class="btn primary" data-copy="curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key jv_... --project {{ project.slug }}">{{ icons.icon('copy') }} 명령 복사</button>
+    <span class="muted small" style="align-self:center">프로젝트 폴더(이 프로젝트의 코드가 있는 폴더) 터미널에서 실행하세요.</span>
+  </div>
+
+  <div class="quick-result">
+    <h3>{{ icons.icon('list') }} 실행하면 일어나는 일</h3>
+    <ul class="quick-list">
+      <li>① 서버·키·프로젝트를 확인하고 <b>연결을 저장</b>합니다 (<code>~/.myviking/connections.json</code>, 키는 0600)</li>
+      <li>② 이 폴더를 이 프로젝트의 기본 연결로 지정 (<code>.myviking-connection.json</code>, 비밀 없음)</li>
+      <li>③ 머신에 깔린 에이전트를 찾아 자동 설치 — <b>Claude Code</b> 훅 · <b>pi</b> 허브 확장 · <b>jcode</b> 훅+스킬+MCP</li>
+      <li>④ 그 외 에이전트(Cursor·Codex 등)용 <b>MCP 설정</b>을 출력해 줍니다</li>
+    </ul>
+    <h3>{{ icons.icon('flag') }} 마무리 (에이전트별)</h3>
+    <ul class="quick-list">
+      <li><b>Claude Code</b> — 이 폴더에서 그대로 시작하면 끝 (브리핑 자동 주입)</li>
+      <li><b>pi</b> — 재시작(또는 /reload) 후 연결할 세션에서 <code>/myviking use</code> (세션은 기본 자유 사용)</li>
+      <li><b>jcode</b> — 재시작하면 훅·/myviking 스킬 적용, 세션 시작 시 스킬이 jv brief 를 안내</li>
+      <li><b>확인</b> — <code>jv hook check</code> · <code>jv pi check</code> · <code>jv jcode check</code></li>
+    </ul>
+  </div>
+</section>
+
+{# ── 3단계: 에이전트별 세부 안내 ── #}
 <section class="card tool-guide">
   <div class="pane-head">
-    <h2>{{ icons.icon('bot') }} 2단계 — 에이전트 고르고 연결하기</h2>
+    <h2>{{ icons.icon('bot') }} 에이전트별 세부 안내 (선택)</h2>
   </div>
   <nav class="tabs" data-tabs="tools" style="margin-top:2px">
     <a href="#claude" data-tab="claude" class="on">Claude Code</a>
@@ -58,35 +92,23 @@
 
   {# ── Claude Code ── #}
   <div class="tool-pane" data-pane="tools" data-pane-id="claude">
-    <p class="muted">세션 시작·질문·답변·변경 파일까지 <b>자동으로 캡처</b>되는 가장 완전한 연결입니다.
-      권장 구성이며, 아래 4단계를 한 번만 하면 됩니다.</p>
     <div class="steps">
       <div class="step">
-        <h3><span class="step-num">1</span> 에이전트 머신에 jv 설치</h3>
-        <p class="muted small">Claude Code 가 실행되는 컴퓨터의 터미널에서:</p>
-        <pre>pip install git+https://github.com/senghan1992/my-viking.git</pre>
-        <button class="btn small" data-copy="pip install git+https://github.com/senghan1992/my-viking.git">{{ icons.icon('copy') }} 복사</button>
-      </div>
-      <div class="step">
-        <h3><span class="step-num">2</span> 나의 프로젝트 폴더에서 연결</h3>
-        <p class="muted small"><code>jv_...</code> 자리에 방금 발급한 키를 붙여 넣으세요. 연결되면 서버 확인 메시지가 나옵니다.</p>
-        <pre>jv hook install --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
+        <h3><span class="step-num">1</span> 이 폴더에서 빠른 연결 명령 실행</h3>
+        <p class="muted small">위 2단계의 명령 하나면 됩니다. 수동으로 할 경우:</p>
+        <pre>pip install git+https://github.com/senghan1992/my-viking.git
+jv hook install --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
         <button class="btn small" data-copy="jv hook install --url {{ base }} --key jv_... --project {{ project.slug }}">{{ icons.icon('copy') }} 복사</button>
-        <p class="muted small"><span style="color:var(--green)">✓ 확인:</span> 설치 후 <code>jv hook check</code> 를 실행하면
-          SessionStart 등 4개 이벤트가 설치되어 있다고 나옵니다.</p>
+        <p class="muted small"><span style="color:var(--green)">✓ 확인:</span> <code>jv hook check</code> — SessionStart 등 4개 이벤트</p>
       </div>
       <div class="step">
-        <h3><span class="step-num">3</span> Claude Code 로 작업 시작</h3>
+        <h3><span class="step-num">2</span> Claude Code 로 작업 시작</h3>
         <p class="muted small">이 폴더에서 평소처럼 Claude Code 를 쓰면 끝입니다. 자동으로 일어나는 일:</p>
         <ul class="muted small" style="margin:4px 0 0;padding-left:18px">
           <li>세션 시작 → 지난 작업 브리핑 자동 주입</li>
           <li>질문마다 → 관련 지식만 골라 주입 (검증 전은 단정하지 않도록 표시)</li>
           <li>작업 종료 → 지식 자동 증류·기록, 틀린 지식은 '검증 필요'로 강등</li>
         </ul>
-      </div>
-      <div class="step">
-        <h3><span class="step-num">4</span> 확인</h3>
-        <p class="muted small">서가로 돌아가 보세요. 작업이 끝나면 지식 권이 자동으로 쌓여 있습니다.</p>
       </div>
     </div>
   </div>
@@ -99,46 +121,21 @@
       다른 세션에는 영향이 없습니다.</p>
     <div class="steps">
       <div class="step">
-        <h3><span class="step-num">1</span> jv 설치 (확장 생성기)</h3>
-        <p class="muted small">확장을 만들어 주는 jv CLI 를 한 번 설치합니다:</p>
-        <pre>pip install git+https://github.com/senghan1992/my-viking.git</pre>
-        <button class="btn small" data-copy="pip install git+https://github.com/senghan1992/my-viking.git">{{ icons.icon('copy') }} 복사</button>
+        <h3><span class="step-num">1</span> 빠른 연결 명령 실행 (jv 없으면 함께 설치)</h3>
+        <pre>curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
+        <button class="btn small" data-copy="curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key jv_... --project {{ project.slug }}">{{ icons.icon('copy') }} 복사</button>
       </div>
       <div class="step">
-        <h3><span class="step-num">2</span> 프로젝트 폴더에서 연결</h3>
-        <p class="muted small">이 프로젝트의 작업 폴더에서 아래 명령을 실행하세요. <code>jv_...</code> 자리에 방금 발급한 키를 붙여 넣습니다.
-          프로젝트(슬러그)는 키로 자동 식별되어 <b>주소와 키만 있으면 됩니다</b>.
-          키는 <code>~/.myviking/connections.json</code>(0600)에 저장되고, 이 폴더에 <code>.myviking-connection.json</code>(비밀 없음)이 생깁니다.</p>
-        <pre>jv pi install --url {{ base }} --key jv_...</pre>
-        <button class="btn small" data-copy="jv pi install --url {{ base }} --key jv_...">{{ icons.icon('copy') }} 복사</button>
-        <p class="muted small"><span style="color:var(--green)">✓ 확인:</span> <code>jv pi check</code> 로 폴더 연결·서버 인증을 확인할 수 있습니다.</p>
+        <h3><span class="step-num">2</span> pi 재시작 + 이 세션에서 연결</h3>
+        <p class="muted small">pi 를 껐다 켜거나 /reload 후, 연결할 세션에서: <code>/myviking use</code>(폴더 기본값 적용) ·
+          <code>/myviking connect</code>(주소+키 직접) · <code>/myviking switch</code>(저장된 목록). 연결하면 브리핑이 주입됩니다.</p>
       </div>
       <div class="step">
-        <h3><span class="step-num">3</span> 세션에서 연결 + /reload</h3>
-        <p class="muted small">확장을 불러오려면 pi 를 껐다 켜거나, pi 안에서 <code>/reload</code> 를 입력하세요.
-          그 뒤 연결할 세션에서 다음 중 하나를 쓰면 <b>그 세션만</b> 이 프로젝트에 연결됩니다:
-          <code>/myviking use</code> (위 2단계의 폴더 설정 적용 — 자동으로 연결됨) ·
-          <code>/myviking connect</code> (주소+키 직접 입력) · <code>/myviking switch</code> (저장된 목록에서 선택).
-          연결하면 브리핑이 그 세션에 주입됩니다. <b>기본은 자유 사용</b> — 폴더 설정이 있어도 다른 세션은 자동 연결되지 않습니다.</p>
-      </div>
-      <div class="step">
-        <h3><span class="step-num">4</span> 프로젝트 전환·해제 — 세션마다 자유롭게</h3>
-        <p class="muted small">연결은 세션(스레드) 단위입니다. 저장된 목록은 어디서든 씁니다:</p>
+        <h3><span class="step-num">3</span> 연결 관리 — 세션마다 자유롭게</h3>
         <ul class="muted small" style="margin:4px 0 0;padding-left:18px">
-          <li>터미널(연결 저장·폴더 기본값): <code>jv pi list</code> · <code>jv pi switch &lt;이름&gt;</code> · <code>jv pi disconnect</code> · <code>jv pi remove &lt;이름&gt;</code> (키 포함 삭제)</li>
-          <li>pi 안에서(세션 연결): <code>/myviking</code> (상태/목록) · <code>/myviking use</code> (폴더 설정 적용) · <code>/myviking switch</code> · <code>/myviking connect</code> · <code>/myviking disconnect</code> (이 세션 해제) · <code>/myviking remove</code> (저장된 연결 삭제)</li>
+          <li>터미널: <code>jv pi list</code> · <code>jv pi switch &lt;이름&gt;</code> · <code>jv pi disconnect</code> · <code>jv pi remove &lt;이름&gt;</code></li>
+          <li>pi 안에서: <code>/myviking</code> (상태/목록) · <code>/myviking use</code> · <code>/myviking switch</code> · <code>/myviking connect</code> · <code>/myviking disconnect</code> · <code>/myviking remove</code></li>
         </ul>
-      </div>
-      <div class="step">
-        <h3><span class="step-num">5</span> 확인</h3>
-        <p class="muted small">연결된 세션에는 브리핑이 주입되고, 대화 중 도구가 자동으로 쓰입니다:</p>
-        <ul class="muted small" style="margin:4px 0 0;padding-left:18px">
-          <li>"지금까지 쌓인 지식 브리핑 줘" → <code>viking_brief</code></li>
-          <li>"결제 재시도 관련 지식 검색해줘" → <code>viking_search</code></li>
-          <li>"이 규칙을 기억해: 배포는 화요일만" → <code>viking_remember</code></li>
-        </ul>
-        <p class="muted small" style="margin-top:6px">질문→답은 매 턴 **자동으로 도서관에 기록**(commit)되어 다음 브리핑에 쌓입니다.
-          중요 규칙·함정은 <code>viking_remember</code> 로 확실히 남기면 됩니다.</p>
       </div>
     </div>
   </div>
@@ -146,38 +143,26 @@
   {# ── jcode ── #}
   <div class="tool-pane" data-pane="tools" data-pane-id="jcode" hidden>
     <p class="muted">jcode(J-Code)는 훅·스킬·MCP가 모두 지원되므로 <b>질문→답 자동 기록</b>까지
-      pi 와 같은 수준으로 붙습니다. <b>연결은 폴더 단위</b>입니다 — 프로젝트 폴더에서 설치/실행하세요.</p>
+      pi 와 같은 수준으로 붙습니다. <b>연결은 폴더 단위</b>입니다 — 프로젝트 폴더에서 실행하세요.</p>
     <div class="steps">
       <div class="step">
-        <h3><span class="step-num">1</span> jv 설치</h3>
-        <pre>pip install git+https://github.com/senghan1992/my-viking.git</pre>
-        <button class="btn small" data-copy="pip install git+https://github.com/senghan1992/my-viking.git">{{ icons.icon('copy') }} 복사</button>
-      </div>
-      <div class="step">
-        <h3><span class="step-num">2</span> 프로젝트 폴더에서 설치</h3>
-        <p class="muted small">이 프로젝트의 작업 폴더에서 실행하세요. 프로젝트(슬러그)는 키로 자동 식별되어
-          <b>주소와 키만 있으면 됩니다</b>. 키는 <code>~/.myviking/connections.json</code>(0600)에,
-          폴더 링크는 <code>.myviking-connection.json</code>(비밀 없음)에 저장됩니다.</p>
-        <pre>jv jcode install --url {{ base }} --key jv_...</pre>
-        <button class="btn small" data-copy="jv jcode install --url {{ base }} --key jv_...">{{ icons.icon('copy') }} 복사</button>
+        <h3><span class="step-num">1</span> 빠른 연결 명령 실행</h3>
+        <pre>curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
+        <button class="btn small" data-copy="curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key jv_... --project {{ project.slug }}">{{ icons.icon('copy') }} 복사</button>
         <p class="muted small">설치되는 것: ① <code>~/.jcode/config.toml</code> 의 <code>[hooks]</code> (turn_end 자동 기록),
-          ② <code>~/.jcode/skills/myviking/SKILL.md</code> (세션 시작 시 <code>jv brief</code> 사용법),
-          ③ <code>~/.jcode/mcp.json</code> (viking_brief·search·remember·score 도구).
+          ② <code>~/.jcode/skills/myviking/SKILL.md</code>, ③ <code>~/.jcode/mcp.json</code>.
           이미 직접 설정한 훅 이벤트는 건드리지 않습니다.</p>
       </div>
       <div class="step">
-        <h3><span class="step-num">3</span> jcode 재시작</h3>
+        <h3><span class="step-num">2</span> jcode 재시작</h3>
         <p class="muted small">훅 설정은 config 를 다시 읽을 때 적용됩니다 — jcode 를 껐다 켜세요.
-          세션이 시작되면 스킬이 지시하는 대로 <code>jv brief</code> 를 실행해 지난 작업 브리핑을 받고,
-          턴이 끝날 때마다 질문→답이 자동으로 도서관에 기록됩니다.</p>
+          세션이 시작되면 스킬이 지시하는 대로 <code>jv brief</code> 를 실행하고, 턴이 끝날 때마다 자동 기록됩니다.</p>
       </div>
       <div class="step">
-        <h3><span class="step-num">4</span> 확인·전환</h3>
+        <h3><span class="step-num">3</span> 확인·전환</h3>
         <ul class="muted small" style="margin:4px 0 0;padding-left:18px">
-          <li><code>jv jcode check</code> — 훅·스킬·MCP·서버 인증 한 번에 확인</li>
-          <li><code>jv jcode list</code> · <code>jv jcode switch &lt;이름&gt;</code> — 저장된 연결 목록/폴더 전환 (MCP env 도 함께 갱신)</li>
-          <li><code>jv jcode disconnect</code> — 이 폴더 연결 해제 · <code>jv jcode remove &lt;이름&gt;</code> — 연결 삭제(키 포함) + 연동 제거</li>
-          <li>세션 안에서: <code>jv brief</code> / <code>jv search "개념"</code> / <code>jv remember "제목" --content ...</code> / <code>jv score &lt;id&gt; good|bad</code></li>
+          <li><code>jv jcode check</code> — 훅·스킬·MCP·서버·프록시 한 번에 확인</li>
+          <li><code>jv jcode list</code> · <code>jv jcode switch &lt;이름&gt;</code> · <code>jv jcode disconnect</code> · <code>jv jcode remove &lt;이름&gt;</code></li>
         </ul>
       </div>
     </div>
@@ -189,12 +174,7 @@
       브리핑·검색·기록을 도구로 호출할 수 있지만, 세션 자동 캡처는 없습니다.</p>
     <div class="steps">
       <div class="step">
-        <h3><span class="step-num">1</span> jv 설치</h3>
-        <pre>pip install git+https://github.com/senghan1992/my-viking.git</pre>
-        <button class="btn small" data-copy="pip install git+https://github.com/senghan1992/my-viking.git">{{ icons.icon('copy') }} 복사</button>
-      </div>
-      <div class="step">
-        <h3><span class="step-num">2</span> 에이전트의 MCP 설정에 추가</h3>
+        <h3><span class="step-num">1</span> jv 설치 후 에이전트의 MCP 설정에 추가</h3>
         <p class="muted small">설정 파일(예: Cursor → Settings → MCP, Codex → <code>mcp.json</code>)에 아래를 붙여 넣고
           <code>MYVIKING_KEY</code> 에 방금 발급한 키를 넣으세요:</p>
         <pre>{
@@ -225,9 +205,9 @@
 }'>{{ icons.icon('copy') }} 복사</button>
       </div>
       <div class="step">
-        <h3><span class="step-num">3</span> 확인</h3>
-        <p class="muted small">에이전트에 "지식 브리핑 줘"라고 물어보면 <code>viking_brief</code> 도구가 동작합니다.
-          도구 목록: <code>viking_brief</code> · <code>viking_search</code> · <code>viking_remember</code> · <code>viking_score</code></p>
+        <h3><span class="step-num">2</span> 확인</h3>
+        <p class="muted small">"지식 브리핑 줘"라고 물어보면 <code>viking_brief</code> 도구가 동작합니다.
+          도구: <code>viking_brief</code> · <code>viking_search</code> · <code>viking_remember</code> · <code>viking_score</code></p>
       </div>
     </div>
   </div>
@@ -243,12 +223,10 @@
       </div>
       <div class="step">
         <h3><span class="step-num">2</span> 자주 쓰는 명령</h3>
-        <p class="muted small">시작할 때 브리핑:</p>
-        <pre>jv brief -u {{ base }} -k jv_... -p {{ project.slug }}</pre>
-        <p class="muted small">막혔을 때 검색:</p>
-        <pre>jv search "배포 방법" -u {{ base }} -k jv_... -p {{ project.slug }}</pre>
-        <p class="muted small">알게 된 규칙 기록:</p>
-        <pre>jv remember "릴리스는 화요일에만" --content "배포 동결은 월요일." -u {{ base }} -k jv_... -p {{ project.slug }}</pre>
+        <p class="muted small">시작할 때 브리핑 / 막혔을 때 검색 / 알게 된 규칙 기록:</p>
+        <pre>jv brief -u {{ base }} -k jv_... -p {{ project.slug }}
+jv search "배포 방법" -u {{ base }} -k jv_... -p {{ project.slug }}
+jv remember "릴리스는 화요일에만" --content "배포 동결은 월요일." -u {{ base }} -k jv_... -p {{ project.slug }}</pre>
         <button class="btn small" data-copy="jv brief -u {{ base }} -k jv_... -p {{ project.slug }}">명령 복사</button>
       </div>
       <div class="step">

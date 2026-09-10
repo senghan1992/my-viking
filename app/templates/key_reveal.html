@@ -9,13 +9,66 @@
 
   <pre class="key-box" id="new-key">{{ key }}</pre>
 
-  <h2>{{ icons.icon('link') }} 에이전트에 연결하기 (Claude Code — 에이전트 머신의 프로젝트 폴더에서)</h2>
-  <p class="muted small">pi·Cursor 등 다른 에이전트는 <a href="/projects/{{ project.slug }}/connect">연결 탭</a>에서
-    <b>에이전트 선택 → 단계별 안내</b>를 따르세요.</p>
-  <pre>jv hook install --url {{ base }} --key {{ key }} --project {{ project.slug }}</pre>
+  <h2>{{ icons.icon('compass') }} 연결 명령 — 에이전트 고르고 복사·붙여넣기만 하세요</h2>
+  <p class="muted small">아래 명령에 <b>키가 이미 들어 있습니다</b>. 에이전트 머신의 <b>이 프로젝트 작업 폴더</b> 터미널에
+    붙여 넣고 실행하면 끝입니다 (jv 설치가 아직이면 함께 설치됩니다).</p>
 
-  <h2>{{ icons.icon('command') }} MCP 설정에 붙여넣기</h2>
-  <pre>{
+  <nav class="tabs" data-tabs="krt" style="margin-top:4px">
+    <a href="#quick" data-tab="quick" class="on">자동 연결 (권장)</a>
+    <a href="#claude" data-tab="claude">Claude Code</a>
+    <a href="#pi" data-tab="pi">pi</a>
+    <a href="#jcode" data-tab="jcode">jcode</a>
+    <a href="#mcp" data-tab="mcp">MCP (Cursor·Codex)</a>
+  </nav>
+
+  {# ── 자동 ── #}
+  <div class="tool-pane" data-pane="krt" data-pane-id="quick">
+    <p class="muted small">명령 하나가 jv 설치(없으면) + 연결 저장 + 이 머신에 깔린 <b>모든</b> 에이전트
+      (Claude Code·pi·jcode) 설치까지 처리합니다.</p>
+    <pre>curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key {{ key }} --project {{ project.slug }}</pre>
+    <div class="row">
+      <button class="btn primary" data-copy="curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key {{ key }} --project {{ project.slug }}">{{ icons.icon('copy') }} 명령 복사</button>
+    </div>
+    <p class="muted small">실행 후: <b>pi</b> 는 재시작(또는 /reload) 후 연결할 세션에서 <code>/myviking use</code>,
+      <b>jcode</b> 는 재시작, <b>Claude Code</b> 는 이 폴더에서 그대로 시작하면 됩니다.</p>
+  </div>
+
+  {# ── Claude Code ── #}
+  <div class="tool-pane" data-pane="krt" data-pane-id="claude" hidden>
+    <p class="muted small">Claude Code 전용. 세션 시작·질문·답변·변경까지 자동 캡처되는 완전한 연결입니다.</p>
+    <pre>curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key {{ key }} --project {{ project.slug }}</pre>
+    <div class="row">
+      <button class="btn primary" data-copy="curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key {{ key }} --project {{ project.slug }}">{{ icons.icon('copy') }} 명령 복사</button>
+    </div>
+    <p class="muted small">또는 jv 가 이미 설치된 머신에서는: <code>jv hook install --url {{ base }} --key {{ key }} --project {{ project.slug }}</code></p>
+  </div>
+
+  {# ── pi ── #}
+  <div class="tool-pane" data-pane="krt" data-pane-id="pi" hidden>
+    <p class="muted small">pi 전용. pi 세션은 기본 <b>자유 사용</b> — 연결할 세션에서 <code>/myviking use</code> 로
+      이 프로젝트를 적용합니다 (다른 세션 영향 없음).</p>
+    <pre>curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key {{ key }} --project {{ project.slug }}</pre>
+    <div class="row">
+      <button class="btn primary" data-copy="curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key {{ key }} --project {{ project.slug }}">{{ icons.icon('copy') }} 명령 복사</button>
+    </div>
+    <p class="muted small">실행 후 pi 재시작(또는 /reload) → 세션에서 <code>/myviking use</code>.</p>
+  </div>
+
+  {# ── jcode ── #}
+  <div class="tool-pane" data-pane="krt" data-pane-id="jcode" hidden>
+    <p class="muted small">jcode(J-Code) 전용 — 훅·스킬·MCP가 설치되고 턴마다 자동 기록됩니다.</p>
+    <pre>curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key {{ key }} --project {{ project.slug }}</pre>
+    <div class="row">
+      <button class="btn primary" data-copy="curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key {{ key }} --project {{ project.slug }}">{{ icons.icon('copy') }} 명령 복사</button>
+    </div>
+    <p class="muted small">실행 후 jcode 를 재시작하면 훅과 /myviking 스킬이 적용됩니다.</p>
+  </div>
+
+  {# ── MCP ── #}
+  <div class="tool-pane" data-pane="krt" data-pane-id="mcp" hidden>
+    <p class="muted small">MCP 를 지원하는 에이전트(Cursor·Codex 등) — 설정 파일에 아래 JSON 을 붙여 넣으세요.
+      (자동 캡처는 없고 도구 호출만 됩니다)</p>
+    <pre>{
   "mcpServers": {
     "myviking": {
       "command": "jv",
@@ -28,11 +81,27 @@
     }
   }
 }</pre>
+    <div class="row">
+      <button class="btn primary" data-copy='{
+  "mcpServers": {
+    "myviking": {
+      "command": "jv",
+      "args": ["mcp"],
+      "env": {
+        "MYVIKING_URL": "{{ base }}",
+        "MYVIKING_KEY": "{{ key }}",
+        "MYVIKING_PROJECT": "{{ project.slug }}"
+      }
+    }
+  }
+}'>{{ icons.icon('copy') }} JSON 복사</button>
+    </div>
+  </div>
 
   <div class="row">
-    <button class="btn" data-copy="{{ key }}">{{ icons.icon('copy') }} 키 복사</button>
-    <a class="btn primary" href="/projects/{{ project.slug }}/connect">{{ icons.icon('check') }} 완료 — 연결 탭으로</a>
+    <button class="btn" data-copy="{{ key }}">{{ icons.icon('copy') }} 키만 복사</button>
+    <a class="btn ghost" href="/projects/{{ project.slug }}/connect">{{ icons.icon('back') }} 연결 탭 (자세한 안내)</a>
   </div>
-  <p class="muted small center">팁: 위 명령은 이 페이지가 닫히면 다시 만들 수 없습니다. 커맨드 라인(터미널)에 그대로 붙여 넣으세요.</p>
+  <p class="muted small center" style="margin-top:14px">이 페이지는 닫으면 다시 열 수 없습니다. 파일(예: <code>메모장</code>)에 명령을 붙여 두면 편합니다.</p>
 </div>
 {% endblock %}

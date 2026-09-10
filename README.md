@@ -69,6 +69,16 @@ Portainer → **Stacks → Add stack** → 이름 `myviking` →
 설치 안내가 나옵니다. 탭에서 자기 에이전트를 고르고 **단계별 안내**를 따라 하면 됩니다
 (Claude Code 자동 캡처 · pi 확장 · MCP · 셸):
 
+**가장 빠른 연결 — 명령 하나** (키는 발급 직후 화면에 이미 박혀 나옵니다):
+
+```bash
+# 프로젝트 폴더 터미널에서 (jv 가 없으면 함께 설치, 이 머신의 에이전트를 전부 감지해 연결)
+curl -fsSL http://<서버>:8787/install.sh | bash -s -- --url http://<서버>:8787 --key jv_xxxx --project <slug>
+```
+
+한 번에: Claude Code 훅 · pi 허브 확장 · jcode(훅+스킬+MCP)를 감지해 전부 설치하고,
+그 외 에이전트(Cursor·Codex 등)용 MCP 설정을 출력합니다. 수동으로는:
+
 ```bash
 pip install git+https://github.com/senghan1992/my-viking.git
 cd ~/my-project
@@ -76,6 +86,9 @@ jv hook install --url http://<서버>:8787 --key jv_xxxx --project <slug>   # Cl
 jv pi install   --url http://<서버>:8787 --key jv_xxxx   # pi → 이 폴더 연결 + /reload (--project 는 키로 자동 식별)
 # ✓ 서버 확인: …  (주소/키가 틀리면 여기서 멈춥니다)
 ```
+
+`jv connect` 가 위 설치를 하나로 묶은 만능 명령입니다
+(`--agent claude|pi|jcode|mcp` 로 하나만 고를 수도 있습니다).
 
 이후 그 폴더에서 Claude Code 나 pi 를 쓰면 끝입니다. 질문마다 기존 지식이 주입되고,
 작업이 끝나면 자동으로 기록됩니다. 다음 세션은 브리핑을 받고 시작합니다.

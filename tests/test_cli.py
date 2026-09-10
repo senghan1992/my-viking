@@ -203,6 +203,73 @@ def test_pi_install_saves_conn_and_links_folder(tmp_path, monkeypatch, capsys):
     assert not path.exists()
 
 
+def test_connect_installs_all_detected_agents(tmp_path, monkeypatch, capsys):
+    """jv connect: 저장 + 폴더 연결 + 감지된 에이전트(Claude Code·pi·jcode) 전부 설치 + MCP 출력."""
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".pi").mkdir()
+    (tmp_path / ".jcode").mkdir()
+    folder = tmp_path / "app1"
+    folder.mkdir()
+    monkeypatch.setattr(cli, "_api", lambda *a, **kw: {"project_name": "데이터자판기"})
+    monkeypatch.setattr(cli, "_self_command", lambda: "jv")
+
+    class Args:
+        url = "https://viking.example.com"
+        key = "jv_0123456789abcdef01234567"
+        project = "p921a95"
+        timeout = "15"
+        cwd = str(folder)
+        agent = ""
+
+    cli.connect(Args())
+    out = capsys.readouterr().out
+
+    # 1) 연결 저장 + 폴더 링크
+    assert (folder / ".myviking-connection.json").exists()
+    # 2) Claude Code 훅
+    hook_file = folder / ".claude" / "settings.local.json"
+    assert hook_file.exists()
+    assert "hooks" in json.loads(hook_file.read_text())
+    assert "✓ 훅 설치" in out
+    # 3) pi 허브 확장
+    assert "pi 허브 확장" in out
+    # 4) jcode 연동 (훅 등록)
+    assert "jcode 연동" in out
+    # 5) MCP 설정 출력 (키 포함 env)
+    assert "mcpServers" in out
+    assert "MYVIKING_KEY" in out
+
+
+def test_connect_agent_filter_only_jcode(tmp_path, monkeypatch, capsys):
+    """--agent jcode: 해당 에이전트만 설치한다."""
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".jcode").mkdir()
+    folder = tmp_path / "app1"
+    folder.mkdir()
+    monkeypatch.setattr(cli, "_api", lambda *a, **kw: {"project_name": "앱"})
+
+    class Args:
+        url = "https://viking.example.com"
+        key = "jv_0123456789abcdef01234567"
+        project = "p1"
+        timeout = "15"
+        cwd = str(folder)
+        agent = "jcode"
+
+    cli.connect(Args())
+    out = capsys.readouterr().out
+    assert "jcode 연동" in out
+    assert "훅 설치" not in out       # Claude Code 는 건너뜀
+    assert "pi 허브 확장" not in out  # pi 없음 → 건너뜀
+    assert not (folder / ".claude").exists()  # 폴더 안 .claude 를 만들지 않는다
+
+
 def test_pi_install_requires_key_and_project(tmp_path, monkeypatch):
     import jv.cli as cli
 

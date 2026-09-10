@@ -86,10 +86,11 @@ def _library_response(request, project, user, q="", cat="", msg=""):
         """SELECT COUNT(*) AS total,
                   SUM(status='established') AS established,
                   SUM(status='contested') AS contested,
-                  SUM(status='fresh') AS fresh
+                  SUM(status='fresh') AS fresh,
+                  (SELECT COUNT(*) FROM sessions s WHERE s.project_id=?) AS session_count
            FROM memories WHERE project_id=? AND status!='superseded'""",
-        (project["id"],),
-    ) or {"total": 0, "established": 0, "contested": 0, "fresh": 0}
+        (project["id"], project["id"]),
+    ) or {"total": 0, "established": 0, "contested": 0, "fresh": 0, "session_count": 0}
     return request.app.state.templates.TemplateResponse(request, "project.html", {
             "request": request, "user": user, "project": project,
             "memories": memories, "events": events, "sessions": sessions,
@@ -212,7 +213,8 @@ def create_key(request: Request, slug: str, user: dict = Depends(login_required)
         (project["id"], user["id"], (name or user["name"]).strip()[:40], digest, prefix, db.now()),
     )
     db.log_event(project["id"], "key", f"키 발급: {name or user['name']}")
-    return request.app.state.templates.TemplateResponse(request, "key_reveal.html", {"request": request, "user": user, "project": project, "key": raw, "key_id": kid},
+    return request.app.state.templates.TemplateResponse(request, "key_reveal.html",
+        {"request": request, "user": user, "project": project, "key": raw, "key_id": kid, "base": _base_url(request)},
     )
 
 

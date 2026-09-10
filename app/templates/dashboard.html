@@ -2,10 +2,18 @@
 {% block title %}내 도서관{% endblock %}
 {% block content %}
 {% import "_icons.html" as icons %}
-<div class="page-head">
+<div class="page-head dash-head">
   <div>
     <h1>내 도서관</h1>
-    <p class="muted">프로젝트마다 지식이 자동으로 쌓이는 서가입니다. 새 프로젝트를 만들어 코딩 에이전트를 연결하세요.</p>
+    <p class="muted">코딩 에이전트가 일할 때마다 지식이 자동으로 쌓이는 서가입니다.
+      {% if stats.project_count %}지금 <b class="ink-2">{{ stats.project_count or 0 }}개 서가</b>에
+      <b class="ink-2">{{ stats.memory_count or 0 }}권</b>의 지식이 있습니다.{% endif %}</p>
+  </div>
+  <div class="dash-stats">
+    <div class="dash-stat"><b>{{ stats.project_count or 0 }}</b><span>서가</span></div>
+    <div class="dash-stat"><b>{{ stats.memory_count or 0 }}</b><span>지식 권</span></div>
+    <div class="dash-stat stat-ok"><b>{{ stats.estab_count or 0 }}</b><span>확립</span></div>
+    <div class="dash-stat"><b>{{ stats.session_count or 0 }}</b><span>기록된 작업</span></div>
   </div>
 </div>
 
@@ -18,8 +26,12 @@
       {% if p.description %}<p class="muted small desc">{{ p.description[:90] }}</p>{% endif %}
       <div class="meta-line">
         <span class="idx">No.{{ loop.index }}</span>
-        <span class="chip chip-green">{{ icons.icon('book') }} {{ p.memory_count }}권 지식</span>
-        <span class="chip">{{ icons.icon('bot') }} {{ p.session_count }}회 작업</span>
+        <span class="chip {{ 'chip-green' if p.session_count else '' }}">{{ icons.icon('book') }} {{ p.memory_count }}권</span>
+        {% if p.session_count %}
+        <span class="chip chip-green">{{ icons.icon('link') }} 연결됨 · {{ p.session_count }}회</span>
+        {% else %}
+        <span class="chip">{{ icons.icon('bot') }} 연결 전</span>
+        {% endif %}
         <span class="muted small" style="margin-left:auto">{{ p.updated_at[:10] }}</span>
       </div>
     </div>
@@ -28,7 +40,12 @@
   <div class="empty-shelf">
     {{ icons.icon('map', 'ic-32') }}
     <h3>아직 이 지도에 표식이 없습니다</h3>
-    <p class="muted">아래에서 첫 프로젝트를 만들면, 에이전트가 일할 때마다 지식이 자동으로 꽂힙니다.</p>
+    <p class="muted">첫 프로젝트(서가)를 만들고 코딩 에이전트를 연결하면, 작업 지식이 자동으로 꽂힙니다.</p>
+    <div class="guide-row">
+      <div class="guide-step"><span class="step-num">1</span><b>서가 만들기</b><span class="muted small">아래 폼에 이름만 입력</span></div>
+      <div class="guide-step"><span class="step-num">2</span><b>키 발급 + 명령 복사</b><span class="muted small">연결 탭에서 한 번</span></div>
+      <div class="guide-step"><span class="step-num">3</span><b>터미널에 붙여 넣기</b><span class="muted small">작업 폴더에서 실행</span></div>
+    </div>
   </div>
   {% endfor %}
 </div>
@@ -40,6 +57,7 @@
     <input type="text" name="description" placeholder="한 줄 설명 (선택)" maxlength="500">
     <button class="btn primary" type="submit">{{ icons.icon('plus') }} 도서관 만들기</button>
   </form>
-  <p class="muted small note">만든 뒤 <b>연결 탭</b>에서 나오는 키와 명령을 코딩 에이전트(Claude Code·Cursor·Codex·MCP)에 붙이면, 이후 작업이 자동으로 기록되고 다음 세션에 자동으로 참조됩니다.</p>
+  <p class="muted small note">만들면 <b>연결 탭</b>이 열립니다 — 키 하나 발급하고 나오는 명령을 에이전트 머신 터미널에
+    붙이기만 하면, 이후 작업이 자동으로 기록되고 다음 세션에 자동으로 참조됩니다.</p>
 </div>
 {% endblock %}
