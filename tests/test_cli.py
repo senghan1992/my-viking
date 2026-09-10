@@ -111,6 +111,14 @@ def test_pi_install_creates_extension(tmp_path, monkeypatch, capsys):
     assert "registerTool" in src and "viking_search" in src and "viking_remember" in src
     assert "session_start" in src and "sendMessage" in src
 
+    # 생성물 무결성 — 이중 중괄호/치환 누락/이스케이프 손상이 남으면 pi 시작이 깨진다
+    assert "{{" not in src and "}}" not in src
+    assert "@URL@" not in src and "@KEY@" not in src and "@PROJECT@" not in src
+    assert 'Authorization: "Bearer " + KEY' in src      # ${KEY} 가 값으로 치환되지 않게
+    assert 'lines.join("\\n\\n")' in src            # 실제 개행이 아니라 \n 이스케이프로
+    assert "Bearer ${" not in src
+    assert src.count("{") == src.count("}") and src.count("(") == src.count(")")
+
     # check / uninstall
     cli.pi_check(Args())
     out = capsys.readouterr().out

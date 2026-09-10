@@ -446,118 +446,118 @@ def _pi_path() -> Path:
     return Path(home) / ".pi" / "agent" / "extensions" / _PI_EXT_FILE
 
 
-_PI_EXT_TEMPLATE = """// myviking — 프로젝트 지식 도서관 pi 확장 ({created})
+_PI_EXT_TEMPLATE = r"""// myviking — 프로젝트 지식 도서관 pi 확장 (@CREATED@)
 // jv pi install 로 생성됨. 키가 들어 있으므로 소유자만 읽을 수 있습니다 (0600).
-// 새로 만들려면: jv pi install --url {URL} --key ... --project ... 후 pi 재시작 또는 /reload
-import type {{ ExtensionAPI }} from "@earendil-works/pi-coding-agent";
-import {{ Type }} from "typebox";
+// 새로 만들려면: jv pi install --url @URL@ --key ... --project ... 후 pi 재시작 또는 /reload
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
-const URL = "{URL}";
-const KEY = "{KEY}";
-const PROJECT = "{PROJECT}";
+const URL = "@URL@";
+const KEY = "@KEY@";
+const PROJECT = "@PROJECT@";
 
-export default function (pi: ExtensionAPI) {{
-  const api = URL.replace(/\\/+$/, "");
+export default function (pi: ExtensionAPI) {
+  const api = URL.replace(/\/+$/, "");
 
-  async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {{
-    const r = await fetch(api + path, {{
+  async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+    const r = await fetch(api + path, {
       method,
-      headers: {{ Authorization: `Bearer ${{KEY}}`, ...(body ? {{ "Content-Type": "application/json" }} : {{}}) }},
+      headers: { Authorization: "Bearer " + KEY, ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
-    }});
-    if (!r.ok) throw new Error(`myviking ${{path}}: HTTP ${{r.status}}`);
+    });
+    if (!r.ok) throw new Error(`myviking ${path}: HTTP ${r.status}`);
     return r.json() as Promise<T>;
-  }}
+  }
 
-  const jobs: Array<{{ name: string; label: string; description: string; params: any; run: (p: any) => Promise<string> }}> = [
-    {{
+  const jobs: Array<{ name: string; label: string; description: string; params: any; run: (p: any) => Promise<string> }> = [
+    {
       name: "viking_brief",
       label: "Viking 브리핑",
       description: "프로젝트 도서관의 작업 브리핑(확립 지식·검증 필요·최근 작업)을 가져온다. 세션 시작 시 자동 주입되며, 다시 보려면 호출한다.",
-      params: Type.Object({{}}),
-      async run() {{
-        const b = await call<{{ orientation: string }}>(`/api/v1/projects/${{PROJECT}}/brief?session_id=pi-${{Date.now()}}`);
+      params: Type.Object({}),
+      async run() {
+        const b = await call<{ orientation: string }>(`/api/v1/projects/${PROJECT}/brief?session_id=pi-${Date.now()}`);
         return b.orientation;
-      }},
-    }},
-    {{
+      },
+    },
+    {
       name: "viking_search",
       label: "Viking 검색",
       description: "프로젝트 지식 도서관에서 관련 지식을 검색한다. 막혔거나 규칙·함정이 궁금할 때 호출한다.",
-      params: Type.Object({{ query: Type.String({{ description: "검색어" }}) }}),
-      async run(p) {{
-        const r = await call<{{ items: Array<{{ category: string; title: string; text: string; verified?: boolean }}>; warnings: Array<{{ title: string }}> }}>(
-          `/api/v1/projects/${{PROJECT}}/search?q=${{encodeURIComponent(p.query)}}`);
-        const lines = r.items.map((it) => `[${{it.category}}] ${{it.title}}${{it.verified ? "" : " ⟨검증 전⟩"}}\n${{it.text.slice(0, 500)}}`);
-        for (const w of r.warnings) lines.push(`⚠ [검증 필요] ${{w.title}}`);
+      params: Type.Object({ query: Type.String({ description: "검색어" }) }),
+      async run(p) {
+        const r = await call<{ items: Array<{ category: string; title: string; text: string; verified?: boolean }>; warnings: Array<{ title: string }> }>(
+          `/api/v1/projects/${PROJECT}/search?q=${encodeURIComponent(p.query)}`);
+        const lines = r.items.map((it) => `[${it.category}] ${it.title}${it.verified ? "" : " ⟨검증 전⟩"}\n${it.text.slice(0, 500)}`);
+        for (const w of r.warnings) lines.push(`⚠ [검증 필요] ${w.title}`);
         return lines.length ? lines.join("\n\n") : "관련 지식 없음";
-      }},
-    }},
-    {{
+      },
+    },
+    {
       name: "viking_remember",
       label: "Viking 기록",
       description: "새로 정한 규칙·함정·결정을 지식 도서관에 남긴다. confirmed=true 면 확립으로 기록.",
-      params: Type.Object({{
-        title: Type.String({{ description: "제목" }}),
-        content: Type.String({{ description: "내용" }}),
-        category: Type.Optional(Type.String({{ description: "knowledge|commands|pitfalls|decisions" }})),
+      params: Type.Object({
+        title: Type.String({ description: "제목" }),
+        content: Type.String({ description: "내용" }),
+        category: Type.Optional(Type.String({ description: "knowledge|commands|pitfalls|decisions" })),
         confirmed: Type.Optional(Type.Boolean()),
-      }}),
-      async run(p) {{
-        const r = await call<{{ uri: string }}>(`/api/v1/projects/${{PROJECT}}/remember`, "POST", {{
+      }),
+      async run(p) {
+        const r = await call<{ uri: string }>(`/api/v1/projects/${PROJECT}/remember`, "POST", {
           title: p.title, content: p.content,
           category: p.category ?? "knowledge", confirmed: !!p.confirmed,
-        }});
-        return `기록됨 → ${{r.uri}}`;
-      }},
-    }},
-    {{
+        });
+        return `기록됨 → ${r.uri}`;
+      },
+    },
+    {
       name: "viking_score",
       label: "Viking 채점",
       description: "주입된 지식이 틀렸으면 memory_id 와 outcome=bad 로 알려 교정하게 한다.",
-      params: Type.Object({{
-        memory_id: Type.Number({{ description: "지식 id" }}),
-        outcome: Type.Optional(Type.String({{ description: "good|bad|settled" }})),
-      }}),
-      async run(p) {{
-        const r = await call<{{ status: string }}>(`/api/v1/projects/${{PROJECT}}/score`, "POST", {{
+      params: Type.Object({
+        memory_id: Type.Number({ description: "지식 id" }),
+        outcome: Type.Optional(Type.String({ description: "good|bad|settled" })),
+      }),
+      async run(p) {
+        const r = await call<{ status: string }>(`/api/v1/projects/${PROJECT}/score`, "POST", {
           memory_id: p.memory_id, outcome: p.outcome ?? "settled",
-        }});
-        return `상태 ${{r.status}}`;
-      }},
-    }},
+        });
+        return `상태 ${r.status}`;
+      },
+    },
   ];
 
-  for (const job of jobs) {{
-    pi.registerTool({{
+  for (const job of jobs) {
+    pi.registerTool({
       name: job.name,
       label: job.label,
       description: job.description,
-      promptSnippet: `${{job.name}} — ${{job.description.split(".")[0]}}.`,
+      promptSnippet: `${job.name} — ${job.description.split(".")[0]}.`,
       parameters: job.params,
-      async execute(_id, params: any) {{
-        try {{
-          return {{ content: [{{ type: "text", text: await job.run(params) }}] }};
-        }} catch (e) {{
-          return {{ content: [{{ type: "text", text: `myviking 오류: ${{(e as Error).message}}` }}] }};
-        }}
-      }},
-    }});
-  }}
+      async execute(_id, params: any) {
+        try {
+          return { content: [{ type: "text", text: await job.run(params) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: `myviking 오류: ${(e as Error).message}` }] };
+        }
+      },
+    });
+  }
 
   // 세션 시작 → 브리핑 자동 주입 (새 세션/시작 시에만)
-  pi.on("session_start", async (event) => {{
+  pi.on("session_start", async (event) => {
     if (event.reason !== "startup" && event.reason !== "new") return;
-    try {{
-      const b = await call<{{ orientation: string }}>(`/api/v1/projects/${{PROJECT}}/brief?session_id=pi-${{Date.now()}}`);
+    try {
+      const b = await call<{ orientation: string }>(`/api/v1/projects/${PROJECT}/brief?session_id=pi-${Date.now()}`);
       await pi.sendMessage(
-        {{ customType: "myviking-brief", content: b.orientation, display: false }},
-        {{ deliverAs: "nextTurn" }});
-    }} catch {{
+        { customType: "myviking-brief", content: b.orientation, display: false },
+        { deliverAs: "nextTurn" });
+    } catch {
       // 서버에 닿지 않아도 코딩 세션은 계속된다
-    }}
-  }});
-}}
+    }
+  });
+}
 """
 
 
@@ -581,10 +581,16 @@ def pi_install(args: argparse.Namespace) -> None:
         raise
 
     text = (_PI_EXT_TEMPLATE
-            .replace("{created}", __import__("datetime").date.today().isoformat())
-            .replace("{URL}", url)
-            .replace("{KEY}", key)
-            .replace("{PROJECT}", project))
+            .replace("@CREATED@", __import__("datetime").date.today().isoformat())
+            .replace("@URL@", url)
+            .replace("@KEY@", key)
+            .replace("@PROJECT@", project))
+    # 생성물 가드: 치환 누락/이중 중괄호가 남으면 pi 시작을 막는다 — 여기서 걸러낸다
+    leftovers = [t for t in ("@CREATED@", "@URL@", "@KEY@", "@PROJECT@", "{{", "}}") if t in text]
+    if leftovers:
+        print(f"⚠ 확장 생성 실패: 템플릿 치환이 완전하지 않습니다 ({', '.join(leftovers)}). "
+              "jv 를 최신 버전으로 갱신하세요.", file=sys.stderr)
+        raise SystemExit(1)
     path = _pi_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
