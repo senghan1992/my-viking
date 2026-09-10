@@ -1239,10 +1239,28 @@ def _jcode_log_file() -> Path:
 
 
 def _jv_command() -> str:
+    """훅이 쓸 jv 경로 — 재부팅에도 살아있는 안정적 위치를 고른다.
+
+    PATH 의 jv 가 /tmp(휘발) 아래면 다른 후보(~/.local/bin, pyenv)를 쓴다.
+    """
+    cands = []
     exe = shutil.which("jv")
     if exe:
-        return exe
-    return "jv"  # PATH 에 있으면 그대로 — 훅은 셸 파싱으로 실행된다
+        cands.append(exe)
+    cands.append(str(Path.home() / ".local" / "bin" / "jv"))
+    for cand in cands:
+        if not cand or not os.path.exists(cand):
+            continue
+        try:
+            rp = str(Path(cand).resolve())
+        except OSError:
+            rp = cand
+        if not rp.startswith("/tmp/"):
+            return rp
+    pyjv = sorted(Path.home().glob(".pyenv/versions/*/bin/jv"))
+    if pyjv:
+        return str(pyjv[-1].resolve())
+    return "jv"  # 최후 폴백 — PATH 에 있으면 그대로
 
 
 def _jcode_hook_cmd() -> str:
