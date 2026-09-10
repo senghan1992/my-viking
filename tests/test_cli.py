@@ -128,6 +128,7 @@ def test_pi_install_saves_conn_and_links_folder(tmp_path, monkeypatch, capsys):
     assert "session_start" in src and "sendMessage" in src
     assert "registerCommand" in src and "myviking" in src
     assert "resolveActive" in src
+    assert "before_agent_start" in src and "turn_end" in src and "/commit" in src  # 자동 증류
     # 프로젝트 고정/키 박힘 금지
     assert "viking.example.com" not in src
     assert "jv_0123456789abcdef01234567" not in src

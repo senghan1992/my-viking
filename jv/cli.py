@@ -483,7 +483,7 @@ _PI_EXT_FILE = "myviking.ts"
 _PI_LINK_FILE = ".myviking-connection.json"
 # 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
 # 마커가 없는 설치본은 오래된 버전으로 보고 pi install 이 최신으로 갱신한다.
-_PI_HUB_VERSION = "myviking-hub-v3"
+_PI_HUB_VERSION = "myviking-hub-v4"
 
 
 def _pi_path() -> Path:
@@ -547,7 +547,7 @@ def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
 
 
 _PI_EXT_TEMPLATE = r"""// myviking — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
-// myviking-hub-v3 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
+// myviking-hub-v4 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
 // 이 파일 자체에는 비밀이 없다 — 프로젝트 고정도 없다.
 //   · 연결(주소+키+프로젝트): ~/.myviking/connections.json  (0600, jv pi install 이 저장)
 //   · 폴더 연결: 각 프로젝트 폴더의 .myviking-connection.json  (git 의 HEAD 같은 것)
@@ -739,6 +739,38 @@ export default function (pi: ExtensionAPI) {
     if (ctx.hasUI) ctx.ui.notify(`myviking: ${active.name} 연결됨`, "info");
     if (event.reason !== "startup" && event.reason !== "new") return;
     await injectBrief(active, threadId, pi);
+  });
+
+  // ── 자동 증류: 질문마다 답을 프로젝트 도서관에 기록 (Claude Code 훅과 동일 파이프라인) ──
+  let pendingQuestion = "";
+
+  pi.on("before_agent_start", (event) => {
+    if (!active) return;
+    const q = String(event.prompt || "").trim();
+    if (!q || q.startsWith("/")) return;          // pi 명령어(/myviking 등) 는 미기록
+    if (pendingQuestion) return;                   // 이미 추적 중인 질문 유지 (도구 연속 턴)
+    pendingQuestion = q.slice(0, 2000);
+  });
+
+  pi.on("turn_end", async (event) => {
+    if (!active || !pendingQuestion) return;
+    const m = event.message as any;
+    if (!m || m.role !== "assistant") return;
+    if (m.stopReason !== "stop" && m.stopReason !== "length") return;  // 도구 진행/오류 턴 제외
+    const parts = (m.content || []) as Array<{ type?: string; text?: string }>;
+    const answer = parts
+      .filter((p) => p.type === "text" && typeof p.text === "string")
+      .map((p) => p.text)
+      .join("\n")
+      .trim();
+    if (!answer) return;
+    const q = pendingQuestion;
+    pendingQuestion = "";
+    try {
+      await call(active, `/api/v1/projects/${active.project}/commit`, "POST", {
+        question: q, answer: answer.slice(0, 20000), session_id: threadId, agent: "pi",
+      });
+    } catch { /* 서버에 닿지 않아도 코딩 세션은 계속된다 */ }
   });
 
   // ── /myviking — 연결 목록/전환/새 연결/해제/삭제 (git checkout 느낌) ──
