@@ -134,6 +134,7 @@ def test_pi_install_saves_conn_and_links_folder(tmp_path, monkeypatch, capsys):
     assert "p921a95" not in src
     # 생성물 무결성
     assert "@CREATED@" not in src and "@URL@" not in src and "@KEY@" not in src and "@PROJECT@" not in src
+    assert cli._PI_HUB_VERSION in src                # 버전 마커 — 없으면 오래된 확장으로 간주
     assert 'Authorization: "Bearer " + c.key' in src
     assert "Bearer ${" not in src
     assert src.count("{") == src.count("}")
@@ -171,6 +172,30 @@ def test_pi_install_saves_conn_and_links_folder(tmp_path, monkeypatch, capsys):
 
     cli.pi_disconnect(DArgs())
     assert not (other / ".myviking-connection.json").exists()
+
+    # remove — 저장된 연결 삭제 (키 포함). 가리키던 폴더 링크도 함께 해제
+    cli.pi_switch(SArgs())                      # other 을 다시 연결
+    class RArgs:
+        name = "데이터자판기"
+        cwd = str(other)
+
+    cli.pi_remove(RArgs())
+    assert json.loads(conns_p.read_text())["connections"] == []
+    assert not (other / ".myviking-connection.json").exists()
+    out = capsys.readouterr().out
+    assert "연결 삭제" in out and "키도 함께 제거" in out and "링크도 함께 해제" in out
+
+    # rm 별칭으로도 동작 (연결 하나 다시 만들고 삭제)
+    class Args2:
+        url = "https://viking.example.com"
+        key = "jv_0123456789abcdef01234567"
+        project = "p921a95"
+        timeout = "15"
+        cwd = str(folder)
+
+    cli.pi_install(Args2())
+    cli.pi_remove(RArgs())
+    assert json.loads(conns_p.read_text())["connections"] == []
 
     # uninstall
     cli.pi_uninstall(SArgs())

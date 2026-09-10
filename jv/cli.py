@@ -460,6 +460,9 @@ def mcp(args: argparse.Namespace) -> None:
 #   · pi 를 어떤 폴더에서 열든 그 폴더의 연결만 따라가고, 연결이 없으면 그냥 자유 사용
 _PI_EXT_FILE = "myviking.ts"
 _PI_LINK_FILE = ".myviking-connection.json"
+# 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
+# 마커가 없는 설치본은 오래된 버전으로 보고 pi install 이 최신으로 갱신한다.
+_PI_HUB_VERSION = "myviking-hub-v2"
 
 
 def _pi_path() -> Path:
@@ -523,6 +526,7 @@ def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
 
 
 _PI_EXT_TEMPLATE = r"""// myviking — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
+// myviking-hub-v2 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
 // 이 파일 자체에는 비밀이 없다 — 프로젝트 고정도 없다.
 //   · 연결(주소+키+프로젝트): ~/.myviking/connections.json  (0600, jv pi install 이 저장)
 //   · 폴더 연결: 각 프로젝트 폴더의 .myviking-connection.json  (git 의 HEAD 같은 것)
@@ -597,7 +601,7 @@ function noConn(): string {
   return "이 폴더는 myviking 프로젝트에 연결되어 있지 않습니다.\n"
     + "  · 새로 연결: jv pi install --url <서버> --key jv_... --project <슬러그>\n"
     + "    (서버 → 프로젝트 → 🔗 에이전트 연결 탭에서 키 발급)\n"
-    + "  · 저장된 연결로 바꾸기: /myviking switch  ·  목록: /myviking";
+    + "  · 저장된 연결로 바꾸기: /myviking switch  ·  삭제: /myviking remove  ·  목록: /myviking";
 }
 
 function briefUrl(c: Active, sid: string): string {
@@ -716,11 +720,11 @@ export default function (pi: ExtensionAPI) {
     await injectBrief(active, threadId, pi);
   });
 
-  // ── /myviking — 연결 목록/전환/새 연결/해제 (git checkout 느낌) ──
+  // ── /myviking — 연결 목록/전환/새 연결/해제/삭제 (git checkout 느낌) ──
   pi.registerCommand("myviking", {
-    description: "myviking: 연결 목록·전환·새 연결·해제 (list | switch | connect | disconnect)",
+    description: "myviking: 연결 목록·전환·새 연결·해제·삭제 (list | switch | connect | disconnect | remove)",
     getArgumentCompletions: (prefix: string) =>
-      ["list", "switch", "connect", "disconnect"]
+      ["list", "switch", "connect", "disconnect", "remove"]
         .filter((v) => v.startsWith(prefix))
         .map((v) => ({ value: v, label: v })),
     handler: async (args, ctx) => {
@@ -754,6 +758,32 @@ export default function (pi: ExtensionAPI) {
       }
 
       const conns = loadConns();
+
+      if (word === "remove") {
+        if (!conns.length) { ctx.ui.notify("저장된 연결이 없습니다.", "info"); return; }
+        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: jv pi remove <이름>", "info"); return; }
+        const items = conns.map((c, i) => fmtConn(c, i + 1));
+        const pick = await ctx.ui.select("삭제할 연결 (키도 함께 제거됩니다)", items);
+        if (!pick) { ctx.ui.notify("취소했습니다.", "info"); return; }
+        const conn = conns[parseInt(pick.split(".")[0], 10) - 1];
+        if (!conn) { ctx.ui.notify("찾을 수 없습니다.", "info"); return; }
+        const rest = conns.filter((c) => c.id !== conn.id);
+        try {
+          writeFileSync(CONNS_FILE, JSON.stringify({ connections: rest }, null, 2));
+          chmodSync(CONNS_FILE, 0o600);
+        } catch {}
+        let msg = `✓ 연결 삭제: ${conn.name || conn.project} (${conn.project}) — 키도 함께 제거했습니다.`;
+        const f = linkPath(ctx.cwd);
+        let linkedId: string | null = null;
+        try { linkedId = (JSON.parse(readFileSync(f, "utf8")) as { connection?: string }).connection || null; } catch {}
+        if (existsSync(f) && linkedId === conn.id) {
+          try { unlinkSync(f); } catch {}
+          active = null;
+          msg += `\n이 폴더의 연결도 함께 해제했습니다 — 자유 사용.`;
+        }
+        ctx.ui.notify(msg, "info");
+        return;
+      }
 
       if (word === "disconnect") {
         const f = linkPath(ctx.cwd);
@@ -794,7 +824,7 @@ export default function (pi: ExtensionAPI) {
       else lines.push(`이 폴더는 연결되어 있지 않습니다 (자유 사용). /myviking switch 또는 connect`);
       if (conns.length) {
         lines.push("");
-        lines.push(`저장된 연결 ${conns.length}개 — /myviking switch 로 전환:`);
+        lines.push(`저장된 연결 ${conns.length}개 — /myviking switch 로 전환, remove 로 삭제:`);
         conns.forEach((c, i) => lines.push(fmtConn(c, i + 1)));
       }
       if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), "info");
@@ -815,6 +845,8 @@ def _pi_hub_installed() -> bool:
         return False
     if "const URL =" in text and "MYVIKING_URL" not in text:
         return False  # 옛 방식: URL/KEY/PROJECT 가 박힌 버전 → 허브로 교체 필요
+    if _PI_HUB_VERSION not in text:
+        return False  # 오래된 허브 버전 → 최신 템플릿으로 갱신
     return "resolveActive" in text
 
 
@@ -865,7 +897,7 @@ def pi_install(args: argparse.Namespace) -> None:
         print(f"⚠ 폴더 연결 파일을 쓸 수 없습니다: {e}", file=sys.stderr)
         raise SystemExit(1)
 
-    # 3) 허브 확장 (전역 1개)
+    # 3) 허브 확장 (전역 1개) — 구버전이면 최신 템플릿으로 덮어씀
     hub = _install_hub_extension()
 
     print(f"✓ 서버 확인: {url} · 프로젝트 {project} · {name}")
@@ -921,6 +953,49 @@ def pi_disconnect(args: argparse.Namespace) -> None:
     print(f"✓ 이 폴더의 myviking 연결을 해제했습니다: {cwd} — 자유 사용")
 
 
+def pi_remove(args: argparse.Namespace) -> None:
+    """저장된 연결 삭제 (키 포함). 현재 폴더가 그 연결을 가리키면 링크도 함께 해제."""
+    conns = _load_conns()
+    cwd = Path(args.cwd or os.getcwd())
+    q = (getattr(args, "name", "") or "").strip().lower()
+    if q:
+        hit = [c for c in conns if q in str(c.get("name", "")).lower()
+               or q in str(c.get("project", "")).lower() or q in str(c.get("id", "")).lower()]
+        if len(hit) == 1:
+            conn = hit[0]
+        elif len(hit) > 1:
+            _print_conns(conns, cwd)
+            print(f"\n'{q}' 에 해당하는 연결이 여러 개입니다 — 이름/슬러그로 더 정확히 지정하세요.")
+            raise SystemExit(2)
+        else:
+            _print_conns(conns, cwd)
+            print(f"\n'{q}' 를 찾지 못했습니다.")
+            raise SystemExit(2)
+    elif len(conns) == 1:
+        conn = conns[0]
+    else:
+        _print_conns(conns, cwd)
+        print("\n삭제할 연결 이름을 지정하세요 — 예: jv pi remove 데이터자판기")
+        raise SystemExit(2)
+
+    rest = [c for c in conns if c.get("id") != conn["id"]]
+    _save_conns(rest)
+    print(f"✓ 연결 삭제: {conn.get('name') or conn['project']} ({conn['project']} @ {conn['url']}) — 키도 함께 제거했습니다")
+
+    link = _pi_link_path(cwd)
+    cid = None
+    if link.exists():
+        try:
+            cid = json.loads(link.read_text()).get("connection")
+        except (OSError, ValueError):
+            cid = None
+    if cid == conn["id"]:
+        link.unlink(missing_ok=True)
+        print(f"✓ 이 폴더({cwd})가 그 연결을 가리키고 있어 링크도 함께 해제했습니다 — 자유 사용")
+    elif rest:
+        print("남은 연결:", ", ".join(c.get("name") or c["project"] for c in rest))
+
+
 def pi_uninstall(args: argparse.Namespace) -> None:
     path = _pi_path()
     if path.exists():
@@ -931,7 +1006,7 @@ def pi_uninstall(args: argparse.Namespace) -> None:
     conns = _load_conns()
     if conns:
         print(f"참고: 저장된 연결 {len(conns)}개는 ~/.myviking/connections.json 에 남아 있습니다. "
-              f"(지우려면: jv pi list 로 확인 후 파일 삭제)")
+              f"(지우려면: jv pi remove <이름>)")
 
 
 def pi_check(args: argparse.Namespace) -> None:
@@ -941,7 +1016,7 @@ def pi_check(args: argparse.Namespace) -> None:
         print("⚠ pi 허브 확장이 설치되어 있지 않습니다 → jv pi install --url ... --key ... --project ...")
         return
     if not _pi_hub_installed():
-        print("⚠ 설치된 pi 확장이 옛 방식(프로젝트 고정)입니다 → jv pi install 재실행으로 허브로 교체하세요.")
+        print("⚠ 설치된 pi 확장이 구버전/옛 방식입니다 → jv pi install 한 번 실행하면 최신 허브로 갱신됩니다.")
         return
     mode = hub.stat().st_mode & 0o777
     print(f"✓ pi 허브 확장: {hub}" + ("" if mode == 0o600 else f"  ⚠ 권한 {oct(mode)} (0600 권장)"))
@@ -1023,6 +1098,10 @@ def main(argv: list[str] | None = None) -> None:
     pp = pisub.add_parser("disconnect", help="이 폴더의 연결 해제")
     pp.add_argument("--cwd", default="")
     pp.set_defaults(func=pi_disconnect)
+    pp = pisub.add_parser("remove", aliases=["rm"], help="저장된 연결 삭제 (키 포함)")
+    pp.add_argument("name", nargs="?", default="", help="연결 이름/슬러그 (생략 시 하나뿐이면 자동)")
+    pp.add_argument("--cwd", default="")
+    pp.set_defaults(func=pi_remove)
     pp = pisub.add_parser("uninstall")
     pp.set_defaults(func=pi_uninstall)
     pp = pisub.add_parser("check"); hooks_common(pp)

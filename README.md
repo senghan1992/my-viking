@@ -88,11 +88,13 @@ jv pi install   --url http://<서버>:8787 --key jv_xxxx --project <slug>   # pi
 jv pi list                                            # 저장된 연결 목록
 jv pi switch <이름|슬러그>                            # 현재 폴더의 연결을 바꿔 연결 (git checkout 느낌)
 jv pi disconnect                                      # 이 폴더 연결 해제 → pi 자유 사용
+jv pi remove <이름|슬러그>                           # 저장된 연결 삭제 (키 포함)
 jv pi check                                           # 폴더 연결·서버 인증 확인
 ```
 
 pi 안에서는 `/myviking`(상태/목록) · `/myviking switch`(선택 전환) ·
-`/myviking connect`(새 연결) · `/myviking disconnect`(해제) 로 같은 일을 할 수
+`/myviking connect`(새 연결) · `/myviking disconnect`(해제) ·
+`/myviking remove`(저장된 연결 삭제) 로 같은 일을 할 수
 있습니다. 연결이 없는 폴더에서 pi 를 켜면 지식 도서관 없이 그냥 자유롭게 씁니다.
 
 > MCP(Cursor·Codex 등)는 연결 탭의 JSON 을, 셸 전용 에이전트는 `jv search/remember`
