@@ -571,15 +571,16 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // 세션 시작 → 브리핑 자동 주입. reason: startup(pi 실행) | reload(/reload) | new(/new).
-  // resume/fork 는 기존 스레드를 다시 열 때라 주입하지 않는다.
+  // 세션 시작 → 브리핑 자동 주입. reason: startup(pi 실행) | new(/new).
+  // reload(/reload) 는 같은 스레드가 계속되는 것이라 뛰고, new 나 startup 과
+  // 겹치면 같은 턴에 브리핑이 두 번 들어간다 — 주입하지 않는다.
   pi.on("session_start", async (event, ctx) => {
     try {
       sessionId = ctx?.sessionManager?.getSessionId?.() || `pi-${Date.now()}`;
     } catch {
       sessionId = `pi-${Date.now()}`;
     }
-    if (event.reason !== "startup" && event.reason !== "new" && event.reason !== "reload") return;
+    if (event.reason !== "startup" && event.reason !== "new") return;
     try {
       const b = await call<{ orientation: string }>(`/api/v1/projects/${PROJECT}/brief?agent=pi${qs()}`);
       await pi.sendMessage(
