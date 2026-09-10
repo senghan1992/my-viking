@@ -73,7 +73,7 @@ Portainer → **Stacks → Add stack** → 이름 `myviking` →
 pip install git+https://github.com/senghan1992/my-viking.git
 cd ~/my-project
 jv hook install --url http://<서버>:8787 --key jv_xxxx --project <slug>   # Claude Code
-jv pi install   --url http://<서버>:8787 --key jv_xxxx --project <slug>   # pi → 이 폴더 연결 + /reload
+jv pi install   --url http://<서버>:8787 --key jv_xxxx   # pi → 이 폴더 연결 + /reload (--project 는 키로 자동 식별)
 # ✓ 서버 확인: …  (주소/키가 틀리면 여기서 멈춥니다)
 ```
 

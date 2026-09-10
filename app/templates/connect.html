@@ -105,9 +105,10 @@
       <div class="step">
         <h3><span class="step-num">2</span> 프로젝트 폴더에서 연결</h3>
         <p class="muted small">이 프로젝트의 작업 폴더에서 아래 명령을 실행하세요. <code>jv_...</code> 자리에 방금 발급한 키를 붙여 넣습니다.
+          프로젝트(슬러그)는 키로 자동 식별되어 <b>주소와 키만 있으면 됩니다</b>.
           키는 <code>~/.myviking/connections.json</code>(0600)에 저장되고, 이 폴더에 <code>.myviking-connection.json</code>(비밀 없음)이 생깁니다.</p>
-        <pre>jv pi install --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
-        <button class="btn small" data-copy="jv pi install --url {{ base }} --key jv_... --project {{ project.slug }}">{{ icons.icon('copy') }} 복사</button>
+        <pre>jv pi install --url {{ base }} --key jv_...</pre>
+        <button class="btn small" data-copy="jv pi install --url {{ base }} --key jv_...">{{ icons.icon('copy') }} 복사</button>
         <p class="muted small"><span style="color:var(--green)">✓ 확인:</span> <code>jv pi check</code> 로 폴더 연결·서버 인증을 확인할 수 있습니다.</p>
       </div>
       <div class="step">

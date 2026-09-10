@@ -60,6 +60,14 @@ def _env_args(args: argparse.Namespace) -> tuple[str, str, str]:
     return url, key, project
 
 
+def _prompt(msg: str) -> str:
+    """터미널 입력 — 비대화형(EOF/캡처)이면 빈 문자열."""
+    try:
+        return input(f"{msg}: ").strip()
+    except (EOFError, OSError):
+        return ""
+
+
 def _api(url: str, key: str, method: str, path: str, **kw) -> dict:
     try:
         r = httpx.request(method, f"{url}/api/v1{path}",
@@ -73,6 +81,19 @@ def _api(url: str, key: str, method: str, path: str, **kw) -> dict:
     except httpx.HTTPError as e:
         _log_error(f"HTTP {path}: {e}")
         raise SystemExit(f"jv: 서버에 연결할 수 없습니다 ({url}).")
+
+
+def _resolve_project_by_key(url: str, key: str) -> dict:
+    """키만으로 프로젝트를 알아낸다 (GET /api/v1/me) — 슬러그를 몰라도 연결 가능."""
+    try:
+        return _api(url, key, "GET", "/me")
+    except SystemExit as e:
+        msg = str(e)
+        if "404" in msg:
+            # 서버가 최신 버전이면 이 경로가 있다 — 404 는 구버전 서버
+            raise SystemExit(f"jv: 서버({url})가 키-프로젝트 자동 식별(/api/v1/me)을 지원하지 않습니다 — "
+                             f"서버를 최신으로 배포하거나 --project <슬러그> 를 함께 주세요.")
+        raise
 
 
 def _verify_server(url: str, key: str, project: str) -> dict:
@@ -462,7 +483,7 @@ _PI_EXT_FILE = "myviking.ts"
 _PI_LINK_FILE = ".myviking-connection.json"
 # 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
 # 마커가 없는 설치본은 오래된 버전으로 보고 pi install 이 최신으로 갱신한다.
-_PI_HUB_VERSION = "myviking-hub-v2"
+_PI_HUB_VERSION = "myviking-hub-v3"
 
 
 def _pi_path() -> Path:
@@ -526,7 +547,7 @@ def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
 
 
 _PI_EXT_TEMPLATE = r"""// myviking — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
-// myviking-hub-v2 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
+// myviking-hub-v3 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
 // 이 파일 자체에는 비밀이 없다 — 프로젝트 고정도 없다.
 //   · 연결(주소+키+프로젝트): ~/.myviking/connections.json  (0600, jv pi install 이 저장)
 //   · 폴더 연결: 각 프로젝트 폴더의 .myviking-connection.json  (git 의 HEAD 같은 것)
@@ -599,8 +620,8 @@ async function call<T>(c: Active, path: string, method = "GET", body?: unknown):
 
 function noConn(): string {
   return "이 폴더는 myviking 프로젝트에 연결되어 있지 않습니다.\n"
-    + "  · 새로 연결: jv pi install --url <서버> --key jv_... --project <슬러그>\n"
-    + "    (서버 → 프로젝트 → 🔗 에이전트 연결 탭에서 키 발급)\n"
+    + "  · 새로 연결: /myviking connect (서버 주소 + API 키만 입력하면 됩니다)\n"
+    + "    (키는 서버 → 프로젝트 → 🔗 에이전트 연결 탭에서 발급)\n"
     + "  · 저장된 연결로 바꾸기: /myviking switch  ·  삭제: /myviking remove  ·  목록: /myviking";
 }
 
@@ -731,28 +752,34 @@ export default function (pi: ExtensionAPI) {
       const word = (args || "").trim().split(/\s+/)[0] || "list";
 
       if (word === "connect") {
-        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: jv pi install --url ... --key ... --project ...", "info"); return; }
-        const url = (await ctx.ui.input("서버 주소", "http://ip:포트 — 프로젝트를 만든 서버")) || "";
-        const key = (await ctx.ui.input("API 키 (jv_...) — 서버 → 프로젝트 → 🔗 에이전트 연결")) || "";
-        const project = (await ctx.ui.input("프로젝트 슬러그", "서가 주소의 마지막 부분 (예: my-project)")) || "";
-        if (!url || !key || !project) { ctx.ui.notify("연결하지 않았습니다 (입력 취소).", "info"); return; }
+        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: jv pi install --url ... --key ... (프로젝트는 키로 자동 식별)", "info"); return; }
+        const conns0 = loadConns();
+        const lastUrl = conns0[0]?.url || "";
+        // 서버 주소는 보통 한 번만 — 마지막으로 쓴 주소를 기본값으로 넣어 준다
+        const url = (await ctx.ui.input("서버 주소", lastUrl || "http://ip:포트 — 프로젝트를 만든 서버")) || "";
+        const key = (await ctx.ui.input("API 키 (jv_...) — 서버 → 프로젝트 → 🔗 에이전트 연결에서 발급")) || "";
+        if (!url || !key) { ctx.ui.notify("연결하지 않았습니다 (입력 취소).", "info"); return; }
         try {
-          const b = await call<{ project_name: string }>({ name: project, url, key, project }, `/api/v1/projects/${project}/brief?agent=pi`);
+          // 슬러그를 몰라도 된다 — 키가 어떤 프로젝트의 것인지 서버가 알려 준다 (/api/v1/me)
+          const me = await call<{ project: string; project_name: string }>(
+            { name: "", url, key, project: "" }, "/api/v1/me");
+          const project = me.project || "";
+          if (!project) throw new Error("키가 어떤 프로젝트에도 속하지 않습니다.");
           const conns = loadConns();
           const id = `${url}|${project}`;
           const rest = conns.filter((c) => c.id !== id);
-          rest.unshift({ id, name: b.project_name || project, url, key, project });
+          rest.unshift({ id, name: me.project_name || project, url, key, project });
           try {
             mkdirSync(join(HOME, ".myviking"), { recursive: true });
             writeFileSync(CONNS_FILE, JSON.stringify({ connections: rest }, null, 2));
             chmodSync(CONNS_FILE, 0o600);
           } catch {}
           setFolderLink(ctx.cwd, id);
-          active = { name: b.project_name || project, url, key, project };
-          ctx.ui.notify(`✓ 이 폴더를 '${b.project_name || project}' 에 연결했습니다 (키 저장: ~/.myviking/connections.json)`, "info");
+          active = { name: me.project_name || project, url, key, project };
+          ctx.ui.notify(`✓ 이 폴더를 '${me.project_name || project}' 에 연결했습니다 (키 저장: ~/.myviking/connections.json)`, "info");
           await injectBrief(active, threadId, pi);
         } catch (e) {
-          ctx.ui.notify(`연결 실패: ${(e as Error).message} — 주소/키/슬러그를 확인하세요.`, "error");
+          ctx.ui.notify(`연결 실패: ${(e as Error).message} — 키가 유효한지, 서버가 최신 버전인지 확인하세요.`, "error");
         }
         return;
       }
@@ -804,7 +831,7 @@ export default function (pi: ExtensionAPI) {
         if (!pick) { ctx.ui.notify("취소했습니다.", "info"); return; }
         const idx = parseInt(pick.split(".")[0], 10) - 1;
         if (idx === conns.length) {
-          ctx.ui.notify("터미널에서: jv pi install --url ... --key ... --project ... (설명은 연결 탭)", "info");
+          ctx.ui.notify("터미널에서: jv pi install --url ... --key ... (프로젝트는 키로 자동 식별 — 설명은 연결 탭)", "info");
           return;
         }
         const conn = conns[idx];
@@ -869,18 +896,43 @@ def _install_hub_extension() -> Path:
 
 
 def pi_install(args: argparse.Namespace) -> None:
-    """새 연결 저장 + 현재 폴더 연결 + 허브 확장 설치. (프로젝트마다 실행)"""
-    url, key, project = _env_args(args)
-    if not project:
-        print("⚠ --project (프로젝트 슬러그) 가 필요합니다 — 서가 주소의 마지막 부분.", file=sys.stderr)
-        raise SystemExit(2)
+    """새 연결 저장 + 현재 폴더 연결 + 허브 확장 설치. (프로젝트마다 실행)
+
+    인자를 다 몰라도 됩니다 — 빠진 값은 물어보고, --project 는 키로 자동 식별됩니다.
+    """
+    url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
+    key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
+    project = (getattr(args, "project", "") or os.environ.get("MYVIKING_PROJECT") or "").strip()
+    cwd = Path(getattr(args, "cwd", "") or os.getcwd())
+
+    if not url:
+        conns_hint = _load_conns()
+        hint = conns_hint[0]["url"] if conns_hint else "http://ip:포트 — 프로젝트를 만든 서버"
+        url = _prompt(f"서버 주소 (기본: {hint})") or (conns_hint[0]["url"] if conns_hint else "")
     if not key:
-        print("⚠ --key 가 필요합니다 (연결 탭에서 발급).", file=sys.stderr)
+        key = _prompt("API 키 (jv_...) — 서버 → 프로젝트 → 🔗 에이전트 연결에서 발급")
+    if not url or not key:
+        print("⚠ --url 과 --key 가 필요합니다 (또는 위 프롬프트에 입력).", file=sys.stderr)
         raise SystemExit(2)
+
+    if not project:
+        # 슬러그는 키로 자동 식별 — 서버가 최신 버전이면 됩니다
+        try:
+            me = _resolve_project_by_key(url, key)
+            project = str(me.get("project") or "").strip()
+            name = str(me.get("project_name") or "").strip()
+        except SystemExit as e:
+            print(f"⚠ 키로 프로젝트를 식별하지 못했습니다 — --project <슬러그> 를 함께 주세요. ({e})", file=sys.stderr)
+            raise SystemExit(2)
+        if not project:
+            print("⚠ 키로 프로젝트를 식별하지 못했습니다 — --project <슬러그> 를 함께 주세요.", file=sys.stderr)
+            raise SystemExit(2)
+    else:
+        name = ""
+
     # 서버·키·프로젝트 확인 (인증까지 — 틀린 키로 설치되는 사고 차단)
     data = _verify_server(url, key, project)
-    name = data.get("project_name") or project
-    cwd = Path(args.cwd or os.getcwd())
+    name = name or (data.get("project_name") or project)
 
     # 1) 연결 저장소 (~/.myviking/connections.json, 키 포함 0600)
     conns = [c for c in _load_conns() if c.get("id") != _conn_id(url, project)]
@@ -905,8 +957,8 @@ def pi_install(args: argparse.Namespace) -> None:
     print(f"✓ 이 폴더 연결: {cwd} → {name} ({_PI_LINK_FILE})")
     print(f"✓ pi 허브 확장: {hub}")
     print("이제 이 폴더에서 pi 를 열면 자동으로 이 프로젝트에 연결됩니다.")
-    print("  · 저장된 연결 목록/전환: jv pi list / jv pi switch <이름>")
-    print("  · pi 안에서 목록·전환·새 연결·해제: /myviking")
+    print("  · 저장된 연결 목록/전환/삭제: jv pi list / jv pi switch <이름> / jv pi remove <이름>")
+    print("  · pi 안에서: /myviking (목록·전환·새 연결·해제·삭제)")
 
 
 def pi_list(args: argparse.Namespace) -> None:

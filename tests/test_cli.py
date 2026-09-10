@@ -219,3 +219,67 @@ def test_pi_install_requires_key_and_project(tmp_path, monkeypatch):
         cli.pi_install(Args())
     assert not (tmp_path / ".pi").exists()
     assert not (tmp_path / ".myviking").exists()
+
+
+def test_pi_install_detects_project_from_key(tmp_path, monkeypatch, capsys):
+    """--project 없이 키만으로 연결 — GET /api/v1/me 가 슬러그/이름을 알려 준다."""
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "app1"
+    folder.mkdir()
+
+    def fake_api(url, key, method, path, **kw):
+        if path == "/me":
+            return {"project": "pX99", "project_name": "자동 식별 프로젝트"}
+        if path == "/projects/pX99/brief":
+            return {"project": "pX99", "project_name": "자동 식별 프로젝트", "orientation": "x"}
+        raise AssertionError(f"예상 밖 경로: {path}")
+
+    monkeypatch.setattr(cli, "_api", fake_api)
+
+    class Args:
+        url = "https://viking.example.com"
+        key = "jv_0123456789abcdef01234567"
+        project = ""
+        timeout = "15"
+        cwd = str(folder)
+
+    cli.pi_install(Args())
+    conns = json.loads((tmp_path / ".myviking" / "connections.json").read_text())["connections"]
+    assert conns[0]["project"] == "pX99"
+    assert conns[0]["name"] == "자동 식별 프로젝트"
+    link = json.loads((folder / ".myviking-connection.json").read_text())
+    assert link["connection"] == "https://viking.example.com|pX99"
+    out = capsys.readouterr().out
+    assert "자동 식별 프로젝트" in out
+
+
+def test_pi_install_bad_key_fails_with_project_hint(tmp_path, monkeypatch):
+    """키가 틀리면 /me 에서 막히고 — '--project 를 함께 주세요' 안내로 종료."""
+    import pytest
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "app2"
+    folder.mkdir()
+
+    def bad_api(url, key, method, path, **kw):
+        if path == "/me":
+            raise SystemExit("jv: 서버 응답 오류 (401) — 키/주소를 확인하세요.")
+        raise AssertionError(f"예상 밖 경로: {path}")
+
+    monkeypatch.setattr(cli, "_api", bad_api)
+
+    class Args:
+        url = "https://viking.example.com"
+        key = "jv_wrong"
+        project = ""
+        timeout = "15"
+        cwd = str(folder)
+
+    with pytest.raises(SystemExit) as ei:
+        cli.pi_install(Args())
+    assert ei.value.code == 2
+    assert not (tmp_path / ".myviking").exists()
+    assert not (folder / ".myviking-connection.json").exists()

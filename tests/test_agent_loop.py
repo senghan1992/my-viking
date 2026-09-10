@@ -107,6 +107,21 @@ def test_remember_and_correction(client, user1):
     assert new["corrects"] == mid
 
 
+def test_me_identifies_project_from_key(client, user1):
+    """GET /api/v1/me — 키만으로 프로젝트 식별 (슬러그를 몰라도 연결 가능)."""
+    c, _ = client
+    c.post("/login", data={"email": "a@test.com", "password": "password1"})
+    slug = create_project(c, "키로 찾는 프로젝트")
+    raw = create_key(c, slug, "그냥 내 노트북")
+
+    r = c.get("/api/v1/me", headers=auth_h(c, raw))
+    assert r.status_code == 200
+    assert r.json() == {"project": slug, "project_name": "키로 찾는 프로젝트"}
+
+    # 틀린 키 → 401
+    assert c.get("/api/v1/me", headers=auth_h(c, "jv_wrong")).status_code == 401
+
+
 def test_isolation_via_api_key(client, user1, user2):
     """A 의 프로젝트 키로는 B 의 프로젝트에 접근 불가."""
     c, _ = client

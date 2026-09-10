@@ -41,6 +41,12 @@ def health():
     }
 
 
+@router.get("/me")
+def me(key: dict = Depends(bearer_auth)):
+    """키만으로 프로젝트를 식별 — 연결할 때 슬러그를 몰라도 된다."""
+    return {"project": key["slug"], "project_name": key["project_name"]}
+
+
 @router.get("/projects/{slug}/brief")
 def brief(slug: str, session_id: str = Query(default=""), agent: str = Query(default="unknown"),
           key: dict = Depends(bearer_auth)):
