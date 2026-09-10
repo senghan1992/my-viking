@@ -476,9 +476,14 @@ export default function (pi: ExtensionAPI) {
   const api = URL.replace(/\/+$/, "");
 
   // pi 세션(스레드)마다 안정적인 session_id — 호출마다 새로 만들면
-  // 서가의 '에이전트 세션' 목록이 한 번에 한 줄씩 매번 늘어난다.
+  // 서가의 '에이전트 세션' 목록이 매 호출마다 한 줄씩 늘어난다.
+  // session_start 가 아직 안 온 상태에서 도구를 먼저 써도 한 인스턴스당 한 번만 만든다.
   let sessionId = "";
-  const qs = () => (sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : "");
+  const qs = () => {
+    if (sessionId) return `&session_id=${encodeURIComponent(sessionId)}`;
+    sessionId = `pi-${Date.now()}`;
+    return `&session_id=${encodeURIComponent(sessionId)}`;
+  };
 
   async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
     const r = await fetch(api + path, {
@@ -566,14 +571,15 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // 세션 시작 → 브리핑 자동 주입 (새 세션/시작 시에만)
+  // 세션 시작 → 브리핑 자동 주입. reason: startup(pi 실행) | reload(/reload) | new(/new).
+  // resume/fork 는 기존 스레드를 다시 열 때라 주입하지 않는다.
   pi.on("session_start", async (event, ctx) => {
-    if (event.reason !== "startup" && event.reason !== "new") return;
     try {
       sessionId = ctx?.sessionManager?.getSessionId?.() || `pi-${Date.now()}`;
     } catch {
       sessionId = `pi-${Date.now()}`;
     }
+    if (event.reason !== "startup" && event.reason !== "new" && event.reason !== "reload") return;
     try {
       const b = await call<{ orientation: string }>(`/api/v1/projects/${PROJECT}/brief?agent=pi${qs()}`);
       await pi.sendMessage(
