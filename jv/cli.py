@@ -452,68 +452,202 @@ def mcp(args: argparse.Namespace) -> None:
             error(req_id, -32601, f"알 수 없는 메서드: {method}")
 
 
-# ══════════════════ pi 확장 (설치/점검) ══════════════════ #
+# ══════════════════ pi 확장 (허브) — 프로젝트별 연결 관리 ══════════════════ #
+# 개념 (git checkout 과 비슷):
+#   · 허브 확장 1개만 전역(~/.pi/agent/extensions/myviking.ts)에 설치 — 프로젝트 고정 없음
+#   · 연결(키 포함)은 ~/.myviking/connections.json (0600) 에 이름·주소·키·프로젝트로 저장
+#   · 각 프로젝트 폴더의 .myviking-connection.json 이 '현재 그 폴더의 연결'을 정한다 (비밀 없음)
+#   · pi 를 어떤 폴더에서 열든 그 폴더의 연결만 따라가고, 연결이 없으면 그냥 자유 사용
 _PI_EXT_FILE = "myviking.ts"
+_PI_LINK_FILE = ".myviking-connection.json"
 
 
 def _pi_path() -> Path:
-    """pi 전역 확장 경로 — 호출 시점에 HOME 을 읽어 테스트 격리 가능."""
+    """pi 전역 확장(허브) 경로 — 호출 시점에 HOME 을 읽어 테스트 격리 가능."""
     home = os.environ.get("HOME") or str(Path.home())
     return Path(home) / ".pi" / "agent" / "extensions" / _PI_EXT_FILE
 
 
-_PI_EXT_TEMPLATE = r"""// myviking — 프로젝트 지식 도서관 pi 확장 (@CREATED@)
-// jv pi install 로 생성됨. 키가 들어 있으므로 소유자만 읽을 수 있습니다 (0600).
-// 새로 만들려면: jv pi install --url @URL@ --key ... --project ... 후 pi 재시작 또는 /reload
+def _pi_conns_path() -> Path:
+    home = os.environ.get("HOME") or str(Path.home())
+    return Path(home) / ".myviking" / "connections.json"
+
+
+def _pi_link_path(cwd: Path) -> Path:
+    return cwd / _PI_LINK_FILE
+
+
+def _conn_id(url: str, project: str) -> str:
+    return f"{url}|{project}"
+
+
+def _load_conns() -> list[dict]:
+    p = _pi_conns_path()
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return []
+    out = []
+    for c in data.get("connections", []):
+        if isinstance(c, dict) and c.get("url") and c.get("key") and c.get("project"):
+            out.append(c)
+    return out
+
+
+def _save_conns(conns: list[dict]) -> None:
+    p = _pi_conns_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"connections": conns}, ensure_ascii=False, indent=2))
+    try:
+        p.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
+    cwd_link = None
+    if cwd is not None and _pi_link_path(cwd).exists():
+        try:
+            cwd_link = json.loads(_pi_link_path(cwd).read_text()).get("connection")
+        except (OSError, ValueError):
+            pass
+    if not conns:
+        print("저장된 연결이 없습니다. → jv pi install --url <서버> --key jv_... --project <슬러그>")
+        return
+    print(f"저장된 연결 {len(conns)}개:")
+    for i, c in enumerate(conns, 1):
+        mark = " ← 현재 폴더" if cwd_link and c.get("id") == cwd_link else ""
+        print(f"  [{i}] {c.get('name') or c['project']} — {c['project']} @ {c['url']}{mark}")
+
+
+_PI_EXT_TEMPLATE = r"""// myviking — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
+// 이 파일 자체에는 비밀이 없다 — 프로젝트 고정도 없다.
+//   · 연결(주소+키+프로젝트): ~/.myviking/connections.json  (0600, jv pi install 이 저장)
+//   · 폴더 연결: 각 프로젝트 폴더의 .myviking-connection.json  (git 의 HEAD 같은 것)
+//   · pi 를 어느 폴더에서 열든 그 폴더의 연결만 따라간다. 연결이 없으면 그냥 자유 사용.
+//   · CLI: jv pi install/switch/disconnect/list/check   · pi 안: /myviking
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
-const URL = "@URL@";
-const KEY = "@KEY@";
-const PROJECT = "@PROJECT@";
+const HOME = homedir();
+const LINK_NAME = ".myviking-connection.json";
+const CONNS_FILE = join(HOME, ".myviking", "connections.json");
+
+interface Conn { id: string; name: string; url: string; key: string; project: string }
+interface Active { name: string; url: string; key: string; project: string }
+
+let active: Active | null = null;   // 현재 세션에서 해석된 연결 (도구는 이걸 쓴다)
+let threadId = "";                  // pi 스레드(세션) id — 서가 세션 기록용
+
+function loadConns(): Conn[] {
+  try {
+    if (!existsSync(CONNS_FILE)) return [];
+    const j = JSON.parse(readFileSync(CONNS_FILE, "utf8"));
+    const list: unknown[] = Array.isArray(j?.connections) ? j.connections : [];
+    return list.filter((c: any) => c && c.url && c.key && c.project);
+  } catch { return []; }
+}
+
+function findLink(start: string): string | null {
+  // 현재 폴더에서 위로 홈까지 올라가며 연결 파일을 찾는다 (git 과 비슷하게)
+  let dir = resolve(start);
+  for (let i = 0; i < 12; i++) {
+    const f = join(dir, LINK_NAME);
+    if (existsSync(f)) return f;
+    const parent = resolve(dir, "..");
+    if (parent === dir || dir === HOME) return null;
+    dir = parent;
+  }
+  return null;
+}
+
+function resolveActive(cwd: string): Active | null {
+  // 0) 환경변수 (CI/컨테이너용) — 폴더 연결보다 우선
+  if (process.env.MYVIKING_URL && process.env.MYVIKING_KEY && process.env.MYVIKING_PROJECT) {
+    const p = process.env.MYVIKING_PROJECT;
+    return { name: p, url: process.env.MYVIKING_URL, key: process.env.MYVIKING_KEY, project: p };
+  }
+  // 1) 폴더 연결 파일
+  const link = findLink(cwd);
+  if (!link) return null;
+  try {
+    const j = JSON.parse(readFileSync(link, "utf8"));
+    const id = String(j?.connection || "");
+    const conn = loadConns().find((c) => c.id === id);
+    return conn ? { name: conn.name || conn.project, url: conn.url, key: conn.key, project: conn.project } : null;
+  } catch { return null; }
+}
+
+async function call<T>(c: Active, path: string, method = "GET", body?: unknown): Promise<T> {
+  const r = await fetch(c.url.replace(/\/+$/, "") + path, {
+    method,
+    headers: { Authorization: "Bearer " + c.key, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) throw new Error(`myviking ${path}: HTTP ${r.status}`);
+  return r.json() as Promise<T>;
+}
+
+function noConn(): string {
+  return "이 폴더는 myviking 프로젝트에 연결되어 있지 않습니다.\n"
+    + "  · 새로 연결: jv pi install --url <서버> --key jv_... --project <슬러그>\n"
+    + "    (서버 → 프로젝트 → 🔗 에이전트 연결 탭에서 키 발급)\n"
+    + "  · 저장된 연결로 바꾸기: /myviking switch  ·  목록: /myviking";
+}
+
+function briefUrl(c: Active, sid: string): string {
+  const q = new URLSearchParams({ agent: "pi" });
+  if (sid) q.set("session_id", sid);
+  return `/api/v1/projects/${c.project}/brief?${q.toString()}`;
+}
+
+async function injectBrief(c: Active, sid: string, pi: ExtensionAPI): Promise<void> {
+  try {
+    const b = await call<{ orientation: string }>(c, briefUrl(c, sid));
+    if (b.orientation) {
+      await pi.sendMessage(
+        { customType: "myviking-brief", content: b.orientation, display: false },
+        { deliverAs: "nextTurn" });
+    }
+  } catch { /* 서버에 닿지 않아도 코딩 세션은 계속된다 */ }
+}
+
+function fmtConn(c: Conn, i: number): string {
+  return `${i}. ${c.name || c.project} — ${c.project}`;
+}
+
+function linkPath(cwd: string): string {
+  return join(resolve(cwd), LINK_NAME);
+}
+
+function setFolderLink(cwd: string, id: string): void {
+  const f = linkPath(cwd);
+  writeFileSync(f, JSON.stringify({ connection: id }, null, 2));
+}
 
 export default function (pi: ExtensionAPI) {
-  const api = URL.replace(/\/+$/, "");
-
-  // pi 세션(스레드)마다 안정적인 session_id — 호출마다 새로 만들면
-  // 서가의 '에이전트 세션' 목록이 매 호출마다 한 줄씩 늘어난다.
-  // session_start 가 아직 안 온 상태에서 도구를 먼저 써도 한 인스턴스당 한 번만 만든다.
-  let sessionId = "";
-  const qs = () => {
-    if (sessionId) return `&session_id=${encodeURIComponent(sessionId)}`;
-    sessionId = `pi-${Date.now()}`;
-    return `&session_id=${encodeURIComponent(sessionId)}`;
-  };
-
-  async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
-    const r = await fetch(api + path, {
-      method,
-      headers: { Authorization: "Bearer " + KEY, ...(body ? { "Content-Type": "application/json" } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!r.ok) throw new Error(`myviking ${path}: HTTP ${r.status}`);
-    return r.json() as Promise<T>;
-  }
-
-  const jobs: Array<{ name: string; label: string; description: string; params: any; run: (p: any) => Promise<string> }> = [
+  // ── 도구 4종 — 연결된 프로젝트가 이 폴더 일 때만 동작 ──
+  const jobs: Array<{ name: string; label: string; description: string; params: any; run: (c: Active, p?: any) => Promise<string> }> = [
     {
       name: "viking_brief",
       label: "Viking 브리핑",
       description: "프로젝트 도서관의 작업 브리핑(확립 지식·검증 필요·최근 작업)을 가져온다. 세션 시작 시 자동 주입되며, 다시 보려면 호출한다.",
       params: Type.Object({}),
-      async run() {
-        const b = await call<{ orientation: string }>(`/api/v1/projects/${PROJECT}/brief?agent=pi${qs()}`);
-        return b.orientation;
-      },
+      run: (c) => call<{ orientation: string }>(c, briefUrl(c, threadId)).then((b) => b.orientation),
     },
     {
       name: "viking_search",
       label: "Viking 검색",
       description: "프로젝트 지식 도서관에서 관련 지식을 검색한다. 막혔거나 규칙·함정이 궁금할 때 호출한다.",
       params: Type.Object({ query: Type.String({ description: "검색어" }) }),
-      async run(p) {
+      async run(c, p) {
         const r = await call<{ items: Array<{ category: string; title: string; text: string; verified?: boolean }>; warnings: Array<{ title: string }> }>(
-          `/api/v1/projects/${PROJECT}/search?q=${encodeURIComponent(p.query)}`);
+          c, `/api/v1/projects/${c.project}/search?q=${encodeURIComponent(p.query)}`);
         const lines = r.items.map((it) => `[${it.category}] ${it.title}${it.verified ? "" : " ⟨검증 전⟩"}\n${it.text.slice(0, 500)}`);
         for (const w of r.warnings) lines.push(`⚠ [검증 필요] ${w.title}`);
         return lines.length ? lines.join("\n\n") : "관련 지식 없음";
@@ -529,8 +663,8 @@ export default function (pi: ExtensionAPI) {
         category: Type.Optional(Type.String({ description: "knowledge|commands|pitfalls|decisions" })),
         confirmed: Type.Optional(Type.Boolean()),
       }),
-      async run(p) {
-        const r = await call<{ uri: string }>(`/api/v1/projects/${PROJECT}/remember`, "POST", {
+      async run(c, p) {
+        const r = await call<{ uri: string }>(c, `/api/v1/projects/${c.project}/remember`, "POST", {
           title: p.title, content: p.content,
           category: p.category ?? "knowledge", confirmed: !!p.confirmed,
         });
@@ -545,8 +679,8 @@ export default function (pi: ExtensionAPI) {
         memory_id: Type.Number({ description: "지식 id" }),
         outcome: Type.Optional(Type.String({ description: "good|bad|settled" })),
       }),
-      async run(p) {
-        const r = await call<{ status: string }>(`/api/v1/projects/${PROJECT}/score`, "POST", {
+      async run(c, p) {
+        const r = await call<{ status: string }>(c, `/api/v1/projects/${c.project}/score`, "POST", {
           memory_id: p.memory_id, outcome: p.outcome ?? "settled",
         });
         return `상태 ${r.status}`;
@@ -561,9 +695,10 @@ export default function (pi: ExtensionAPI) {
       description: job.description,
       promptSnippet: `${job.name} — ${job.description.split(".")[0]}.`,
       parameters: job.params,
-      async execute(_id, params: any) {
+      async execute(_id: string, params: any) {
         try {
-          return { content: [{ type: "text", text: await job.run(params) }] };
+          if (!active) return { content: [{ type: "text", text: noConn() }] };
+          return { content: [{ type: "text", text: await job.run(active, params) }] };
         } catch (e) {
           return { content: [{ type: "text", text: `myviking 오류: ${(e as Error).message}` }] };
         }
@@ -571,101 +706,267 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // 세션 시작 → 브리핑 자동 주입. reason: startup(pi 실행) | new(/new).
-  // reload(/reload) 는 같은 스레드가 계속되는 것이라 뛰고, new 나 startup 과
-  // 겹치면 같은 턴에 브리핑이 두 번 들어간다 — 주입하지 않는다.
+  // ── 세션 시작 → 이 폴더의 연결 해석 + 브리핑 주입 (startup/new 에만) ──
   pi.on("session_start", async (event, ctx) => {
-    try {
-      sessionId = ctx?.sessionManager?.getSessionId?.() || `pi-${Date.now()}`;
-    } catch {
-      sessionId = `pi-${Date.now()}`;
-    }
+    active = resolveActive(ctx.cwd);
+    try { threadId = ctx.sessionManager.getSessionId() || ""; } catch { threadId = ""; }
+    if (!active) return;                           // 연결 없으면 자유 사용
+    if (ctx.hasUI) ctx.ui.notify(`myviking: ${active.name} 연결됨`, "info");
     if (event.reason !== "startup" && event.reason !== "new") return;
-    try {
-      const b = await call<{ orientation: string }>(`/api/v1/projects/${PROJECT}/brief?agent=pi${qs()}`);
-      await pi.sendMessage(
-        { customType: "myviking-brief", content: b.orientation, display: false },
-        { deliverAs: "nextTurn" });
-    } catch {
-      // 서버에 닿지 않아도 코딩 세션은 계속된다
-    }
+    await injectBrief(active, threadId, pi);
+  });
+
+  // ── /myviking — 연결 목록/전환/새 연결/해제 (git checkout 느낌) ──
+  pi.registerCommand("myviking", {
+    description: "myviking: 연결 목록·전환·새 연결·해제 (list | switch | connect | disconnect)",
+    getArgumentCompletions: (prefix: string) =>
+      ["list", "switch", "connect", "disconnect"]
+        .filter((v) => v.startsWith(prefix))
+        .map((v) => ({ value: v, label: v })),
+    handler: async (args, ctx) => {
+      const word = (args || "").trim().split(/\s+/)[0] || "list";
+
+      if (word === "connect") {
+        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: jv pi install --url ... --key ... --project ...", "info"); return; }
+        const url = (await ctx.ui.input("서버 주소", "http://ip:포트 — 프로젝트를 만든 서버")) || "";
+        const key = (await ctx.ui.input("API 키 (jv_...) — 서버 → 프로젝트 → 🔗 에이전트 연결")) || "";
+        const project = (await ctx.ui.input("프로젝트 슬러그", "서가 주소의 마지막 부분 (예: my-project)")) || "";
+        if (!url || !key || !project) { ctx.ui.notify("연결하지 않았습니다 (입력 취소).", "info"); return; }
+        try {
+          const b = await call<{ project_name: string }>({ name: project, url, key, project }, `/api/v1/projects/${project}/brief?agent=pi`);
+          const conns = loadConns();
+          const id = `${url}|${project}`;
+          const rest = conns.filter((c) => c.id !== id);
+          rest.unshift({ id, name: b.project_name || project, url, key, project });
+          try {
+            mkdirSync(join(HOME, ".myviking"), { recursive: true });
+            writeFileSync(CONNS_FILE, JSON.stringify({ connections: rest }, null, 2));
+            chmodSync(CONNS_FILE, 0o600);
+          } catch {}
+          setFolderLink(ctx.cwd, id);
+          active = { name: b.project_name || project, url, key, project };
+          ctx.ui.notify(`✓ 이 폴더를 '${b.project_name || project}' 에 연결했습니다 (키 저장: ~/.myviking/connections.json)`, "info");
+          await injectBrief(active, threadId, pi);
+        } catch (e) {
+          ctx.ui.notify(`연결 실패: ${(e as Error).message} — 주소/키/슬러그를 확인하세요.`, "error");
+        }
+        return;
+      }
+
+      const conns = loadConns();
+
+      if (word === "disconnect") {
+        const f = linkPath(ctx.cwd);
+        if (!existsSync(f)) { ctx.ui.notify("이 폴더는 연결되어 있지 않습니다.", "info"); return; }
+        try { unlinkSync(f); } catch {}
+        active = null;
+        ctx.ui.notify("이 폴더의 myviking 연결을 해제했습니다 — 자유 사용.", "info");
+        return;
+      }
+
+      if (word === "switch") {
+        if (!conns.length) {
+          ctx.ui.notify("저장된 연결이 없습니다. /myviking connect 또는 jv pi install ...", "info");
+          return;
+        }
+        const items = conns.map((c, i) => fmtConn(c, i + 1)).concat([`${conns.length + 1}. ＋ 새로 연결하기 (/myviking connect)`]);
+        const pick = ctx.hasUI ? await ctx.ui.select("연결할 프로젝트 (이 폴더를 바꿉니다)", items) : null;
+        if (!pick) { ctx.ui.notify("취소했습니다.", "info"); return; }
+        const idx = parseInt(pick.split(".")[0], 10) - 1;
+        if (idx === conns.length) {
+          ctx.ui.notify("터미널에서: jv pi install --url ... --key ... --project ... (설명은 연결 탭)", "info");
+          return;
+        }
+        const conn = conns[idx];
+        if (!conn) { ctx.ui.notify("찾을 수 없습니다.", "info"); return; }
+        try { setFolderLink(ctx.cwd, conn.id); } catch {}
+        active = { name: conn.name || conn.project, url: conn.url, key: conn.key, project: conn.project };
+        ctx.ui.notify(`✓ 이 폴더를 '${conn.name || conn.project}' 프로젝트로 바꿔 연결했습니다 (git checkout 느낌)`, "info");
+        await injectBrief(active, threadId, pi);
+        return;
+      }
+
+      // list (기본)
+      const link = findLink(ctx.cwd);
+      const lines: string[] = [];
+      if (active) lines.push(`현재 폴더 연결: ${active.name} — ${active.project} (${active.url})`);
+      else if (link) lines.push(`현재 폴더가 가리키는 연결을 찾지 못했습니다 — jv pi install 또는 /myviking switch`);
+      else lines.push(`이 폴더는 연결되어 있지 않습니다 (자유 사용). /myviking switch 또는 connect`);
+      if (conns.length) {
+        lines.push("");
+        lines.push(`저장된 연결 ${conns.length}개 — /myviking switch 로 전환:`);
+        conns.forEach((c, i) => lines.push(fmtConn(c, i + 1)));
+      }
+      if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), "info");
+    },
   });
 }
 """
 
 
-def _pi_path() -> Path:
-    """pi 전역 확장 경로 — 호출 시점에 HOME 을 읽어 테스트 격리 가능."""
-    home = os.environ.get("HOME") or str(Path.home())
-    return Path(home) / ".pi" / "agent" / "extensions" / _PI_EXT_FILE
+def _pi_hub_installed() -> bool:
+    """허브 확장이 설치되어 있는가? (없거나 레거시=프로젝트 고정 버전이면 False)"""
+    path = _pi_path()
+    if not path.exists():
+        return False
+    try:
+        text = path.read_text()
+    except OSError:
+        return False
+    if "const URL =" in text and "MYVIKING_URL" not in text:
+        return False  # 옛 방식: URL/KEY/PROJECT 가 박힌 버전 → 허브로 교체 필요
+    return "resolveActive" in text
+
+
+def _install_hub_extension() -> Path:
+    """허브 확장(전역 1개) 설치 — 이미 최신이면 그대로 둔다."""
+    path = _pi_path()
+    if not _pi_hub_installed():
+        text = (_PI_EXT_TEMPLATE
+                .replace("@CREATED@", __import__("datetime").date.today().isoformat()))
+        leftovers = [t for t in ("@CREATED@", "@URL@", "@KEY@", "@PROJECT@", "{{", "}}") if t in text]
+        if leftovers:
+            raise SystemExit(f"jv: pi 확장 템플릿 오류 — 치환이 완전하지 않습니다 ({', '.join(leftovers)}).")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    return path
 
 
 def pi_install(args: argparse.Namespace) -> None:
+    """새 연결 저장 + 현재 폴더 연결 + 허브 확장 설치. (프로젝트마다 실행)"""
     url, key, project = _env_args(args)
+    if not project:
+        print("⚠ --project (프로젝트 슬러그) 가 필요합니다 — 서가 주소의 마지막 부분.", file=sys.stderr)
+        raise SystemExit(2)
     if not key:
         print("⚠ --key 가 필요합니다 (연결 탭에서 발급).", file=sys.stderr)
         raise SystemExit(2)
-    # 서버 확인 — 틀린 주소/키로 방치되는 것을 막는다 (인증까지 검사)
-    try:
-        data = _verify_server(url, key, project)
-        name = data.get("project_name") if isinstance(data, dict) else None
-        print(f"✓ 서버 확인: {url} · 프로젝트 {project or '(미지정)'}"
-              + (f" · {name}" if name else ""))
-    except SystemExit as e:
-        print(f"⚠ 서버 확인 실패: {e}")
-        print("  연결 탭의 주소(URL)와 방금 발급받은 키(jv_...)를 다시 확인하고 명령을 다시 실행하세요.")
-        raise
+    # 서버·키·프로젝트 확인 (인증까지 — 틀린 키로 설치되는 사고 차단)
+    data = _verify_server(url, key, project)
+    name = data.get("project_name") or project
+    cwd = Path(args.cwd or os.getcwd())
 
-    text = (_PI_EXT_TEMPLATE
-            .replace("@CREATED@", __import__("datetime").date.today().isoformat())
-            .replace("@URL@", url)
-            .replace("@KEY@", key)
-            .replace("@PROJECT@", project))
-    # 생성물 가드: 치환 누락/이중 중괄호가 남으면 pi 시작을 막는다 — 여기서 걸러낸다
-    leftovers = [t for t in ("@CREATED@", "@URL@", "@KEY@", "@PROJECT@", "{{", "}}") if t in text]
-    if leftovers:
-        print(f"⚠ 확장 생성 실패: 템플릿 치환이 완전하지 않습니다 ({', '.join(leftovers)}). "
-              "jv 를 최신 버전으로 갱신하세요.", file=sys.stderr)
-        raise SystemExit(1)
-    path = _pi_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    # 1) 연결 저장소 (~/.myviking/connections.json, 키 포함 0600)
+    conns = [c for c in _load_conns() if c.get("id") != _conn_id(url, project)]
+    conns.insert(0, {"id": _conn_id(url, project), "name": name, "url": url,
+                     "key": key, "project": project, "folder": str(cwd),
+                     "updated_at": __import__("datetime").date.today().isoformat()})
+    _save_conns(conns)
+
+    # 2) 이 폴더 연결 (비밀 없음 — git 의 HEAD 같은 파일)
+    link = _pi_link_path(cwd)
     try:
-        path.chmod(0o600)
-    except OSError:
-        pass
-    print(f"✓ pi 확장 설치: {path}")
-    print(f"  프로젝트: {project} · 도구: viking_brief/search/remember/score + 세션 시작 자동 브리핑")
-    print("pi 를 재시작하거나 /reload 를 입력하면 바로 사용할 수 있습니다.")
+        link.write_text(json.dumps({"connection": _conn_id(url, project)}, ensure_ascii=False, indent=2))
+    except OSError as e:
+        print(f"⚠ 폴더 연결 파일을 쓸 수 없습니다: {e}", file=sys.stderr)
+        raise SystemExit(1)
+
+    # 3) 허브 확장 (전역 1개)
+    hub = _install_hub_extension()
+
+    print(f"✓ 서버 확인: {url} · 프로젝트 {project} · {name}")
+    print(f"✓ 연결 저장: {_pi_conns_path()} (키 0600, 현재 {len(conns)}개 연결)")
+    print(f"✓ 이 폴더 연결: {cwd} → {name} ({_PI_LINK_FILE})")
+    print(f"✓ pi 허브 확장: {hub}")
+    print("이제 이 폴더에서 pi 를 열면 자동으로 이 프로젝트에 연결됩니다.")
+    print("  · 저장된 연결 목록/전환: jv pi list / jv pi switch <이름>")
+    print("  · pi 안에서 목록·전환·새 연결·해제: /myviking")
+
+
+def pi_list(args: argparse.Namespace) -> None:
+    _print_conns(_load_conns(), Path(args.cwd or os.getcwd()))
+
+
+def pi_switch(args: argparse.Namespace) -> None:
+    """저장된 연결로 현재 폴더를 바꿔 연결 (git checkout 느낌)."""
+    conns = _load_conns()
+    cwd = Path(args.cwd or os.getcwd())
+    q = (getattr(args, "name", "") or "").strip().lower()
+    if q:
+        hit = [c for c in conns if q in str(c.get("name", "")).lower()
+               or q in str(c.get("project", "")).lower() or q in str(c.get("id", "")).lower()]
+        if len(hit) == 1:
+            conn = hit[0]
+        elif len(hit) > 1:
+            _print_conns(conns, cwd)
+            print(f"\n'{q}' 에 해당하는 연결이 여러 개입니다 — 이름/슬러그로 더 정확히 지정하세요.")
+            raise SystemExit(2)
+        else:
+            _print_conns(conns, cwd)
+            print(f"\n'{q}' 를 찾지 못했습니다.")
+            raise SystemExit(2)
+    elif len(conns) == 1:
+        conn = conns[0]
+    else:
+        _print_conns(conns, cwd)
+        print("\n연결 이름을 지정하세요 — 예: jv pi switch 데이터자판기")
+        raise SystemExit(2)
+
+    _pi_link_path(cwd).write_text(json.dumps({"connection": conn["id"]}, ensure_ascii=False, indent=2))
+    print(f"✓ 이 폴더를 '{conn.get('name') or conn['project']}' 프로젝트로 바꿔 연결했습니다: {cwd}")
+    print("pi 안에서 쓰고 있다면 /myviking list 로 확인하거나 /reload 하세요.")
+
+
+def pi_disconnect(args: argparse.Namespace) -> None:
+    cwd = Path(args.cwd or os.getcwd())
+    link = _pi_link_path(cwd)
+    if not link.exists():
+        print("이 폴더는 연결되어 있지 않습니다.")
+        return
+    link.unlink()
+    print(f"✓ 이 폴더의 myviking 연결을 해제했습니다: {cwd} — 자유 사용")
 
 
 def pi_uninstall(args: argparse.Namespace) -> None:
     path = _pi_path()
     if path.exists():
         path.unlink()
-        print(f"✓ pi 확장 제거: {path}")
+        print(f"✓ pi 허브 확장 제거: {path}")
     else:
         print("설치된 pi 확장이 없습니다.")
+    conns = _load_conns()
+    if conns:
+        print(f"참고: 저장된 연결 {len(conns)}개는 ~/.myviking/connections.json 에 남아 있습니다. "
+              f"(지우려면: jv pi list 로 확인 후 파일 삭제)")
 
 
 def pi_check(args: argparse.Namespace) -> None:
-    path = _pi_path()
-    if not path.exists():
-        print("pi 확장이 설치되어 있지 않습니다. → jv pi install --url ... --key ... --project ...")
+    cwd = Path(args.cwd or os.getcwd())
+    hub = _pi_path()
+    if not hub.exists():
+        print("⚠ pi 허브 확장이 설치되어 있지 않습니다 → jv pi install --url ... --key ... --project ...")
         return
-    text = path.read_text()
-    url = re.search(r'URL = "([^"]+)"', text)
-    project = re.search(r'PROJECT = "([^"]+)"', text)
-    print(f"✓ pi 확장 설치됨: {path}")
-    print(f"  서버: {url.group(1) if url else '?'} · 프로젝트: {project.group(1) if project else '?'}")
-    mode = path.stat().st_mode & 0o777
-    if mode != 0o600:
-        print(f"  ⚠ 권한이 {oct(mode)} 입니다 — chmod 600 을 권장합니다.")
-    else:
-        print(f"  권한: 0600")
+    if not _pi_hub_installed():
+        print("⚠ 설치된 pi 확장이 옛 방식(프로젝트 고정)입니다 → jv pi install 재실행으로 허브로 교체하세요.")
+        return
+    mode = hub.stat().st_mode & 0o777
+    print(f"✓ pi 허브 확장: {hub}" + ("" if mode == 0o600 else f"  ⚠ 권한 {oct(mode)} (0600 권장)"))
 
-
-# ══════════════════ main ══════════════════ #
+    link = _pi_link_path(cwd)
+    if not link.exists():
+        print(f"이 폴더({cwd})는 연결되어 있지 않습니다 (자유 사용).")
+        print("  연결: jv pi install --url ... --key ... --project ... · 저장된 연결에서: jv pi switch")
+        return
+    try:
+        cid = json.loads(link.read_text()).get("connection")
+    except (OSError, ValueError):
+        print("⚠ .myviking-connection.json 을 읽을 수 없습니다. jv pi install 을 다시 실행하세요.")
+        return
+    conns = _load_conns()
+    conn = next((c for c in conns if c.get("id") == cid), None)
+    if not conn:
+        print(f"⚠ 이 폴더가 가리키는 연결({cid})이 저장소에 없습니다 → jv pi install 또는 jv pi switch")
+        return
+    print(f"✓ 폴더 연결: {cwd} → {conn.get('name') or conn['project']} ({conn['project']})")
+    try:
+        _verify_server(conn["url"], conn["key"], conn["project"])
+        print(f"✓ 서버 연결·인증: {conn['url']} · 프로젝트 {conn['project']}")
+    except SystemExit as e:
+        print(f"⚠ 서버 연결/키 확인 실패: {e}")# ══════════════════ main ══════════════════ #
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="jv", description="myviking 클라이언트")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -707,13 +1008,25 @@ def main(argv: list[str] | None = None) -> None:
     sp = sub.add_parser("mcp", help="MCP stdio 서버"); hooks_common(sp)
     sp.set_defaults(func=mcp)
 
-    sp = sub.add_parser("pi", help="pi 코딩 에이전트 확장 관리")
+    sp = sub.add_parser("pi", help="pi 코딩 에이전트 확장·프로젝트 연결 관리")
     pisub = sp.add_subparsers(dest="action", required=True)
-    pp = pisub.add_parser("install"); hooks_common(pp)
+    pp = pisub.add_parser("install", help="새 연결 저장 + 이 폴더에 연결 + 허브 확장 설치"); hooks_common(pp)
+    pp.add_argument("--cwd", default="")
     pp.set_defaults(func=pi_install)
+    pp = pisub.add_parser("list", help="저장된 연결 목록")
+    pp.add_argument("--cwd", default="")
+    pp.set_defaults(func=pi_list)
+    pp = pisub.add_parser("switch", help="저장된 연결로 이 폴더를 바꿔 연결 (git checkout 느낌)")
+    pp.add_argument("name", nargs="?", default="", help="연결 이름/슬러그 (생략 시 하나뿐이면 자동)")
+    pp.add_argument("--cwd", default="")
+    pp.set_defaults(func=pi_switch)
+    pp = pisub.add_parser("disconnect", help="이 폴더의 연결 해제")
+    pp.add_argument("--cwd", default="")
+    pp.set_defaults(func=pi_disconnect)
     pp = pisub.add_parser("uninstall")
     pp.set_defaults(func=pi_uninstall)
     pp = pisub.add_parser("check"); hooks_common(pp)
+    pp.add_argument("--cwd", default="")
     pp.set_defaults(func=pi_check)
 
     args = p.parse_args(argv)

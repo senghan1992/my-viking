@@ -25,11 +25,76 @@ FIELDS = (
 
 _id_re = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
-_DEFAULTS = {
-    "llm_base_url": "https://api.openai.com/v1",
-    "llm_model": "gpt-4o-mini",
-    "embed_model": "text-embedding-3-small",
-}
+def _DEFAULTS() -> dict:
+    return {
+        "llm_base_url": "https://api.openai.com/v1",
+        "llm_model": "gpt-4o-mini",
+        "embed_model": "text-embedding-3-small",
+    }
+
+
+_DEF = _DEFAULTS()
+
+
+# ── 첫 실행 시드 (models_seed.json) ──────────────────────────────── #
+def _seed_path() -> Path:
+    """배포에 딸려 가는 기본 시드 파일 (app/models_seed.json)."""
+    return Path(__file__).resolve().parent / "models_seed.json"
+
+
+def seed_if_empty() -> bool:
+    """관리자가 아무것도 건드리기 전 첫 실행에만 기본 모델 구성을 넣는다.
+
+    - llm 설정: app/models_seed.json 의 llm (배포본 = pi 의 models.json(databricks) 기준)
+    - registered: 사전 등록 카탈로그 전체를 드롭다운에 미리 채운다
+    이미 웹 설정이나 등록 모델이 있으면 아무것도 하지 않는다 (관리자 결정 존중).
+    VIKING_SEED_MODELS=false 로 끌 수 있다.
+    """
+    if os.environ.get("VIKING_SEED_MODELS", "true").lower() == "false":
+        return False
+    p = file_path()
+    if p.exists():
+        data = _load_raw()
+        if data.get("registered") or any(data.get(k) for k in FIELDS):
+            return False  # 이미 설정됨
+    seed_file = _seed_path()
+    if not seed_file.exists():
+        return False
+    try:
+        seed = json.loads(seed_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+
+    llm = seed.get("llm") or {}
+    # 시드 파일의 api_key 는 절대 쓰지 않는다 (GitHub push 보호에 걸린 사고 —
+    # 비밀은 저장소에 넣지 않는다). 키는 VIKING_LLM_API_KEY 또는 관리자 화면에서.
+    _map = {"base_url": "llm_base_url", "api_key": "llm_api_key", "model": "llm_model"}
+    values = {_map.get(k, k): str(v).strip()
+              for k, v in llm.items() if _map.get(k, k) in FIELDS and str(v).strip()}
+    key_env = os.environ.get("VIKING_LLM_API_KEY", "").strip()
+    if key_env:
+        values["llm_api_key"] = key_env
+    regs = seed.get("registered")
+    if isinstance(regs, list) and regs:
+        values["registered"] = [r for r in regs if _valid_registered(r)]
+    if not values:
+        return False
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(values, ensure_ascii=False, indent=2))
+    try:
+        p.chmod(0o600)
+    except OSError:
+        pass
+    return True
+
+
+def _valid_registered(r) -> bool:
+    return (isinstance(r, dict)
+            and _id_re.fullmatch(str(r.get("id", "")))
+            and str(r.get("name", "")).strip()
+            and str(r.get("base_url", "")).strip()
+            and str(r.get("model", "")).strip())
+
 
 
 def file_path() -> Path:
@@ -141,12 +206,12 @@ def delete_registered(rid: str) -> bool:
 def apply_env(cfg) -> None:
     """config 의 LLM/임베딩 필드를 환경변수 기준으로 재계산. (테스트 격리·핫스왑용)"""
     env = os.environ
-    cfg.llm_base_url = env.get("VIKING_LLM_BASE_URL", "").strip() or _DEFAULTS["llm_base_url"]
+    cfg.llm_base_url = env.get("VIKING_LLM_BASE_URL", "").strip() or _DEF["llm_base_url"]
     cfg.llm_api_key = env.get("VIKING_LLM_API_KEY", "").strip()
-    cfg.llm_model = env.get("VIKING_LLM_MODEL", "").strip() or _DEFAULTS["llm_model"]
+    cfg.llm_model = env.get("VIKING_LLM_MODEL", "").strip() or _DEF["llm_model"]
     cfg.embed_base_url = env.get("VIKING_EMBED_BASE_URL", "").strip() or cfg.llm_base_url
     cfg.embed_api_key = env.get("VIKING_EMBED_API_KEY", "").strip()
-    cfg.embed_model = env.get("VIKING_EMBED_MODEL", "").strip() or _DEFAULTS["embed_model"]
+    cfg.embed_model = env.get("VIKING_EMBED_MODEL", "").strip() or _DEF["embed_model"]
 
 
 def apply_to(cfg) -> None:

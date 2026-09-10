@@ -73,12 +73,27 @@ Portainer → **Stacks → Add stack** → 이름 `myviking` →
 pip install git+https://github.com/senghan1992/my-viking.git
 cd ~/my-project
 jv hook install --url http://<서버>:8787 --key jv_xxxx --project <slug>   # Claude Code
-jv pi install   --url http://<서버>:8787 --key jv_xxxx --project <slug>   # pi 확장 → /reload
+jv pi install   --url http://<서버>:8787 --key jv_xxxx --project <slug>   # pi → 이 폴더 연결 + /reload
 # ✓ 서버 확인: …  (주소/키가 틀리면 여기서 멈춥니다)
 ```
 
 이후 그 폴더에서 Claude Code 를 쓰면 끝입니다. 질문마다 기존 지식이 주입되고,
 작업이 끝나면 자동으로 기록됩니다. 다음 세션은 브리핑을 받고 시작합니다.
+
+**pi 는 프로젝트 폴더별로 연결됩니다** — 키·주소는 `~/.myviking/connections.json`
+(0600)에 저장되고, 각 프로젝트 폴더의 `.myviking-connection.json`(비밀 없음)이 그
+폴더의 연결을 정합니다. 그래서:
+
+```bash
+jv pi list                                            # 저장된 연결 목록
+jv pi switch <이름|슬러그>                            # 현재 폴더의 연결을 바꿔 연결 (git checkout 느낌)
+jv pi disconnect                                      # 이 폴더 연결 해제 → pi 자유 사용
+jv pi check                                           # 폴더 연결·서버 인증 확인
+```
+
+pi 안에서는 `/myviking`(상태/목록) · `/myviking switch`(선택 전환) ·
+`/myviking connect`(새 연결) · `/myviking disconnect`(해제) 로 같은 일을 할 수
+있습니다. 연결이 없는 폴더에서 pi 를 켜면 지식 도서관 없이 그냥 자유롭게 씁니다.
 
 > MCP(Cursor·Codex 등)는 연결 탭의 JSON 을, 셸 전용 에이전트는 `jv search/remember`
 > 를 쓰면 됩니다. 어떤 에이전트든 연결됩니다.

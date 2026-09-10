@@ -14,6 +14,7 @@ os.environ["VIKING_DATA"] = TMP
 os.environ["VIKING_SECRET"] = "test-secret"
 os.environ["VIKING_ALLOW_SIGNUP"] = "true"
 os.environ["VIKING_FIRST_USER_ADMIN"] = "true"
+os.environ["VIKING_SEED_MODELS"] = "false"  # 테스트는 시드 없이 기본값만
 os.environ.pop("VIKING_LLM_API_KEY", None)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

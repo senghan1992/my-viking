@@ -206,3 +206,39 @@ def test_chat_url_direct_vs_appended():
     assert embed_url("https://api.openai.com/v1") == "https://api.openai.com/v1/embeddings"
     assert embed_url("https://h.cloud.databricks.com/serving-endpoints/emb/invocations") \
         == "https://h.cloud.databricks.com/serving-endpoints/emb/invocations"
+
+
+# ── 첫 실행 시드 (models_seed.json) ─────────────────────────── #
+def test_seed_if_empty_writes_catalog(tmp_path, monkeypatch):
+    """VIKING_SEED_MODELS=true + 빈 data_dir → llm/registered 기본 시드. 두 번째는 스킵."""
+    from app import model_settings
+
+    monkeypatch.setenv("VIKING_SEED_MODELS", "true")
+    monkeypatch.setattr(model_settings, "file_path", lambda: tmp_path / "models.json")
+
+    assert model_settings.seed_if_empty() is True
+    p = tmp_path / "models.json"
+    assert p.exists()
+    data = model_settings._load_raw()
+    assert data.get("llm_model") == "databricks-deepseek-v4-flash-0731"
+    # 키는 저장소가 아닌 환경변수에서 — 시드 파일엔 api_key 가 없다
+    assert "api_key" not in data
+    regs = model_settings.load_registered()
+    assert len(regs) > 40                   # 사전 카탈로그 전체
+    assert all(r["kind"] == "llm" and r["endpoint"] == "direct" for r in regs)
+
+    # 환경변수로 키를 주면 시드가 그걸 넣는다
+    monkeypatch.setenv("VIKING_LLM_API_KEY", "sk-env-key-0000")
+    fresh = tmp_path / "models2.json"
+    monkeypatch.setattr(model_settings, "file_path", lambda: fresh)
+    assert model_settings.seed_if_empty() is True
+    assert model_settings._load_raw().get("llm_api_key") == "sk-env-key-0000"
+    monkeypatch.delenv("VIKING_LLM_API_KEY")
+
+    # 이미 설정이 있으면 시드하지 않는다
+    assert model_settings.seed_if_empty() is False
+
+    # 관리자가 하나라도 직접 등록한 뒤에는 다시 채우지 않는다
+    model_settings.add_registered("llm", "내 모델", "https://x.example.com/v1", "my-model")
+    monkeypatch.setenv("VIKING_SEED_MODELS", "false")
+    assert model_settings.seed_if_empty() is False

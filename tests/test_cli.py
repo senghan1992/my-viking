@@ -86,48 +86,98 @@ def test_session_start_hook_output_schema(monkeypatch):
     assert hs["hookEventName"] == "SessionStart"
     assert "BRIEF-TEXT" in hs["additionalContext"]
 
-# ══════════════════════ pi 확장 생성 ══════════════════════ #
-def test_pi_install_creates_extension(tmp_path, monkeypatch, capsys):
-    """jv pi install 이 ~/.pi/agent/extensions/myviking.ts 를 생성한다."""
+# ══════════════════ pi 확장 (허브 + 프로젝트 연결) ══════════════════ #
+# ══════════════════ pi 확장 (허브 + 프로젝트 연결) ══════════════════ #
+def test_pi_install_saves_conn_and_links_folder(tmp_path, monkeypatch, capsys):
+    """jv pi install: 연결 저장(0600) + 폴더 링크 + 전역 허브 확장 설치. 프로젝트 고정 없음."""
     import jv.cli as cli
 
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(cli, "_api", lambda *a, **kw: {"version": "1.0.0"})
+    folder = tmp_path / "app1"
+    folder.mkdir()
+    monkeypatch.setattr(cli, "_api", lambda *a, **kw: {"project_name": "데이터자판기"})
 
     class Args:
         url = "https://viking.example.com"
         key = "jv_0123456789abcdef01234567"
-        project = "my-app"
+        project = "p921a95"
         timeout = "15"
+        cwd = str(folder)
 
     cli.pi_install(Args())
+
+    # 1) 연결 저장소 — 키 포함, 0600
+    conns_p = tmp_path / ".myviking" / "connections.json"
+    assert conns_p.exists()
+    assert (conns_p.stat().st_mode & 0o777) == 0o600
+    conns = json.loads(conns_p.read_text())["connections"]
+    assert conns[0]["key"] == "jv_0123456789abcdef01234567"
+    assert conns[0]["id"] == "https://viking.example.com|p921a95"
+    assert conns[0]["name"] == "데이터자판기"
+
+    # 2) 폴더 링크 — 비밀 없음
+    link = folder / ".myviking-connection.json"
+    assert json.loads(link.read_text()) == {"connection": "https://viking.example.com|p921a95"}
+
+    # 3) 허브 확장 — 전역 1개, 프로젝트/키가 박히지 않음
     path = tmp_path / ".pi" / "agent" / "extensions" / "myviking.ts"
     assert path.exists()
     assert (path.stat().st_mode & 0o777) == 0o600
     src = path.read_text()
-    assert "https://viking.example.com" in src
-    assert "jv_0123456789abcdef01234567" in src
-    assert "my-app" in src
     assert "registerTool" in src and "viking_search" in src and "viking_remember" in src
     assert "session_start" in src and "sendMessage" in src
-
-    # 생성물 무결성 — 이중 중괄호/치환 누락/이스케이프 손상이 남으면 pi 시작이 깨진다
-    assert "{{" not in src and "}}" not in src
-    assert "@URL@" not in src and "@KEY@" not in src and "@PROJECT@" not in src
-    assert 'Authorization: "Bearer " + KEY' in src      # ${KEY} 가 값으로 치환되지 않게
-    assert 'lines.join("\\n\\n")' in src            # 실제 개행이 아니라 \n 이스케이프로
+    assert "registerCommand" in src and "myviking" in src
+    assert "resolveActive" in src
+    # 프로젝트 고정/키 박힘 금지
+    assert "viking.example.com" not in src
+    assert "jv_0123456789abcdef01234567" not in src
+    assert "p921a95" not in src
+    # 생성물 무결성
+    assert "@CREATED@" not in src and "@URL@" not in src and "@KEY@" not in src and "@PROJECT@" not in src
+    assert 'Authorization: "Bearer " + c.key' in src
     assert "Bearer ${" not in src
-    assert src.count("{") == src.count("}") and src.count("(") == src.count(")")
+    assert src.count("{") == src.count("}")
 
-    # check / uninstall
-    cli.pi_check(Args())
     out = capsys.readouterr().out
-    assert "설치됨" in out and "0600" in out
-    cli.pi_uninstall(Args())
+    assert "데이터자판기" in out and "연결 저장" in out and "이 폴더 연결" in out
+
+    # list — 저장된 연결이 보인다
+    class LArgs:
+        cwd = str(folder)
+
+    cli.pi_list(LArgs())
+    assert "데이터자판기" in capsys.readouterr().out
+
+    # switch — 다른 폴더를 저장된 연결로 바꿔 연결 (git checkout 느낌)
+    other = tmp_path / "app2"
+    other.mkdir()
+
+    class SArgs:
+        name = "데이터자판기"
+        cwd = str(other)
+
+    cli.pi_switch(SArgs())
+    assert json.loads((other / ".myviking-connection.json").read_text())["connection"] \
+        == "https://viking.example.com|p921a95"
+
+    # check — 폴더 연결 + 서버 인증까지 확인
+    cli.pi_check(SArgs())
+    out = capsys.readouterr().out
+    assert "허브 확장" in out and "폴더 연결" in out
+
+    # disconnect — 연결 해제 (자유 사용)
+    class DArgs:
+        cwd = str(other)
+
+    cli.pi_disconnect(DArgs())
+    assert not (other / ".myviking-connection.json").exists()
+
+    # uninstall
+    cli.pi_uninstall(SArgs())
     assert not path.exists()
 
 
-def test_pi_install_server_check_fails_without_key(tmp_path, monkeypatch, capsys):
+def test_pi_install_requires_key_and_project(tmp_path, monkeypatch):
     import jv.cli as cli
 
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -137,8 +187,10 @@ def test_pi_install_server_check_fails_without_key(tmp_path, monkeypatch, capsys
         key = ""
         project = "my-app"
         timeout = "15"
+        cwd = str(tmp_path)
 
     import pytest
     with pytest.raises(SystemExit):
         cli.pi_install(Args())
     assert not (tmp_path / ".pi").exists()
+    assert not (tmp_path / ".myviking").exists()

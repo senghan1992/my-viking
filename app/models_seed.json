@@ -1,0 +1,468 @@
+{
+ "seed_comment": "~/.pi/agent/models.json (databricks) 기반 기본 시드. 첫 실행 때 자동 적용. 비밀(API 키)은 저장소에 넣지 않는다 — VIKING_LLM_API_KEY 또는 관리자 화면에서 넣는다. VIKING_SEED_MODELS=false 로 시드를 끌 수 있다.",
+ "llm": {
+  "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-deepseek-v4-flash-0731/invocations",
+  "model": "databricks-deepseek-v4-flash-0731"
+ },
+ "registered": [
+  {
+   "id": "databricks-claude-sonnet-5",
+   "kind": "llm",
+   "name": "Databricks Claude Sonnet 5",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-sonnet-5/invocations",
+   "model": "databricks-claude-sonnet-5",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-claude-opus-4-8",
+   "kind": "llm",
+   "name": "Databricks Claude Opus 4.8",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-opus-4-8/invocations",
+   "model": "databricks-claude-opus-4-8",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-deepseek-v4-flash-0731",
+   "kind": "llm",
+   "name": "Databricks DeepSeek V4 Flash 0731",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-deepseek-v4-flash-0731/invocations",
+   "model": "databricks-deepseek-v4-flash-0731",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-kimi-k3",
+   "kind": "llm",
+   "name": "Databricks Kimi K3",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-kimi-k3/invocations",
+   "model": "databricks-kimi-k3",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-glm-5-2",
+   "kind": "llm",
+   "name": "Databricks GLM 5.2",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-glm-5-2/invocations",
+   "model": "databricks-glm-5-2",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-claude-opus-5",
+   "kind": "llm",
+   "name": "Databricks Claude Opus 5",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-opus-5/invocations",
+   "model": "databricks-claude-opus-5",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-glm-5-3-flash",
+   "kind": "llm",
+   "name": "Databricks GLM 5.3 Flash",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-glm-5-3-flash/invocations",
+   "model": "databricks-glm-5-3-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-grok-4-6",
+   "kind": "llm",
+   "name": "Databricks Grok 4.6",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-grok-4-6/invocations",
+   "model": "databricks-grok-4-6",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-claude-fable-5",
+   "kind": "llm",
+   "name": "Databricks Claude Fable 5",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-fable-5/invocations",
+   "model": "databricks-claude-fable-5",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-claude-fable-5-1",
+   "kind": "llm",
+   "name": "Databricks Claude Fable 5.1",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-fable-5-1/invocations",
+   "model": "databricks-claude-fable-5-1",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-claude-haiku-4-5",
+   "kind": "llm",
+   "name": "Databricks Claude Haiku 4.5",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-haiku-4-5/invocations",
+   "model": "databricks-claude-haiku-4-5",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-claude-opus-4-1",
+   "kind": "llm",
+   "name": "Databricks Claude Opus 4.1",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-opus-4-1/invocations",
+   "model": "databricks-claude-opus-4-1",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-claude-opus-4-5",
+   "kind": "llm",
+   "name": "Databricks Claude Opus 4.5",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-opus-4-5/invocations",
+   "model": "databricks-claude-opus-4-5",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-claude-opus-4-6",
+   "kind": "llm",
+   "name": "Databricks Claude Opus 4.6",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-opus-4-6/invocations",
+   "model": "databricks-claude-opus-4-6",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-claude-opus-4-7",
+   "kind": "llm",
+   "name": "Databricks Claude Opus 4.7",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-opus-4-7/invocations",
+   "model": "databricks-claude-opus-4-7",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-claude-sonnet-4-5",
+   "kind": "llm",
+   "name": "Databricks Claude Sonnet 4.5",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-sonnet-4-5/invocations",
+   "model": "databricks-claude-sonnet-4-5",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-claude-sonnet-4-6",
+   "kind": "llm",
+   "name": "Databricks Claude Sonnet 4.6",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-claude-sonnet-4-6/invocations",
+   "model": "databricks-claude-sonnet-4-6",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gemini-3-flash",
+   "kind": "llm",
+   "name": "Databricks Gemini 3 Flash",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gemini-3-flash/invocations",
+   "model": "databricks-gemini-3-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gemini-3-1-flash-image",
+   "kind": "llm",
+   "name": "Databricks Gemini 3.1 Flash Image",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gemini-3-1-flash-image/invocations",
+   "model": "databricks-gemini-3-1-flash-image",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gemini-3-1-flash-lite",
+   "kind": "llm",
+   "name": "Databricks Gemini 3.1 Flash Lite",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gemini-3-1-flash-lite/invocations",
+   "model": "databricks-gemini-3-1-flash-lite",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gemini-3-1-pro",
+   "kind": "llm",
+   "name": "Databricks Gemini 3.1 Pro",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gemini-3-1-pro/invocations",
+   "model": "databricks-gemini-3-1-pro",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gemini-3-5-flash",
+   "kind": "llm",
+   "name": "Databricks Gemini 3.5 Flash",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gemini-3-5-flash/invocations",
+   "model": "databricks-gemini-3-5-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gemini-3-5-flash-lite",
+   "kind": "llm",
+   "name": "Databricks Gemini 3.5 Flash Lite",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gemini-3-5-flash-lite/invocations",
+   "model": "databricks-gemini-3-5-flash-lite",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gemini-3-6-flash",
+   "kind": "llm",
+   "name": "Databricks Gemini 3.6 Flash",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gemini-3-6-flash/invocations",
+   "model": "databricks-gemini-3-6-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gemini-3-7-flash",
+   "kind": "llm",
+   "name": "Databricks Gemini 3.7 Flash",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gemini-3-7-flash/invocations",
+   "model": "databricks-gemini-3-7-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gemini-3-8-flash",
+   "kind": "llm",
+   "name": "Databricks Gemini 3.8 Flash",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gemini-3-8-flash/invocations",
+   "model": "databricks-gemini-3-8-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gemini-3-pro-image",
+   "kind": "llm",
+   "name": "Databricks Gemini 3 Pro Image",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gemini-3-pro-image/invocations",
+   "model": "databricks-gemini-3-pro-image",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5",
+   "kind": "llm",
+   "name": "Databricks GPT 5",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5/invocations",
+   "model": "databricks-gpt-5",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5-1",
+   "kind": "llm",
+   "name": "Databricks GPT 5.1",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5-1/invocations",
+   "model": "databricks-gpt-5-1",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5-2",
+   "kind": "llm",
+   "name": "Databricks GPT 5.2",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5-2/invocations",
+   "model": "databricks-gpt-5-2",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5-4",
+   "kind": "llm",
+   "name": "Databricks GPT 5.4",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5-4/invocations",
+   "model": "databricks-gpt-5-4",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5-4-mini",
+   "kind": "llm",
+   "name": "Databricks GPT 5.4 Mini",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5-4-mini/invocations",
+   "model": "databricks-gpt-5-4-mini",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5-4-nano",
+   "kind": "llm",
+   "name": "Databricks GPT 5.4 Nano",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5-4-nano/invocations",
+   "model": "databricks-gpt-5-4-nano",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5-5",
+   "kind": "llm",
+   "name": "Databricks GPT 5.5",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5-5/invocations",
+   "model": "databricks-gpt-5-5",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5-mini",
+   "kind": "llm",
+   "name": "Databricks GPT 5 Mini",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5-mini/invocations",
+   "model": "databricks-gpt-5-mini",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5-nano",
+   "kind": "llm",
+   "name": "Databricks GPT 5 Nano",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5-nano/invocations",
+   "model": "databricks-gpt-5-nano",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5-6-luna",
+   "kind": "llm",
+   "name": "Databricks GPT 5.6 Luna",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5-6-luna/invocations",
+   "model": "databricks-gpt-5-6-luna",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5-6-sol",
+   "kind": "llm",
+   "name": "Databricks GPT 5.6 Sol",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5-6-sol/invocations",
+   "model": "databricks-gpt-5-6-sol",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-5-6-terra",
+   "kind": "llm",
+   "name": "Databricks GPT 5.6 Terra",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-5-6-terra/invocations",
+   "model": "databricks-gpt-5-6-terra",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-6-astra",
+   "kind": "llm",
+   "name": "Databricks GPT 6 Astra",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-6-astra/invocations",
+   "model": "databricks-gpt-6-astra",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-oss-120b",
+   "kind": "llm",
+   "name": "Databricks GPT-OSS 120B",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-oss-120b/invocations",
+   "model": "databricks-gpt-oss-120b",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gpt-oss-20b",
+   "kind": "llm",
+   "name": "Databricks GPT-OSS 20B",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gpt-oss-20b/invocations",
+   "model": "databricks-gpt-oss-20b",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-deepseek-v4-pro-0813",
+   "kind": "llm",
+   "name": "Databricks DeepSeek V4 Pro 0813",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-deepseek-v4-pro-0813/invocations",
+   "model": "databricks-deepseek-v4-pro-0813",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-gemma-3-12b",
+   "kind": "llm",
+   "name": "Databricks Gemma 3 12B",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-gemma-3-12b/invocations",
+   "model": "databricks-gemma-3-12b",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-glm-5-3",
+   "kind": "llm",
+   "name": "Databricks GLM 5.3",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-glm-5-3/invocations",
+   "model": "databricks-glm-5-3",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-inkling",
+   "kind": "llm",
+   "name": "Databricks Inkling",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-inkling/invocations",
+   "model": "databricks-inkling",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-llama-4-maverick",
+   "kind": "llm",
+   "name": "Databricks Llama 4 Maverick",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-llama-4-maverick/invocations",
+   "model": "databricks-llama-4-maverick",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-meta-llama-3-1-8b-instruct",
+   "kind": "llm",
+   "name": "Databricks Meta Llama 3.1 8B Instruct",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-meta-llama-3-1-8b-instruct/invocations",
+   "model": "databricks-meta-llama-3-1-8b-instruct",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-meta-llama-3-3-70b-instruct",
+   "kind": "llm",
+   "name": "Databricks Meta Llama 3.3 70B Instruct",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-meta-llama-3-3-70b-instruct/invocations",
+   "model": "databricks-meta-llama-3-3-70b-instruct",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-qwen3-next-80b-a3b-instruct",
+   "kind": "llm",
+   "name": "Databricks Qwen3 Next 80B A3B Instruct",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-qwen3-next-80b-a3b-instruct/invocations",
+   "model": "databricks-qwen3-next-80b-a3b-instruct",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "databricks-qwen35-122b-a10b",
+   "kind": "llm",
+   "name": "Databricks Qwen3.5 122B A10B",
+   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-qwen35-122b-a10b/invocations",
+   "model": "databricks-qwen35-122b-a10b",
+   "api_key": "",
+   "endpoint": "direct"
+  }
+ ]
+}

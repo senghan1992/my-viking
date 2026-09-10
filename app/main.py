@@ -8,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 from pathlib import Path
 
 from . import db
+from . import model_settings
 from .config import config
 from .routes import admin_models, agent, projects, web
 
@@ -15,6 +16,11 @@ app = FastAPI(title="myviking", version="1.0.0", docs_url="/api/docs")
 
 # 데이터베이스 준비 (스키마 + 마이그레이션)
 db.db.init()
+
+# 첫 실행 시드 — 관리자가 아직 모델 설정/등록을 안 했으면 models_seed.json 과
+# 사전 카탈로그를 기본으로 채운다 (VIKING_SEED_MODELS=false 로 끔).
+model_settings.seed_if_empty()
+model_settings.apply_to(config)  # 시드 후 config 에 반영
 
 app.state.templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
