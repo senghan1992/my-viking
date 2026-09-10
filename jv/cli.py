@@ -528,7 +528,7 @@ _PI_EXT_FILE = "myviking.ts"
 _PI_LINK_FILE = ".myviking-connection.json"
 # 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
 # 마커가 없는 설치본은 오래된 버전으로 보고 pi install 이 최신으로 갱신한다.
-_PI_HUB_VERSION = "myviking-hub-v6"
+_PI_HUB_VERSION = "myviking-hub-v7"
 
 
 def _pi_path() -> Path:
@@ -592,7 +592,7 @@ def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
 
 
 _PI_EXT_TEMPLATE = r"""// myviking — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
-// myviking-hub-v6 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
+// myviking-hub-v7 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
 // 이 파일 자체에는 비밀이 없다 — 프로젝트 고정도 없다.
 //   · 연결(주소+키+프로젝트): ~/.myviking/connections.json  (0600, jv pi install 이 저장)
 //   · 폴더 설정: 각 프로젝트 폴더의 .myviking-connection.json  (git 의 HEAD 같은 것 — '기본값')
@@ -657,15 +657,6 @@ function linkConn(cwd: string): Active | null {
     const conn = loadConns().find((c) => c.id === id);
     return conn ? { name: conn.name || conn.project, url: conn.url, key: conn.key, project: conn.project } : null;
   } catch { return null; }
-}
-
-function envActive(): Active | null {
-  // 환경변수 (CI/컨테이너용) — 세션 시작 시 자동 연결
-  if (process.env.MYVIKING_URL && process.env.MYVIKING_KEY && process.env.MYVIKING_PROJECT) {
-    const p = process.env.MYVIKING_PROJECT;
-    return { name: p, url: process.env.MYVIKING_URL, key: process.env.MYVIKING_KEY, project: p };
-  }
-  return null;
 }
 
 async function call<T>(c: Active, path: string, method = "GET", body?: unknown): Promise<T> {
@@ -801,13 +792,9 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // ── 세션 시작: 기본은 연결 없음(자유). 폴더 설정이 있으면 안내만 ──
+  // ── 세션 시작: 기본은 항상 연결 없음(자유). 어떤 프로젝트에도 자동 연결하지 않는다.
+  //    (env vars·폴더 설정 모두 자동 적용 안 함 — /myviking use·connect 만 연결한다)
   pi.on("session_start", async (event, ctx) => {
-    const tid = threadIdOf(ctx);
-    // 환경변수(CI/컨테이너) 가 있으면 자동 연결
-    const envC = envActive();
-    if (envC) { setActive(ctx, envC); return; }
-    // 폴더 설정은 자동 적용하지 않는다 — 사용자가 /myviking use 로 직접 적용
     const lc = linkConn(ctx.cwd);
     if (lc && ctx.hasUI) {
       ctx.ui.notify(`myviking: 이 폴더는 '${lc.name}' 로 설정돼 있습니다 — 자동 연결 안 함. /myviking use 로 적용하세요.`, "info");
@@ -1707,16 +1694,9 @@ def jcode_hook(args: argparse.Namespace) -> None:
     except ValueError:
         payload = {}
 
+    # 연결은 폴더 링크(.myviking-connection.json)로만 결정한다 — 환경변수는 자동 캡처의
+    # '전역 새는' 경로(모든 폴더 세션이 한 프로젝트로 기록되는 사고)가 되어 허용하지 않는다.
     conn = _folder_conn(Path(cwd))
-    if not conn:
-        try:
-            url = (os.environ.get("MYVIKING_URL") or "").rstrip("/")
-            key = os.environ.get("MYVIKING_KEY") or ""
-            project = (os.environ.get("MYVIKING_PROJECT") or "").strip()
-            if url and key and project:
-                conn = {"url": url, "key": key, "project": project, "name": project}
-        except Exception:
-            conn = None
 
     if conn and event == "turn_end":
         status = os.environ.get("JCODE_HOOK_STATUS", "")
@@ -1743,7 +1723,7 @@ def jcode_hook(args: argparse.Namespace) -> None:
         else:
             note = "답변 없음 — 기록 안 함"
     elif conn is None:
-        note = "연결 없음 (폴더/환경변수)"
+        note = "연결 없음 (폴더 연결 없음)"
     else:
         note = f"{event} — 처리 없음"
 
