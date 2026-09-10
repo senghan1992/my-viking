@@ -80,22 +80,26 @@ jv pi install   --url http://<서버>:8787 --key jv_xxxx   # pi → 이 폴더 �
 이후 그 폴더에서 Claude Code 나 pi 를 쓰면 끝입니다. 질문마다 기존 지식이 주입되고,
 작업이 끝나면 자동으로 기록됩니다. 다음 세션은 브리핑을 받고 시작합니다.
 
-**pi 는 프로젝트 폴더별로 연결됩니다** — 키·주소는 `~/.myviking/connections.json`
-(0600)에 저장되고, 각 프로젝트 폴더의 `.myviking-connection.json`(비밀 없음)이 그
-폴더의 연결을 정합니다. pi 도 매 턴 질문→답이 자동으로 도서관에 기록됩니다. 그래서:
+**pi 세션은 기본적으로 자유 사용이며, 연결은 세션(스레드) 단위입니다** — 한 세션에서
+`/myviking connect`·`switch` 를 써도 다른 세션에는 영향이 없습니다. 키·주소는
+`~/.myviking/connections.json`(0600)에 저장되고, `jv pi install` 은 해당 폴더에
+`.myviking-connection.json`(비밀 없음, 폴더 기본값)을 남겨 `jv pi install` 또는
+`/myviking use` 로 바로 적용할 수 있게 합니다. pi 도 매 턴 질문→답이 자동으로
+도서관에 기록됩니다. 그래서:
 
 ```bash
+jv pi install --url ... --key ...                  # 연결 저장 + 이 폴더 기본값 + 허브 확장 설치
 jv pi list                                            # 저장된 연결 목록
-jv pi switch <이름|슬러그>                            # 현재 폴더의 연결을 바꿔 연결 (git checkout 느낌)
-jv pi disconnect                                      # 이 폴더 연결 해제 → pi 자유 사용
-jv pi remove <이름|슬러그>                           # 저장된 연결 삭제 (키 포함)
+jv pi switch <이름>                                  # 이 폴더의 기본 연결을 바꿈 (git checkout 느낌)
+jv pi disconnect                                      # 이 폴더 기본 연결 해제
+jv pi remove <이름>                                  # 저장된 연결 삭제 (키 포함)
 jv pi check                                           # 폴더 연결·서버 인증 확인
 ```
 
-pi 안에서는 `/myviking`(상태/목록) · `/myviking switch`(선택 전환) ·
-`/myviking connect`(새 연결) · `/myviking disconnect`(해제) ·
-`/myviking remove`(저장된 연결 삭제) 로 같은 일을 할 수
-있습니다. 연결이 없는 폴더에서 pi 를 켜면 지식 도서관 없이 그냥 자유롭게 씁니다.
+pi 안에서는 `/myviking`(상태/목록) · `/myviking use`(폴더 기본값을 이 세션에 적용) ·
+`/myviking switch`(선택 전환) · `/myviking connect`(새 연결) · `/myviking disconnect`
+(이 세션 해제) · `/myviking remove`(저장된 연결 삭제) 로 같은 일을 할 수
+있습니다. 연결이 없는 세션에서 pi 는 지식 도서관 없이 그냥 자유롭게 쓰입니다.
 
 > MCP(Cursor·Codex 등)는 연결 탭의 JSON 을, 셸 전용 에이전트는 `jv search/remember`
 > 를 쓰면 됩니다. 어떤 에이전트든 연결됩니다.

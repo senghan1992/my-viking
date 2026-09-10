@@ -127,7 +127,7 @@ def test_pi_install_saves_conn_and_links_folder(tmp_path, monkeypatch, capsys):
     assert "registerTool" in src and "viking_search" in src and "viking_remember" in src
     assert "session_start" in src and "sendMessage" in src
     assert "registerCommand" in src and "myviking" in src
-    assert "resolveActive" in src
+    assert "activeByThread" in src and "myviking use" in src
     assert "before_agent_start" in src and "turn_end" in src and "/commit" in src  # 자동 증류
     # 프로젝트 고정/키 박힘 금지
     assert "viking.example.com" not in src
@@ -141,7 +141,7 @@ def test_pi_install_saves_conn_and_links_folder(tmp_path, monkeypatch, capsys):
     assert src.count("{") == src.count("}")
 
     out = capsys.readouterr().out
-    assert "데이터자판기" in out and "연결 저장" in out and "이 폴더 연결" in out
+    assert "데이터자판기" in out and "연결 저장" in out and "이 폴더 기본 연결" in out
 
     # list — 저장된 연결이 보인다
     class LArgs:

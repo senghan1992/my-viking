@@ -483,7 +483,7 @@ _PI_EXT_FILE = "myviking.ts"
 _PI_LINK_FILE = ".myviking-connection.json"
 # 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
 # 마커가 없는 설치본은 오래된 버전으로 보고 pi install 이 최신으로 갱신한다.
-_PI_HUB_VERSION = "myviking-hub-v4"
+_PI_HUB_VERSION = "myviking-hub-v6"
 
 
 def _pi_path() -> Path:
@@ -547,13 +547,14 @@ def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
 
 
 _PI_EXT_TEMPLATE = r"""// myviking — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
-// myviking-hub-v4 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
+// myviking-hub-v6 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
 // 이 파일 자체에는 비밀이 없다 — 프로젝트 고정도 없다.
 //   · 연결(주소+키+프로젝트): ~/.myviking/connections.json  (0600, jv pi install 이 저장)
-//   · 폴더 연결: 각 프로젝트 폴더의 .myviking-connection.json  (git 의 HEAD 같은 것)
-//   · pi 를 어느 폴더에서 열든 그 폴더의 연결만 따라간다. 연결이 없으면 그냥 자유 사용.
+//   · 폴더 설정: 각 프로젝트 폴더의 .myviking-connection.json  (git 의 HEAD 같은 것 — '기본값')
+//   · pi 세션은 기본적으로 연결 없음(자유 사용). /myviking connect 또는 switch 로
+//     그 세션만 연결한다. 폴더 설정은 /myviking use 로 이 세션에 적용한다.
 //   · CLI: jv pi install/switch/disconnect/list/check   · pi 안: /myviking
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -565,9 +566,19 @@ const CONNS_FILE = join(HOME, ".myviking", "connections.json");
 
 interface Conn { id: string; name: string; url: string; key: string; project: string }
 interface Active { name: string; url: string; key: string; project: string }
+interface AnyCtx { sessionManager?: { getSessionId?: () => string } }
 
-let active: Active | null = null;   // 현재 세션에서 해석된 연결 (도구는 이걸 쓴다)
-let threadId = "";                  // pi 스레드(세션) id — 서가 세션 기록용
+const activeByThread = new Map<string, Active>();   // 세션(스레드)별 연결 — 기본: 없음(자유)
+const pendingByThread = new Map<string, string>();  // 세션별 자동 증류 대기 질문
+
+function threadIdOf(ctx: AnyCtx): string {
+  try { return ctx.sessionManager?.getSessionId?.() || ""; } catch { return ""; }
+}
+
+function getActive(ctx: AnyCtx): Active | null {
+  const t = threadIdOf(ctx);
+  return (t && activeByThread.get(t)) || null;
+}
 
 function loadConns(): Conn[] {
   try {
@@ -591,13 +602,8 @@ function findLink(start: string): string | null {
   return null;
 }
 
-function resolveActive(cwd: string): Active | null {
-  // 0) 환경변수 (CI/컨테이너용) — 폴더 연결보다 우선
-  if (process.env.MYVIKING_URL && process.env.MYVIKING_KEY && process.env.MYVIKING_PROJECT) {
-    const p = process.env.MYVIKING_PROJECT;
-    return { name: p, url: process.env.MYVIKING_URL, key: process.env.MYVIKING_KEY, project: p };
-  }
-  // 1) 폴더 연결 파일
+function linkConn(cwd: string): Active | null {
+  // 폴더 설정(.myviking-connection.json)이 가리키는 저장된 연결
   const link = findLink(cwd);
   if (!link) return null;
   try {
@@ -606,6 +612,15 @@ function resolveActive(cwd: string): Active | null {
     const conn = loadConns().find((c) => c.id === id);
     return conn ? { name: conn.name || conn.project, url: conn.url, key: conn.key, project: conn.project } : null;
   } catch { return null; }
+}
+
+function envActive(): Active | null {
+  // 환경변수 (CI/컨테이너용) — 세션 시작 시 자동 연결
+  if (process.env.MYVIKING_URL && process.env.MYVIKING_KEY && process.env.MYVIKING_PROJECT) {
+    const p = process.env.MYVIKING_PROJECT;
+    return { name: p, url: process.env.MYVIKING_URL, key: process.env.MYVIKING_KEY, project: p };
+  }
+  return null;
 }
 
 async function call<T>(c: Active, path: string, method = "GET", body?: unknown): Promise<T> {
@@ -619,10 +634,9 @@ async function call<T>(c: Active, path: string, method = "GET", body?: unknown):
 }
 
 function noConn(): string {
-  return "이 폴더는 myviking 프로젝트에 연결되어 있지 않습니다.\n"
-    + "  · 새로 연결: /myviking connect (서버 주소 + API 키만 입력하면 됩니다)\n"
-    + "    (키는 서버 → 프로젝트 → 🔗 에이전트 연결 탭에서 발급)\n"
-    + "  · 저장된 연결로 바꾸기: /myviking switch  ·  삭제: /myviking remove  ·  목록: /myviking";
+  return "이 세션은 myviking 프로젝트에 연결되어 있지 않습니다 (자유 사용).\n"
+    + "  · 새로 연결: /myviking connect (서버 주소 + API 키만 입력 — 키는 서버 → 프로젝트 → 🔗 에이전트 연결 탭)\n"
+    + "  · 폴더 설정 적용: /myviking use  ·  저장된 연결로: /myviking switch  ·  목록: /myviking";
 }
 
 function briefUrl(c: Active, sid: string): string {
@@ -642,6 +656,16 @@ async function injectBrief(c: Active, sid: string, pi: ExtensionAPI): Promise<vo
   } catch { /* 서버에 닿지 않아도 코딩 세션은 계속된다 */ }
 }
 
+function setActive(ctx: AnyCtx, c: Active): void {
+  const t = threadIdOf(ctx);
+  if (t) activeByThread.set(t, c);
+}
+
+function clearActive(ctx: AnyCtx): void {
+  const t = threadIdOf(ctx);
+  if (t) activeByThread.delete(t);
+}
+
 function fmtConn(c: Conn, i: number): string {
   return `${i}. ${c.name || c.project} — ${c.project}`;
 }
@@ -656,14 +680,14 @@ function setFolderLink(cwd: string, id: string): void {
 }
 
 export default function (pi: ExtensionAPI) {
-  // ── 도구 4종 — 연결된 프로젝트가 이 폴더 일 때만 동작 ──
-  const jobs: Array<{ name: string; label: string; description: string; params: any; run: (c: Active, p?: any) => Promise<string> }> = [
+  // ── 도구 4종 — 호출한 그 세션이 연결된 프로젝트로만 동작 ──
+  const jobs: Array<{ name: string; label: string; description: string; params: any; run: (c: Active, p?: any, tid?: string) => Promise<string> }> = [
     {
       name: "viking_brief",
       label: "Viking 브리핑",
       description: "프로젝트 도서관의 작업 브리핑(확립 지식·검증 필요·최근 작업)을 가져온다. 세션 시작 시 자동 주입되며, 다시 보려면 호출한다.",
       params: Type.Object({}),
-      run: (c) => call<{ orientation: string }>(c, briefUrl(c, threadId)).then((b) => b.orientation),
+      run: (c, _p, tid) => call<{ orientation: string }>(c, briefUrl(c, tid || "")).then((b) => b.orientation),
     },
     {
       name: "viking_search",
@@ -693,7 +717,7 @@ export default function (pi: ExtensionAPI) {
           title: p.title, content: p.content,
           category: p.category ?? "knowledge", confirmed: !!p.confirmed,
         });
-        return `기록됨 → ${r.uri}`;
+        return `저장됨: ${r.uri}${p.confirmed ? " (확립)" : " (검증 전 — 대시보드에서 확인하거나 viking_score good)"}`;
       },
     },
     {
@@ -720,10 +744,11 @@ export default function (pi: ExtensionAPI) {
       description: job.description,
       promptSnippet: `${job.name} — ${job.description.split(".")[0]}.`,
       parameters: job.params,
-      async execute(_id: string, params: any) {
+      async execute(_id: string, params: any, _sig: unknown, _upd: unknown, ctx: ExtensionContext) {
         try {
-          if (!active) return { content: [{ type: "text", text: noConn() }] };
-          return { content: [{ type: "text", text: await job.run(active, params) }] };
+          const c = getActive(ctx);
+          if (!c) return { content: [{ type: "text", text: noConn() }] };
+          return { content: [{ type: "text", text: await job.run(c, params, threadIdOf(ctx)) }] };
         } catch (e) {
           return { content: [{ type: "text", text: `myviking 오류: ${(e as Error).message}` }] };
         }
@@ -731,29 +756,35 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // ── 세션 시작 → 이 폴더의 연결 해석 + 브리핑 주입 (startup/new 에만) ──
+  // ── 세션 시작: 기본은 연결 없음(자유). 폴더 설정이 있으면 안내만 ──
   pi.on("session_start", async (event, ctx) => {
-    active = resolveActive(ctx.cwd);
-    try { threadId = ctx.sessionManager.getSessionId() || ""; } catch { threadId = ""; }
-    if (!active) return;                           // 연결 없으면 자유 사용
-    if (ctx.hasUI) ctx.ui.notify(`myviking: ${active.name} 연결됨`, "info");
-    if (event.reason !== "startup" && event.reason !== "new") return;
-    await injectBrief(active, threadId, pi);
+    const tid = threadIdOf(ctx);
+    // 환경변수(CI/컨테이너) 가 있으면 자동 연결
+    const envC = envActive();
+    if (envC) { setActive(ctx, envC); return; }
+    // 폴더 설정은 자동 적용하지 않는다 — 사용자가 /myviking use 로 직접 적용
+    const lc = linkConn(ctx.cwd);
+    if (lc && ctx.hasUI) {
+      ctx.ui.notify(`myviking: 이 폴더는 '${lc.name}' 로 설정돼 있습니다 — 자동 연결 안 함. /myviking use 로 적용하세요.`, "info");
+    }
   });
 
   // ── 자동 증류: 질문마다 답을 프로젝트 도서관에 기록 (Claude Code 훅과 동일 파이프라인) ──
-  let pendingQuestion = "";
-
-  pi.on("before_agent_start", (event) => {
-    if (!active) return;
+  pi.on("before_agent_start", (event, ctx) => {
+    const c = getActive(ctx);
+    if (!c) return;
+    const tid = threadIdOf(ctx);
     const q = String(event.prompt || "").trim();
     if (!q || q.startsWith("/")) return;          // pi 명령어(/myviking 등) 는 미기록
-    if (pendingQuestion) return;                   // 이미 추적 중인 질문 유지 (도구 연속 턴)
-    pendingQuestion = q.slice(0, 2000);
+    if (pendingByThread.has(tid)) return;          // 이미 추적 중인 질문 유지 (도구 연속 턴)
+    pendingByThread.set(tid, q.slice(0, 2000));
   });
 
-  pi.on("turn_end", async (event) => {
-    if (!active || !pendingQuestion) return;
+  pi.on("turn_end", async (event, ctx) => {
+    const c = getActive(ctx);
+    const tid = threadIdOf(ctx);
+    const q = tid ? pendingByThread.get(tid) : undefined;
+    if (!c || !q) return;
     const m = event.message as any;
     if (!m || m.role !== "assistant") return;
     if (m.stopReason !== "stop" && m.stopReason !== "length") return;  // 도구 진행/오류 턴 제외
@@ -764,20 +795,19 @@ export default function (pi: ExtensionAPI) {
       .join("\n")
       .trim();
     if (!answer) return;
-    const q = pendingQuestion;
-    pendingQuestion = "";
+    pendingByThread.delete(tid);
     try {
-      await call(active, `/api/v1/projects/${active.project}/commit`, "POST", {
-        question: q, answer: answer.slice(0, 20000), session_id: threadId, agent: "pi",
+      await call(c, `/api/v1/projects/${c.project}/commit`, "POST", {
+        question: q, answer: answer.slice(0, 20000), session_id: tid, agent: "pi",
       });
     } catch { /* 서버에 닿지 않아도 코딩 세션은 계속된다 */ }
   });
 
-  // ── /myviking — 연결 목록/전환/새 연결/해제/삭제 (git checkout 느낌) ──
+  // ── /myviking — 세션별 연결 (list | use | connect | switch | disconnect | remove) ──
   pi.registerCommand("myviking", {
-    description: "myviking: 연결 목록·전환·새 연결·해제·삭제 (list | switch | connect | disconnect | remove)",
+    description: "myviking: 세션 연결 관리 — 기본은 자유 (list | use | connect | switch | disconnect | remove)",
     getArgumentCompletions: (prefix: string) =>
-      ["list", "switch", "connect", "disconnect", "remove"]
+      ["list", "use", "connect", "switch", "disconnect", "remove"]
         .filter((v) => v.startsWith(prefix))
         .map((v) => ({ value: v, label: v })),
     handler: async (args, ctx) => {
@@ -806,10 +836,10 @@ export default function (pi: ExtensionAPI) {
             writeFileSync(CONNS_FILE, JSON.stringify({ connections: rest }, null, 2));
             chmodSync(CONNS_FILE, 0o600);
           } catch {}
-          setFolderLink(ctx.cwd, id);
-          active = { name: me.project_name || project, url, key, project };
-          ctx.ui.notify(`✓ 이 폴더를 '${me.project_name || project}' 에 연결했습니다 (키 저장: ~/.myviking/connections.json)`, "info");
-          await injectBrief(active, threadId, pi);
+          const c: Active = { name: me.project_name || project, url, key, project };
+          setActive(ctx, c);                        // 이 세션만 연결 (폴더 파일 안 건드림)
+          ctx.ui.notify(`✓ 이 세션을 '${c.name}' 프로젝트에 연결했습니다 — 다른 세션에는 영향 없음 (키 저장: ~/.myviking/connections.json)`, "info");
+          await injectBrief(c, threadIdOf(ctx), pi);
         } catch (e) {
           ctx.ui.notify(`연결 실패: ${(e as Error).message} — 키가 유효한지, 서버가 최신 버전인지 확인하세요.`, "error");
         }
@@ -817,6 +847,16 @@ export default function (pi: ExtensionAPI) {
       }
 
       const conns = loadConns();
+
+      if (word === "use") {
+        // 폴더 설정(.myviking-connection.json)을 이 세션에 적용 — 없으면 저장된 첫 연결
+        const lc = linkConn(ctx.cwd) || (conns.length ? { name: conns[0].name, url: conns[0].url, key: conns[0].key, project: conns[0].project } : null);
+        if (!lc) { ctx.ui.notify("적용할 연결이 없습니다 — /myviking connect 또는 jv pi install ...", "info"); return; }
+        setActive(ctx, lc);
+        ctx.ui.notify(`✓ 이 세션을 '${lc.name}' 프로젝트에 연결했습니다 (기본: 자유 — 이 세션만 변경)`, "info");
+        await injectBrief(lc, threadIdOf(ctx), pi);
+        return;
+      }
 
       if (word === "remove") {
         if (!conns.length) { ctx.ui.notify("저장된 연결이 없습니다.", "info"); return; }
@@ -831,25 +871,25 @@ export default function (pi: ExtensionAPI) {
           writeFileSync(CONNS_FILE, JSON.stringify({ connections: rest }, null, 2));
           chmodSync(CONNS_FILE, 0o600);
         } catch {}
+        for (const [t, c] of [...activeByThread]) {          // 이 연결을 쓰던 세션은 자유로
+          if (c.url === conn.url && c.project === conn.project) activeByThread.delete(t);
+        }
         let msg = `✓ 연결 삭제: ${conn.name || conn.project} (${conn.project}) — 키도 함께 제거했습니다.`;
         const f = linkPath(ctx.cwd);
         let linkedId: string | null = null;
         try { linkedId = (JSON.parse(readFileSync(f, "utf8")) as { connection?: string }).connection || null; } catch {}
         if (existsSync(f) && linkedId === conn.id) {
           try { unlinkSync(f); } catch {}
-          active = null;
-          msg += `\n이 폴더의 연결도 함께 해제했습니다 — 자유 사용.`;
+          msg += `\n이 폴더의 설정도 함께 해제했습니다.`;
         }
         ctx.ui.notify(msg, "info");
         return;
       }
 
       if (word === "disconnect") {
-        const f = linkPath(ctx.cwd);
-        if (!existsSync(f)) { ctx.ui.notify("이 폴더는 연결되어 있지 않습니다.", "info"); return; }
-        try { unlinkSync(f); } catch {}
-        active = null;
-        ctx.ui.notify("이 폴더의 myviking 연결을 해제했습니다 — 자유 사용.", "info");
+        if (!getActive(ctx)) { ctx.ui.notify("이 세션은 연결되어 있지 않습니다.", "info"); return; }
+        clearActive(ctx);
+        ctx.ui.notify("이 세션의 myviking 연결을 해제했습니다 — 자유 사용.", "info");
         return;
       }
 
@@ -858,8 +898,10 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify("저장된 연결이 없습니다. /myviking connect 또는 jv pi install ...", "info");
           return;
         }
-        const items = conns.map((c, i) => fmtConn(c, i + 1)).concat([`${conns.length + 1}. ＋ 새로 연결하기 (/myviking connect)`]);
-        const pick = ctx.hasUI ? await ctx.ui.select("연결할 프로젝트 (이 폴더를 바꿉니다)", items) : null;
+        const cur = getActive(ctx);
+        const items = conns.map((c, i) => fmtConn(c, i + 1) + (cur && cur.url === c.url && cur.project === c.project ? " ★현재" : ""))
+                             .concat([`${conns.length + 1}. ＋ 새로 연결하기 (/myviking connect)`]);
+        const pick = ctx.hasUI ? await ctx.ui.select("연결할 프로젝트 (이 세션만 바꿉니다)", items) : null;
         if (!pick) { ctx.ui.notify("취소했습니다.", "info"); return; }
         const idx = parseInt(pick.split(".")[0], 10) - 1;
         if (idx === conns.length) {
@@ -868,29 +910,29 @@ export default function (pi: ExtensionAPI) {
         }
         const conn = conns[idx];
         if (!conn) { ctx.ui.notify("찾을 수 없습니다.", "info"); return; }
-        try { setFolderLink(ctx.cwd, conn.id); } catch {}
-        active = { name: conn.name || conn.project, url: conn.url, key: conn.key, project: conn.project };
-        ctx.ui.notify(`✓ 이 폴더를 '${conn.name || conn.project}' 프로젝트로 바꿔 연결했습니다 (git checkout 느낌)`, "info");
-        await injectBrief(active, threadId, pi);
+        const c: Active = { name: conn.name || conn.project, url: conn.url, key: conn.key, project: conn.project };
+        setActive(ctx, c);                            // 이 세션만 변경 (폴더 파일 안 건드림)
+        ctx.ui.notify(`✓ 이 세션을 '${c.name}' 프로젝트로 바꿔 연결했습니다 (다른 세션 영향 없음)`, "info");
+        await injectBrief(c, threadIdOf(ctx), pi);
         return;
       }
 
-      // list (기본)
-      const link = findLink(ctx.cwd);
+      // list (기본) — 이 세션의 상태를 보여 준다
+      const cur = getActive(ctx);
+      const lc = linkConn(ctx.cwd);
       const lines: string[] = [];
-      if (active) lines.push(`현재 폴더 연결: ${active.name} — ${active.project} (${active.url})`);
-      else if (link) lines.push(`현재 폴더가 가리키는 연결을 찾지 못했습니다 — jv pi install 또는 /myviking switch`);
-      else lines.push(`이 폴더는 연결되어 있지 않습니다 (자유 사용). /myviking switch 또는 connect`);
+      if (cur) lines.push(`현재 세션 연결: ${cur.name} — ${cur.project} (${cur.url})`);
+      else if (lc) lines.push(`이 세션: 연결 없음 (자유 사용) — 폴더 설정: '${lc.name}' → /myviking use 로 적용`);
+      else lines.push(`이 세션: 연결 없음 (자유 사용). /myviking connect 또는 switch`);
       if (conns.length) {
         lines.push("");
         lines.push(`저장된 연결 ${conns.length}개 — /myviking switch 로 전환, remove 로 삭제:`);
-        conns.forEach((c, i) => lines.push(fmtConn(c, i + 1)));
+        conns.forEach((c, i) => lines.push(fmtConn(c, i + 1) + (cur && cur.url === c.url && cur.project === c.project ? " ★" : "")));
       }
       if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), "info");
     },
   });
-}
-"""
+}"""
 
 
 def _pi_hub_installed() -> bool:
@@ -906,7 +948,7 @@ def _pi_hub_installed() -> bool:
         return False  # 옛 방식: URL/KEY/PROJECT 가 박힌 버전 → 허브로 교체 필요
     if _PI_HUB_VERSION not in text:
         return False  # 오래된 허브 버전 → 최신 템플릿으로 갱신
-    return "resolveActive" in text
+    return "activeByThread" in text
 
 
 def _install_hub_extension() -> Path:
@@ -986,11 +1028,11 @@ def pi_install(args: argparse.Namespace) -> None:
 
     print(f"✓ 서버 확인: {url} · 프로젝트 {project} · {name}")
     print(f"✓ 연결 저장: {_pi_conns_path()} (키 0600, 현재 {len(conns)}개 연결)")
-    print(f"✓ 이 폴더 연결: {cwd} → {name} ({_PI_LINK_FILE})")
+    print(f"✓ 이 폴더 기본 연결: {cwd} → {name} ({_PI_LINK_FILE})")
     print(f"✓ pi 허브 확장: {hub}")
-    print("이제 이 폴더에서 pi 를 열면 자동으로 이 프로젝트에 연결됩니다.")
-    print("  · 저장된 연결 목록/전환/삭제: jv pi list / jv pi switch <이름> / jv pi remove <이름>")
-    print("  · pi 안에서: /myviking (목록·전환·새 연결·해제·삭제)")
+    print("이 폴더의 기본 연결로 저장했습니다. pi 세션은 기본이 자유 사용이므로,")
+    print("  세션에서 /myviking use 로 적용하거나 /myviking connect·switch 로 직접 연결하세요.")
+    print("  · 저장된 연결 관리: jv pi list / jv pi switch <이름> / jv pi remove <이름> / jv pi check")
 
 
 def pi_list(args: argparse.Namespace) -> None:
@@ -1023,8 +1065,8 @@ def pi_switch(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
     _pi_link_path(cwd).write_text(json.dumps({"connection": conn["id"]}, ensure_ascii=False, indent=2))
-    print(f"✓ 이 폴더를 '{conn.get('name') or conn['project']}' 프로젝트로 바꿔 연결했습니다: {cwd}")
-    print("pi 안에서 쓰고 있다면 /myviking list 로 확인하거나 /reload 하세요.")
+    print(f"✓ 이 폴더의 기본 연결을 '{conn.get('name') or conn['project']}' 프로젝트로 바꿨습니다: {cwd}")
+    print("pi 세션에서는 /myviking use 로 적용하거나 /myviking switch 로 선택하세요.")
 
 
 def pi_disconnect(args: argparse.Namespace) -> None:
@@ -1034,7 +1076,7 @@ def pi_disconnect(args: argparse.Namespace) -> None:
         print("이 폴더는 연결되어 있지 않습니다.")
         return
     link.unlink()
-    print(f"✓ 이 폴더의 myviking 연결을 해제했습니다: {cwd} — 자유 사용")
+    print(f"✓ 이 폴더의 기본 연결을 해제했습니다: {cwd} — pi 세션은 어디에도 연결되지 않습니다")
 
 
 def pi_remove(args: argparse.Namespace) -> None:

@@ -92,9 +92,10 @@
 
   {# ── pi ── #}
   <div class="tool-pane" data-pane="tools" data-pane-id="pi" hidden>
-    <p class="muted">pi 전용 확장을 설치하면 <b>세션 시작마다 브리핑이 자동으로 주입</b>되고,
-      대화 중 <code>viking_search</code>·<code>viking_remember</code> 같은 도구를 에이전트가 직접 사용합니다.
-      <b>이 프로젝트 폴더에서</b> 설치하면 그 폴더에서 여는 pi 만 이 프로젝트에 연결됩니다.</p>
+    <p class="muted">pi 전용 확장을 설치하면 브리핑 주입·자동 증류·<code>viking_search</code> 같은 도구를
+      세션에서 쓸 수 있습니다. <b>pi 세션은 기본적으로 연결되지 않습니다(자유 사용)</b> —
+      <code>/myviking connect</code> 또는 <code>/myviking use</code> 로 <b>그 세션만</b> 이 프로젝트에 연결됩니다.
+      다른 세션에는 영향이 없습니다.</p>
     <div class="steps">
       <div class="step">
         <h3><span class="step-num">1</span> jv 설치 (확장 생성기)</h3>
@@ -112,21 +113,24 @@
         <p class="muted small"><span style="color:var(--green)">✓ 확인:</span> <code>jv pi check</code> 로 폴더 연결·서버 인증을 확인할 수 있습니다.</p>
       </div>
       <div class="step">
-        <h3><span class="step-num">3</span> pi 재시작 또는 /reload</h3>
+        <h3><span class="step-num">3</span> 세션에서 연결 + /reload</h3>
         <p class="muted small">확장을 불러오려면 pi 를 껐다 켜거나, pi 안에서 <code>/reload</code> 를 입력하세요.
-          그 뒤 <code>/new</code> 로 새 세션을 열면 브리핑이 자동으로 주입됩니다.</p>
+          그 뒤 연결할 세션에서 다음 중 하나를 쓰면 <b>그 세션만</b> 이 프로젝트에 연결됩니다:
+          <code>/myviking use</code> (위 2단계의 폴더 설정 적용 — 자동으로 연결됨) ·
+          <code>/myviking connect</code> (주소+키 직접 입력) · <code>/myviking switch</code> (저장된 목록에서 선택).
+          연결하면 브리핑이 그 세션에 주입됩니다. <b>기본은 자유 사용</b> — 폴더 설정이 있어도 다른 세션은 자동 연결되지 않습니다.</p>
       </div>
       <div class="step">
-        <h3><span class="step-num">4</span> 프로젝트 전환 — git checkout 처럼</h3>
-        <p class="muted small">여러 프로젝트에 연결했으면 저장된 목록에서 현재 폴더의 연결을 바꿀 수 있습니다:</p>
+        <h3><span class="step-num">4</span> 프로젝트 전환·해제 — 세션마다 자유롭게</h3>
+        <p class="muted small">연결은 세션(스레드) 단위입니다. 저장된 목록은 어디서든 씁니다:</p>
         <ul class="muted small" style="margin:4px 0 0;padding-left:18px">
-          <li>터미널: <code>jv pi list</code> (목록) · <code>jv pi switch &lt;이름&gt;</code> (전환) · <code>jv pi disconnect</code> (해제, 자유 사용) · <code>jv pi remove &lt;이름&gt;</code> (저장된 연결 삭제)</li>
-          <li>pi 안에서: <code>/myviking</code> (상태/목록) · <code>/myviking switch</code> (선택 전환) · <code>/myviking connect</code> (새 연결) · <code>/myviking disconnect</code> (해제) · <code>/myviking remove</code> (저장된 연결 삭제)</li>
+          <li>터미널(연결 저장·폴더 기본값): <code>jv pi list</code> · <code>jv pi switch &lt;이름&gt;</code> · <code>jv pi disconnect</code> · <code>jv pi remove &lt;이름&gt;</code> (키 포함 삭제)</li>
+          <li>pi 안에서(세션 연결): <code>/myviking</code> (상태/목록) · <code>/myviking use</code> (폴더 설정 적용) · <code>/myviking switch</code> · <code>/myviking connect</code> · <code>/myviking disconnect</code> (이 세션 해제) · <code>/myviking remove</code> (저장된 연결 삭제)</li>
         </ul>
       </div>
       <div class="step">
         <h3><span class="step-num">5</span> 확인</h3>
-        <p class="muted small">새 세션을 열면 브리핑이 자동으로 주입됩니다. 작업 중에는 이렇게 쓰세요:</p>
+        <p class="muted small">연결된 세션에는 브리핑이 주입되고, 대화 중 도구가 자동으로 쓰입니다:</p>
         <ul class="muted small" style="margin:4px 0 0;padding-left:18px">
           <li>"지금까지 쌓인 지식 브리핑 줘" → <code>viking_brief</code></li>
           <li>"결제 재시도 관련 지식 검색해줘" → <code>viking_search</code></li>
