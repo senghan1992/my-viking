@@ -125,11 +125,37 @@ def test_jcode_check_green(tmp_path, monkeypatch):
     cli.jcode_install(_Args(url="http://srv", key=conn["key"], project="p1", cwd=str(proj)))
 
     monkeypatch.setattr(cli, "_verify_server", lambda u, k, p: {"project_name": "앱"})
+    monkeypatch.setattr(cli, "_jcode_proxy_health", lambda: True)
     out = []
     monkeypatch.setattr(sys, "stdout", type("S", (), {"write": lambda self, s: out.append(s), "flush": lambda self: None})())
     cli.jcode_check(_Args(cwd=str(proj)))
     text = "".join(out)
     assert "✓ jcode 훅" in text and "✓ jcode MCP" in text and "✓ 서버 연결·인증" in text
+    assert "databricks 프록시: 127.0.0.1:8787 정상" in text
+
+
+def test_jcode_check_reports_proxy_down(tmp_path, monkeypatch):
+    import io
+    home = _fake_home(tmp_path, monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    conn = {"id": "http://srv|p1", "name": "앱", "url": "http://srv",
+            "key": "jv_0123456789abcdef01234567", "project": "p1"}
+    cli._save_conns([conn])
+    (proj / ".myviking-connection.json").write_text(json.dumps({"connection": conn["id"]}))
+    monkeypatch.setattr(cli, "_verify_server", lambda u, k, p: {"project_name": "앱"})
+    monkeypatch.setattr(cli, "_jcode_proxy_health", lambda: False)
+    monkeypatch.setattr(cli, "_jcode_integration_installed", lambda: True)
+    monkeypatch.setattr(cli, "_jcode_launcher", lambda: proj / "myviking-hook.sh")
+    (proj / "myviking-hook.sh").write_text("#!/bin/bash\n")
+    monkeypatch.setattr(cli, "_jcode_skill", lambda: proj / "SKILL.md")
+    (proj / "SKILL.md").write_text("x")
+    monkeypatch.setattr(cli, "_jcode_mcp_file", lambda: proj / "mcp.json")
+    (proj / "mcp.json").write_text(json.dumps({"servers": {"myviking": {}}}))
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    cli.jcode_check(_Args(cwd=str(proj)))
+    assert "⚠ databricks 프록시" in buf.getvalue() and "run.sh start" in buf.getvalue()
 
 
 def test_jcode_install_respects_existing_hook(tmp_path, monkeypatch):

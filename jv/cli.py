@@ -1546,6 +1546,21 @@ def jcode_check(args: argparse.Namespace) -> None:
     except SystemExit as e:
         print(f"⚠ 서버 연결/키 확인 실패: {e}")
 
+    if _jcode_proxy_health():
+        print("✓ databricks 프록시: 127.0.0.1:8787 정상 (jcode 모델 호출 경로)")
+    else:
+        print("⚠ databricks 프록시(127.0.0.1:8787)가 꺼져 있습니다 — jcode 모델 호출이 실패합니다.")
+        print("  복구: bash ~/.jcode/databricks-proxy/run.sh start")
+
+
+def _jcode_proxy_health() -> bool:
+    """jcode 의 databricks 프록시(127.0.0.1:8787) 생존 확인 — 모델 호출 전제 조건."""
+    try:
+        r = httpx.get("http://127.0.0.1:8787/health", timeout=2)
+        return r.status_code == 200
+    except (httpx.HTTPError, OSError):
+        return False
+
 
 def jcode_list(args: argparse.Namespace) -> None:
     _print_conns(_load_conns(), Path(args.cwd or os.getcwd()))
