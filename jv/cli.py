@@ -1401,7 +1401,10 @@ description: 프로젝트 지식 도서관(myviking). 세션 시작 시 jv brief
 - 막혔거나 규칙·함정이 궁금할 때: `jv search "<개념>"`
 - 새로 정한 규칙·함정·결정: `jv remember "<제목>" --content "<내용>" --category knowledge|commands|pitfalls|decisions`
 - 틀린 지식 발견: `jv score <id> bad` · 확립 확인: `jv score <id> good`
-- 연결 상태: `jv jcode status`
+
+## 연결 관리 (pi 의 /myviking 대신 — jcode 에는 커스텀 대화형 명령이 없다)
+사용자가 "myviking 연결 상태/전환/해제" 를 요청하면 아래 CLI 를 실행해 답한다:
+- 상태: `jv jcode status` · 목록: `jv jcode list` · 전환: `jv jcode switch <이름>` · 해제: `jv jcode disconnect`
 
 ## 주의
 - 브리핑의 '검증 필요' 지식은 사실로 단정하지 말고 확인 후 사용한다.
