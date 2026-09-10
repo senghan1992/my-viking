@@ -75,6 +75,19 @@ def _api(url: str, key: str, method: str, path: str, **kw) -> dict:
         raise SystemExit(f"jv: 서버에 연결할 수 없습니다 ({url}).")
 
 
+def _verify_server(url: str, key: str, project: str) -> dict:
+    """URL·키·프로젝트 슬러그를 한꺼번에 확인한다.
+
+    /api/v1/health 는 인증이 없어서 틀린 키도 '✓ 성공' 으로 통과한다.
+    (실제 배포에서 '연결은 됐는데 세션이 하나도 안 보이는' 사고가 이 때문에 났다.)
+    인증 + 프로젝트 바인딩까지 검사하는 brief 로 대신 확인한다 — 부수 효과 없음(session_id 없음).
+    """
+    if not project:
+        # 프로젝트 미지정이면 주소 연결만 확인 (키 검증은 못 한다)
+        return _api(url, key, "GET", "/health")
+    return _api(url, key, "GET", f"/projects/{project}/brief")
+
+
 # ══════════════════ 훅 설치 / 점검 ══════════════════ #
 HOOK_EVENTS = (
     ("SessionStart", "session-start"),
@@ -90,12 +103,15 @@ def _settings_path(cwd: Path) -> Path:
 
 def hook_install(args: argparse.Namespace) -> None:
     url, key, project = _env_args(args)
-    # 서버 확인 — 틀린 주소/키로 몇 주 방치되는 것을 막는다
+    # 서버 확인 — 틀린 주소/키로 몇 주 방치되는 것을 막는다 (인증까지 검사)
     try:
-        health = _api(url, key, "GET", "/health")
-        print(f"✓ 서버 확인: {url} · myviking {health.get('version', '?')}")
+        data = _verify_server(url, key, project)
+        name = data.get("project_name") if isinstance(data, dict) else None
+        print(f"✓ 서버 확인: {url} · 프로젝트 {project or '(미지정)'}"
+              + (f" · {name}" if name else ""))
     except SystemExit as e:
         print(f"⚠ 서버 확인 실패: {e}")
+        print("  연결 탭의 주소(URL)와 방금 발급받은 키(jv_...)를 다시 확인하고 명령을 다시 실행하세요.")
         raise
 
     cwd = Path(args.cwd or os.getcwd())
@@ -182,12 +198,12 @@ def hook_check(args: argparse.Namespace) -> None:
             env = {**env, "MYVIKING_KEY": m.group(1)}
     if env.get("MYVIKING_URL") and env.get("MYVIKING_KEY"):
         try:
-            r = httpx.get(f"{env['MYVIKING_URL']}/api/v1/health",
-                          headers={"Authorization": f"Bearer {env['MYVIKING_KEY']}"}, timeout=10)
-            r.raise_for_status()
-            print(f"✓ 서버 연결: {env['MYVIKING_URL']}")
-        except Exception:
-            print(f"⚠ 서버 연결 실패: {env.get('MYVIKING_URL')} — 서버 주소/키를 확인하세요.")
+            data = _verify_server(env.get("MYVIKING_URL", ""), env.get("MYVIKING_KEY", ""),
+                                  env.get("MYVIKING_PROJECT", ""))
+            print(f"✓ 서버 연결·인증: {env.get('MYVIKING_URL')}"
+                  + (f" · 프로젝트 {env.get('MYVIKING_PROJECT')}" if env.get("MYVIKING_PROJECT") else ""))
+        except (SystemExit, Exception) as e:
+            print(f"⚠ 서버 연결/키 확인 실패: {env.get('MYVIKING_URL')} — 주소/키를 확인하세요.")
     log = STATE_DIR / "errors.log"
     if log.exists() and log.stat().st_size:
         print(f"⚠ 기록된 오류: {log} (최근 몇 줄)")
@@ -459,6 +475,11 @@ const PROJECT = "@PROJECT@";
 export default function (pi: ExtensionAPI) {
   const api = URL.replace(/\/+$/, "");
 
+  // pi 세션(스레드)마다 안정적인 session_id — 호출마다 새로 만들면
+  // 서가의 '에이전트 세션' 목록이 한 번에 한 줄씩 매번 늘어난다.
+  let sessionId = "";
+  const qs = () => (sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : "");
+
   async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
     const r = await fetch(api + path, {
       method,
@@ -476,7 +497,7 @@ export default function (pi: ExtensionAPI) {
       description: "프로젝트 도서관의 작업 브리핑(확립 지식·검증 필요·최근 작업)을 가져온다. 세션 시작 시 자동 주입되며, 다시 보려면 호출한다.",
       params: Type.Object({}),
       async run() {
-        const b = await call<{ orientation: string }>(`/api/v1/projects/${PROJECT}/brief?session_id=pi-${Date.now()}`);
+        const b = await call<{ orientation: string }>(`/api/v1/projects/${PROJECT}/brief?agent=pi${qs()}`);
         return b.orientation;
       },
     },
@@ -546,10 +567,15 @@ export default function (pi: ExtensionAPI) {
   }
 
   // 세션 시작 → 브리핑 자동 주입 (새 세션/시작 시에만)
-  pi.on("session_start", async (event) => {
+  pi.on("session_start", async (event, ctx) => {
     if (event.reason !== "startup" && event.reason !== "new") return;
     try {
-      const b = await call<{ orientation: string }>(`/api/v1/projects/${PROJECT}/brief?session_id=pi-${Date.now()}`);
+      sessionId = ctx?.sessionManager?.getSessionId?.() || `pi-${Date.now()}`;
+    } catch {
+      sessionId = `pi-${Date.now()}`;
+    }
+    try {
+      const b = await call<{ orientation: string }>(`/api/v1/projects/${PROJECT}/brief?agent=pi${qs()}`);
       await pi.sendMessage(
         { customType: "myviking-brief", content: b.orientation, display: false },
         { deliverAs: "nextTurn" });
@@ -572,12 +598,15 @@ def pi_install(args: argparse.Namespace) -> None:
     if not key:
         print("⚠ --key 가 필요합니다 (연결 탭에서 발급).", file=sys.stderr)
         raise SystemExit(2)
-    # 서버 확인 — 틀린 주소/키로 방치되는 것을 막는다
+    # 서버 확인 — 틀린 주소/키로 방치되는 것을 막는다 (인증까지 검사)
     try:
-        health = _api(url, key, "GET", "/health")
-        print(f"✓ 서버 확인: {url} · myviking {health.get('version', '?')}")
+        data = _verify_server(url, key, project)
+        name = data.get("project_name") if isinstance(data, dict) else None
+        print(f"✓ 서버 확인: {url} · 프로젝트 {project or '(미지정)'}"
+              + (f" · {name}" if name else ""))
     except SystemExit as e:
         print(f"⚠ 서버 확인 실패: {e}")
+        print("  연결 탭의 주소(URL)와 방금 발급받은 키(jv_...)를 다시 확인하고 명령을 다시 실행하세요.")
         raise
 
     text = (_PI_EXT_TEMPLATE

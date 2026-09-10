@@ -155,10 +155,50 @@
   });
 
   // ── 클립보드 ──
+  // navigator.clipboard 는 HTTPS 또는 localhost (보안 컨텍스트) 에서만 존재한다.
+  // 이 서버는 http:// 로 열리므로 폴백(execCommand) 없이는 어떤 복사 버튼도 죽는다.
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      try { await navigator.clipboard.writeText(text); return true; } catch { /* 폴백 */ }
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.left = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch { return false; }
+  }
+
+  const flash = (b, t) => { const old = b.innerHTML; b.innerHTML = t; setTimeout(() => (b.innerHTML = old), 1600); };
+
   document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
-    await navigator.clipboard.writeText(b.dataset.copy);
-    const old = b.textContent;
-    b.textContent = "복사됨 ✓";
-    setTimeout(() => (b.textContent = old), 1500);
+    const text = b.dataset.copy;
+    if (await copyText(text)) {
+      flash(b, "복사됨 ✓");
+    } else {
+      // 브라우저가 복사를 완전히 막은 환경 — 값을 보여주고 직접 복사하도록 안내
+      const v = window.prompt("브라우저가 복사를 허용하지 않습니다. 아래 값을 Ctrl+C 로 복사한 뒤 확인을 누르세요.", text);
+      if (v !== null) flash(b, "복사됨 ✓");
+    }
   }));
+
+  // 키 상자 클릭 → 전체 선택 (복사 버튼이 막힌 환경의 수동 대안)
+  const keyBox = document.getElementById("new-key");
+  if (keyBox) keyBox.addEventListener("click", () => {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(keyBox);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
 })();
