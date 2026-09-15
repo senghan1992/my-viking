@@ -10,10 +10,15 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from .. import db
 from .distill import _append_evidence
 
 OUTCOMES = {"good", "bad", "settled"}
+
+# 브리핑만 받고 질문 없이 죽은 세션을 정리하는 유예 시간 (이후 삭제)
+STALE_SESSION_GRACE_HOURS = 24
 
 
 def apply(project_id: int, memory_id: int, outcome: str, note: str = "") -> dict:
@@ -69,8 +74,24 @@ def brief_sections(project_id: int, limit: int = 5) -> dict:
         (project_id,),
     )
     recent = db.rows(
-        """SELECT * FROM sessions WHERE project_id=?
+        """SELECT * FROM sessions WHERE project_id=? AND question_count>0
            ORDER BY started_at DESC LIMIT 5""",
         (project_id,),
     )
     return {"established": established, "contested": contested, "recent": recent}
+
+
+def sweep_stale_sessions(project_id: int, grace_hours: int = STALE_SESSION_GRACE_HOURS) -> int:
+    """질문 0회로 유예 시간을 넘긴 죽은 세션을 정리한다.
+
+    세션 행은 brief/prepare 가 호출되는 순간 생성되는데, 에이전트가 그 뒤
+    질문·답(commit) 없이 죽거나 연결이 끊기면 0회 행으로 남는다.
+    브리핑만 받은 세션은 유예 시간이 지나면 의미가 없으므로 삭제한다.
+    (질문이 있었던 세션은 기록이므로 절대 지우지 않는다.)
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=grace_hours)).isoformat(timespec="seconds")
+    return db.execute(
+        """DELETE FROM sessions
+           WHERE project_id=? AND question_count=0 AND started_at < ?""",
+        (project_id, cutoff),
+    )

@@ -54,6 +54,7 @@ def brief(slug: str, session_id: str = Query(default=""), agent: str = Query(def
     if not project or project["id"] != key["project_id"]:
         raise HTTPException(404, "프로젝트를 찾을 수 없습니다.")
 
+    trust_engine.sweep_stale_sessions(project["id"])
     section = trust_engine.brief_sections(project["id"])
     _ensure_session(project["id"], session_id, agent)
 
@@ -104,6 +105,7 @@ def prepare(slug: str, body: dict, key: dict = Depends(bearer_auth)):
     trace_id = uuid.uuid4().hex[:12]
     injection = retrieve.inject_block(project["name"], result, trace_id)
 
+    trust_engine.sweep_stale_sessions(project["id"])
     db.log_event(project["id"], "trace", db.jdumps(
         {"trace_id": trace_id, "q": prompt[:300],
          "memory_ids": [it["id"] for it in result["items"]]}
@@ -140,6 +142,7 @@ def commit(slug: str, body: dict, key: dict = Depends(bearer_auth)):
             "UPDATE sessions SET question_count=question_count+1, ended_at=? WHERE id=?",
             (db.now(), session_id),
         )
+    trust_engine.sweep_stale_sessions(project["id"])
 
     # ── 암묵 피드백: 직전에 주입한 지식이 '틀렸다'는 신호인가? ──
     if question:

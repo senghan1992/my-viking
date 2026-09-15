@@ -73,13 +73,15 @@ def library(request: Request, slug: str, user: dict = Depends(login_required),
 
 
 def _library_response(request, project, user, q="", cat="", msg=""):
+    trust_engine.sweep_stale_sessions(project["id"])  # 죽은 0회 세션 정리 → 화면 숫자도 바로 반영
     memories = _query_memories(project["id"], q, cat)
     events = db.rows(
         "SELECT * FROM events WHERE project_id=? ORDER BY id DESC LIMIT 20",
         (project["id"],),
     )
     sessions = db.rows(
-        """SELECT * FROM sessions WHERE project_id=? ORDER BY started_at DESC LIMIT 8""",
+        """SELECT * FROM sessions WHERE project_id=? AND question_count>0
+           ORDER BY started_at DESC LIMIT 8""",
         (project["id"],),
     )
     counts = db.one(
@@ -87,7 +89,7 @@ def _library_response(request, project, user, q="", cat="", msg=""):
                   SUM(status='established') AS established,
                   SUM(status='contested') AS contested,
                   SUM(status='fresh') AS fresh,
-                  (SELECT COUNT(*) FROM sessions s WHERE s.project_id=?) AS session_count
+                  (SELECT COUNT(*) FROM sessions s WHERE s.project_id=? AND s.question_count>0) AS session_count
            FROM memories WHERE project_id=? AND status!='superseded'""",
         (project["id"], project["id"]),
     ) or {"total": 0, "established": 0, "contested": 0, "fresh": 0, "session_count": 0}
