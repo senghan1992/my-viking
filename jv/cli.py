@@ -518,12 +518,20 @@ def mcp(args: argparse.Namespace) -> None:
             error(req_id, -32601, f"알 수 없는 메서드: {method}")
 
 
-# ══════════════════ pi 확장 (허브) — 프로젝트별 연결 관리 ══════════════════ #
+# ══════════════════ pi/omp 확장 (허브) — 프로젝트별 연결 관리 ══════════════════ #
 # 개념 (git checkout 과 비슷):
 #   · 허브 확장 1개만 전역(~/.pi/agent/extensions/myviking.ts)에 설치 — 프로젝트 고정 없음
 #   · 연결(키 포함)은 ~/.myviking/connections.json (0600) 에 이름·주소·키·프로젝트로 저장
 #   · 각 프로젝트 폴더의 .myviking-connection.json 이 '현재 그 폴더의 연결'을 정한다 (비밀 없음)
 #   · pi 를 어떤 폴더에서 열든 그 폴더의 연결만 따라가고, 연결이 없으면 그냥 자유 사용
+#
+# omp(Oh My Pi) 호환: omp 는 pi 와 같은 확장 API(ExtensionAPI: pi.on/registerTool/
+# registerCommand)를 쓰는 동일 계열 런타임 — 캐시 파일명이 실제로
+# legacy-pi-extension-cache.db 이고, config.yml 에 skills.enablePiUser/Project 가
+# 있는 것도 그 증거. 같은 myviking.ts 를 ~/.omp/agent/extensions/ 에 두면
+# 별도 플래그 없이 자동 로드되고 도구도 그대로 동작함(검증됨) — 그래서 pi 용
+# 설치 로직을 flavor 로만 나눠 그대로 재사용한다 (연결 저장소는 완전히 공유).
+_HUB_HOME_DIRS = {"pi": ".pi", "omp": ".omp"}
 _PI_EXT_FILE = "myviking.ts"
 _PI_LINK_FILE = ".myviking-connection.json"
 # 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
@@ -531,10 +539,14 @@ _PI_LINK_FILE = ".myviking-connection.json"
 _PI_HUB_VERSION = "myviking-hub-v7"
 
 
-def _pi_path() -> Path:
-    """pi 전역 확장(허브) 경로 — 호출 시점에 HOME 을 읽어 테스트 격리 가능."""
+def _pi_path(flavor: str = "pi") -> Path:
+    """pi/omp 전역 확장(허브) 경로 — 호출 시점에 HOME 을 읽어 테스트 격리 가능.
+
+    flavor: "pi" | "omp" — 둘 다 같은 파일(myviking.ts)을 각자의 확장 폴더에 둔다.
+    """
     home = os.environ.get("HOME") or str(Path.home())
-    return Path(home) / ".pi" / "agent" / "extensions" / _PI_EXT_FILE
+    sub = _HUB_HOME_DIRS.get(flavor, ".pi")
+    return Path(home) / sub / "agent" / "extensions" / _PI_EXT_FILE
 
 
 def _pi_conns_path() -> Path:
@@ -967,9 +979,9 @@ export default function (pi: ExtensionAPI) {
 }"""
 
 
-def _pi_hub_installed() -> bool:
+def _pi_hub_installed(flavor: str = "pi") -> bool:
     """허브 확장이 설치되어 있는가? (없거나 레거시=프로젝트 고정 버전이면 False)"""
-    path = _pi_path()
+    path = _pi_path(flavor)
     if not path.exists():
         return False
     try:
@@ -983,10 +995,14 @@ def _pi_hub_installed() -> bool:
     return "activeByThread" in text
 
 
-def _install_hub_extension() -> Path:
-    """허브 확장(전역 1개) 설치 — 이미 최신이면 그대로 둔다."""
-    path = _pi_path()
-    if not _pi_hub_installed():
+def _install_hub_extension(flavor: str = "pi") -> Path:
+    """허브 확장(전역 1개) 설치 — 이미 최신이면 그대로 둔다.
+
+    flavor="omp" 이면 같은 템플릿을 ~/.omp/agent/extensions/ 에 둔다 (pi 와 동일한
+    확장 API 로드 — omp 가 자동으로 이 폴더를 스캔하는 것이 검증되었다).
+    """
+    path = _pi_path(flavor)
+    if not _pi_hub_installed(flavor):
         text = (_PI_EXT_TEMPLATE
                 .replace("@CREATED@", __import__("datetime").date.today().isoformat()))
         leftovers = [t for t in ("@CREATED@", "@URL@", "@KEY@", "@PROJECT@", "{{", "}}") if t in text]
@@ -1057,10 +1073,12 @@ def _connect_flow(url: str, key: str, project: str, cwd: Path) -> dict:
     return conn
 
 
-def pi_install(args: argparse.Namespace) -> None:
+def pi_install(args: argparse.Namespace, flavor: str = "pi") -> None:
     """새 연결 저장 + 현재 폴더 연결 + 허브 확장 설치. (프로젝트마다 실행)
 
     인자를 다 몰라도 됩니다 — 빠진 값은 물어보고, --project 는 키로 자동 식별됩니다.
+    flavor="omp" 면 omp(Oh My Pi)용으로 같은 허브를 설치 — pi 와 동일한 TS 확장
+    포맷을 쓰는 같은 계열 런타임이라 연결 저장소·폴더 링크를 그대로 공유한다.
     """
     url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
     key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
@@ -1070,19 +1088,27 @@ def pi_install(args: argparse.Namespace) -> None:
     _connect_flow(url, key, project, cwd)
 
     # 3) 허브 확장 (전역 1개) — 구버전이면 최신 템플릿으로 덮어씀
-    hub = _install_hub_extension()
+    hub = _install_hub_extension(flavor)
 
-    print(f"✓ pi 허브 확장: {hub}")
-    print("이 폴더의 기본 연결로 저장했습니다. pi 세션은 기본이 자유 사용이므로,")
+    print(f"✓ {flavor} 허브 확장: {hub}")
+    print(f"이 폴더의 기본 연결로 저장했습니다. {flavor} 세션은 기본이 자유 사용이므로,")
     print("  세션에서 /myviking use 로 적용하거나 /myviking connect·switch 로 직접 연결하세요.")
-    print("  · 저장된 연결 관리: jv pi list / jv pi switch <이름> / jv pi remove <이름> / jv pi check")
+    print(f"  · 저장된 연결 관리: jv {flavor} list / jv {flavor} switch <이름> / jv {flavor} remove <이름> / jv {flavor} check")
+
+
+def omp_install(args: argparse.Namespace) -> None:
+    """omp(Oh My Pi) 허브 확장 설치 — pi 와 완전히 동일한 TS 확장 포맷·연결
+    저장소를 쓴다 (--extension 로 직접 로드해 검증됨: 도구·훅 그대로 동작).
+    """
+    pi_install(args, flavor="omp")
 
 
 def connect(args: argparse.Namespace) -> None:
     """만능 연결 — 저장 + 폴더 연결 + 이 머신에 깔린 모든 에이전트를 한 번에.
 
-    Claude Code(훅)·pi(허브 확장)·jcode(훅+스킬+MCP)를 감지해 전부 설치하고,
-    그 외 에이전트(Cursor·Codex 등)용 MCP 설정도 출력한다.
+    Claude Code(훅)·pi(허브 확장)·omp(pi 와 같은 확장 API 를 쓰는 계열, 허브 확장
+    공유)·jcode(훅+스킬+MCP)를 감지해 전부 설치하고, 그 외 에이전트(Cursor·Codex 등)용
+    MCP 설정도 출력한다.
     """
     url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
     key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
@@ -1101,9 +1127,15 @@ def connect(args: argparse.Namespace) -> None:
     # ── pi: ~/.pi 존재 or pi 실행파일 ──
     has_pi = (Path.home() / ".pi").exists() or bool(shutil.which("pi"))
     if want in ("", "pi") and has_pi:
-        hub = _install_hub_extension()
+        hub = _install_hub_extension("pi")
         print(f"✓ pi 허브 확장: {hub} (전역 — pi 재시작 후 이 세션은 /myviking use 로 연결)")
         done.append("pi 확장")
+    # ── omp (Oh My Pi): ~/.omp 존재 or omp 실행파일 — pi 와 같은 확장 API 공유 ──
+    has_omp = (Path.home() / ".omp").exists() or bool(shutil.which("omp"))
+    if want in ("", "omp") and has_omp:
+        hub_omp = _install_hub_extension("omp")
+        print(f"✓ omp 허브 확장: {hub_omp} (전역 — omp 재시작 후 이 세션은 /myviking use 로 연결)")
+        done.append("omp 확장")
     # ── jcode: ~/.jcode 존재 ──
     has_jcode = (Path.home() / ".jcode").exists()
     if want in ("", "jcode") and has_jcode:
@@ -1121,15 +1153,15 @@ def connect(args: argparse.Namespace) -> None:
 
     if not done and want not in ("", "mcp"):
         print("이 머신에서 감지된 에이전트가 없어 자동 설치는 건너뜁니다 (연결은 저장됨).")
-        print("  · Claude Code: ~/.claude 가 필요 · pi: pi 설치 필요 · jcode: ~/.jcode 가 필요")
-        print("  · 원하는 에이전트만: jv connect --agent claude|pi|jcode|mcp")
+        print("  · Claude Code: ~/.claude 가 필요 · pi/omp: pi 또는 omp 설치 필요 · jcode: ~/.jcode 가 필요")
+        print("  · 원하는 에이전트만: jv connect --agent claude|pi|omp|jcode|mcp")
     elif done:
         print(f"설치 완료: {', '.join(done)}")
     print("다음 단계:")
     print("  · Claude Code: 이 폴더에서 곧바로 사용")
-    print("  · pi: pi 를 재시작하거나 /reload 후 연결할 세션에서 /myviking use")
+    print("  · pi/omp: 재시작하거나 /reload 후 연결할 세션에서 /myviking use")
     print("  · jcode: jcode 재시작 (config 재로드) 후 세션 시작 시 jv brief 가 안내됨")
-    print("  · 확인: jv hook check · jv pi check · jv jcode check")
+    print("  · 확인: jv hook check · jv pi check · jv omp check · jv jcode check")
 
 
 def pi_list(args: argparse.Namespace) -> None:
@@ -1158,14 +1190,14 @@ def _resolve_conn_name(conns: list[dict], q: str, cwd: Path, verb: str) -> dict:
 
 
 def pi_switch(args: argparse.Namespace) -> None:
-    """저장된 연결로 현재 폴더를 바꿔 연결 (git checkout 느낌)."""
+    """저장된 연결로 현재 폴더를 바꿔 연결 (git checkout 느낌). pi·omp 가 공유하는 폴더 링크."""
     conns = _load_conns()
     cwd = Path(args.cwd or os.getcwd())
     conn = _resolve_conn_name(conns, getattr(args, "name", "") or "", cwd, "바꿀")
 
     _pi_link_path(cwd).write_text(json.dumps({"connection": conn["id"]}, ensure_ascii=False, indent=2))
     print(f"✓ 이 폴더의 기본 연결을 '{conn.get('name') or conn['project']}' 프로젝트로 바꿨습니다: {cwd}")
-    print("pi 세션에서는 /myviking use 로 적용하거나 /myviking switch 로 선택하세요.")
+    print("pi/omp 세션에서는 /myviking use 로 적용하거나 /myviking switch 로 선택하세요.")
 
 
 def pi_disconnect(args: argparse.Namespace) -> None:
@@ -1175,7 +1207,7 @@ def pi_disconnect(args: argparse.Namespace) -> None:
         print("이 폴더는 연결되어 있지 않습니다.")
         return
     link.unlink()
-    print(f"✓ 이 폴더의 기본 연결을 해제했습니다: {cwd} — pi 세션은 어디에도 연결되지 않습니다")
+    print(f"✓ 이 폴더의 기본 연결을 해제했습니다: {cwd} — pi/omp 세션은 어디에도 연결되지 않습니다")
 
 
 def pi_remove(args: argparse.Namespace) -> None:
@@ -1202,52 +1234,70 @@ def pi_remove(args: argparse.Namespace) -> None:
         print("남은 연결:", ", ".join(c.get("name") or c["project"] for c in rest))
 
 
-def pi_uninstall(args: argparse.Namespace) -> None:
-    path = _pi_path()
+# omp(Oh My Pi) 는 연결 저장소·폴더 링크를 pi 와 완전히 공유 — 그대로 재사용.
+omp_list = pi_list
+omp_switch = pi_switch
+omp_disconnect = pi_disconnect
+omp_remove = pi_remove
+
+
+def pi_uninstall(args: argparse.Namespace, flavor: str = "pi") -> None:
+    path = _pi_path(flavor)
     if path.exists():
         path.unlink()
-        print(f"✓ pi 허브 확장 제거: {path}")
+        print(f"✓ {flavor} 허브 확장 제거: {path}")
     else:
-        print("설치된 pi 확장이 없습니다.")
+        print(f"설치된 {flavor} 확장이 없습니다.")
     conns = _load_conns()
     if conns:
         print(f"참고: 저장된 연결 {len(conns)}개는 ~/.myviking/connections.json 에 남아 있습니다. "
-              f"(지우려면: jv pi remove <이름>)")
+              f"(지우려면: jv {flavor} remove <이름>)")
 
 
-def pi_check(args: argparse.Namespace) -> None:
+def omp_uninstall(args: argparse.Namespace) -> None:
+    pi_uninstall(args, flavor="omp")
+
+
+def pi_check(args: argparse.Namespace, flavor: str = "pi") -> None:
     cwd = Path(args.cwd or os.getcwd())
-    hub = _pi_path()
+    hub = _pi_path(flavor)
     if not hub.exists():
-        print("⚠ pi 허브 확장이 설치되어 있지 않습니다 → jv pi install --url ... --key ... --project ...")
+        print(f"⚠ {flavor} 허브 확장이 설치되어 있지 않습니다 → jv {flavor} install --url ... --key ... --project ...")
         return
-    if not _pi_hub_installed():
-        print("⚠ 설치된 pi 확장이 구버전/옛 방식입니다 → jv pi install 한 번 실행하면 최신 허브로 갱신됩니다.")
+    if not _pi_hub_installed(flavor):
+        print(f"⚠ 설치된 {flavor} 확장이 구버전/옛 방식입니다 → jv {flavor} install 한 번 실행하면 최신 허브로 갱신됩니다.")
         return
     mode = hub.stat().st_mode & 0o777
-    print(f"✓ pi 허브 확장: {hub}" + ("" if mode == 0o600 else f"  ⚠ 권한 {oct(mode)} (0600 권장)"))
+    print(f"✓ {flavor} 허브 확장: {hub}" + ("" if mode == 0o600 else f"  ⚠ 권한 {oct(mode)} (0600 권장)"))
 
     link = _pi_link_path(cwd)
     if not link.exists():
         print(f"이 폴더({cwd})는 연결되어 있지 않습니다 (자유 사용).")
-        print("  연결: jv pi install --url ... --key ... --project ... · 저장된 연결에서: jv pi switch")
+        print(f"  연결: jv {flavor} install --url ... --key ... --project ... · 저장된 연결에서: jv {flavor} switch")
         return
     try:
         cid = json.loads(link.read_text()).get("connection")
     except (OSError, ValueError):
-        print("⚠ .myviking-connection.json 을 읽을 수 없습니다. jv pi install 을 다시 실행하세요.")
+        print(f"⚠ .myviking-connection.json 을 읽을 수 없습니다. jv {flavor} install 을 다시 실행하세요.")
         return
     conns = _load_conns()
     conn = next((c for c in conns if c.get("id") == cid), None)
     if not conn:
-        print(f"⚠ 이 폴더가 가리키는 연결({cid})이 저장소에 없습니다 → jv pi install 또는 jv pi switch")
+        print(f"⚠ 이 폴더가 가리키는 연결({cid})이 저장소에 없습니다 → jv {flavor} install 또는 jv {flavor} switch")
         return
     print(f"✓ 폴더 연결: {cwd} → {conn.get('name') or conn['project']} ({conn['project']})")
     try:
         _verify_server(conn["url"], conn["key"], conn["project"])
         print(f"✓ 서버 연결·인증: {conn['url']} · 프로젝트 {conn['project']}")
     except SystemExit as e:
-        print(f"⚠ 서버 연결/키 확인 실패: {e}")# ══════════════════ jcode (J-Code 에이전트) 연동 ══════════════════ #
+        print(f"⚠ 서버 연결/키 확인 실패: {e}")
+
+
+def omp_check(args: argparse.Namespace) -> None:
+    pi_check(args, flavor="omp")
+
+
+# ══════════════════ jcode (J-Code 에이전트) 연동 ══════════════════ #
 _JCODE_VERSION = "myviking-jcode-v1"
 _JCODE_HOOK_EVENTS = ("session_start", "session_end", "turn_end")
 _JCODE_HOOK_KEYSET = set(_JCODE_HOOK_EVENTS) | {"turn_start", "pre_tool", "post_tool"}
@@ -1815,7 +1865,7 @@ def main(argv: list[str] | None = None) -> None:
 
     sp = sub.add_parser("connect", aliases=["c"], help="만능 연결 — 저장 + 폴더 연결 + 감지된 모든 에이전트(Claude Code·pi·jcode·MCP) 설치")
     hooks_common(sp)
-    sp.add_argument("--agent", default="", help="하나만 설치: claude | pi | jcode | mcp (기본: 전부 감지)")
+    sp.add_argument("--agent", default="", help="하나만 설치: claude | pi | omp | jcode | mcp (기본: 전부 감지)")
     sp.add_argument("--cwd", default="")
     sp.set_defaults(func=connect)
 
@@ -1843,6 +1893,31 @@ def main(argv: list[str] | None = None) -> None:
     pp = pisub.add_parser("check"); hooks_common(pp)
     pp.add_argument("--cwd", default="")
     pp.set_defaults(func=pi_check)
+
+    sp = sub.add_parser("omp", help="omp(Oh My Pi) 코딩 에이전트 확장·프로젝트 연결 관리 (pi 와 허브/연결 저장소 공유)")
+    ompsub = sp.add_subparsers(dest="action", required=True)
+    op = ompsub.add_parser("install", help="새 연결 저장 + 이 폴더에 연결 + 허브 확장 설치"); hooks_common(op)
+    op.add_argument("--cwd", default="")
+    op.set_defaults(func=omp_install)
+    op = ompsub.add_parser("list", help="저장된 연결 목록")
+    op.add_argument("--cwd", default="")
+    op.set_defaults(func=omp_list)
+    op = ompsub.add_parser("switch", help="저장된 연결로 이 폴더를 바꿔 연결 (git checkout 느낌)")
+    op.add_argument("name", nargs="?", default="", help="연결 이름/슬러그 (생략 시 하나뿐이면 자동)")
+    op.add_argument("--cwd", default="")
+    op.set_defaults(func=omp_switch)
+    op = ompsub.add_parser("disconnect", help="이 폴더의 연결 해제")
+    op.add_argument("--cwd", default="")
+    op.set_defaults(func=omp_disconnect)
+    op = ompsub.add_parser("remove", aliases=["rm"], help="저장된 연결 삭제 (키 포함)")
+    op.add_argument("name", nargs="?", default="", help="연결 이름/슬러그 (생략 시 하나뿐이면 자동)")
+    op.add_argument("--cwd", default="")
+    op.set_defaults(func=omp_remove)
+    op = ompsub.add_parser("uninstall")
+    op.set_defaults(func=omp_uninstall)
+    op = ompsub.add_parser("check"); hooks_common(op)
+    op.add_argument("--cwd", default="")
+    op.set_defaults(func=omp_check)
 
     sp = sub.add_parser("jcode", help="jcode (J-Code) 에이전트 연동 — 훅·스킬·MCP 설치/상태")
     jsub = sp.add_subparsers(dest="action", required=True)

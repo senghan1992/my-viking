@@ -351,3 +351,81 @@ def test_pi_install_bad_key_fails_with_project_hint(tmp_path, monkeypatch):
     assert ei.value.code == 2
     assert not (tmp_path / ".myviking").exists()
     assert not (folder / ".myviking-connection.json").exists()
+
+
+# ══════════════════ omp (Oh My Pi) — pi 와 허브/연결 저장소 공유 ══════════════════ #
+def test_omp_install_uses_own_extensions_dir_shares_connections(tmp_path, monkeypatch, capsys):
+    """jv omp install: 같은 TS 확장을 ~/.omp/agent/extensions/ 에 둔다 (~/.pi 건 안 똹음).
+
+    연결 저장소(~/.myviking/connections.json)와 폴더 링크는 pi 와 완전히 공유한다.
+    """
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "app1"
+    folder.mkdir()
+    monkeypatch.setattr(cli, "_api", lambda *a, **kw: {"project_name": "데이터자판기"})
+
+    class Args:
+        url = "https://viking.example.com"
+        key = "jv_0123456789abcdef01234567"
+        project = "p921a95"
+        timeout = "15"
+        cwd = str(folder)
+
+    cli.omp_install(Args())
+
+    omp_path = tmp_path / ".omp" / "agent" / "extensions" / "myviking.ts"
+    pi_path = tmp_path / ".pi" / "agent" / "extensions" / "myviking.ts"
+    assert omp_path.exists() and (omp_path.stat().st_mode & 0o777) == 0o600
+    assert not pi_path.exists()  # omp 설치로 pi 폴더가 생기지 않아야 함
+
+    # 연결 저장소와 폴더 링크는 pi 와 동일한 위치 사용
+    conns_p = tmp_path / ".myviking" / "connections.json"
+    assert conns_p.exists()
+    link = folder / ".myviking-connection.json"
+    assert json.loads(link.read_text()) == {"connection": "https://viking.example.com|p921a95"}
+
+    out = capsys.readouterr().out
+    assert "omp 허브 확장" in out
+
+    # pi_check 로 omp 전용 허브를 검사하려면 flavor="omp" 가 필요 — pi 용은 별개로 남음
+    class CArgs:
+        cwd = str(folder)
+
+    cli.pi_check(CArgs())               # flavor="pi" 기본값 → pi 허브가 없으니 경고
+    out = capsys.readouterr().out
+    assert "설치되어 있지 않습니다" in out
+
+    monkeypatch.setattr(cli, "_verify_server", lambda *a, **kw: {"ok": True})
+    cli.omp_check(CArgs())              # flavor="omp" → 정상 확인
+    out = capsys.readouterr().out
+    assert "omp 허브 확장" in out and "폴더 연결" in out
+
+
+def test_omp_and_pi_share_folder_link_and_conns_store(tmp_path, monkeypatch):
+    """jv pi install 로 연결해도 jv omp switch/list 가 같은 저장소를 보고 쓴다."""
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "app1"
+    folder.mkdir()
+    monkeypatch.setattr(cli, "_api", lambda *a, **kw: {"project_name": "데이터자판기"})
+
+    class Args:
+        url = "https://viking.example.com"
+        key = "jv_0123456789abcdef01234567"
+        project = "p921a95"
+        timeout = "15"
+        cwd = str(folder)
+
+    cli.pi_install(Args())              # pi 로 설치
+    assert (tmp_path / ".pi" / "agent" / "extensions" / "myviking.ts").exists()
+    assert not (tmp_path / ".omp" / "agent" / "extensions" / "myviking.ts").exists()
+
+    # omp 로따 같은 폴더 링크와 연결 저장소를 보고 있다 (omp_list 는 pi_list 와 같은 함수)
+    assert cli.omp_list is cli.pi_list
+    assert cli.omp_switch is cli.pi_switch
+    assert cli.omp_disconnect is cli.pi_disconnect
+    assert cli.omp_remove is cli.pi_remove
+

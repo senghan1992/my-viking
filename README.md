@@ -76,7 +76,7 @@ Portainer → **Stacks → Add stack** → 이름 `myviking` →
 curl -fsSL http://<서버>:8787/install.sh | bash -s -- --url http://<서버>:8787 --key jv_xxxx --project <slug>
 ```
 
-한 번에: Claude Code 훅 · pi 허브 확장 · jcode(훅+스킬+MCP)를 감지해 전부 설치하고,
+한 번에: Claude Code 훅 · pi/omp 허브 확장 · jcode(훅+스킬+MCP)를 감지해 전부 설치하고,
 그 외 에이전트(Cursor·Codex 등)용 MCP 설정을 출력합니다. 수동으로는:
 
 ```bash
@@ -88,7 +88,7 @@ jv pi install   --url http://<서버>:8787 --key jv_xxxx   # pi → 이 폴더 �
 ```
 
 `jv connect` 가 위 설치를 하나로 묶은 만능 명령입니다
-(`--agent claude|pi|jcode|mcp` 로 하나만 고를 수도 있습니다).
+(`--agent claude|pi|omp|jcode|mcp` 로 하나만 고를 수도 있습니다).
 
 이후 그 폴더에서 Claude Code 나 pi 를 쓰면 끝입니다. 질문마다 기존 지식이 주입되고,
 작업이 끝나면 자동으로 기록됩니다. 다음 세션은 브리핑을 받고 시작합니다.
@@ -113,6 +113,16 @@ pi 안에서는 `/myviking`(상태/목록) · `/myviking use`(폴더 기본값�
 `/myviking switch`(선택 전환) · `/myviking connect`(새 연결) · `/myviking disconnect`
 (이 세션 해제) · `/myviking remove`(저장된 연결 삭제) 로 같은 일을 할 수
 있습니다. 연결이 없는 세션에서 pi 는 지식 도서관 없이 그냥 자유롭게 쓰입니다.
+
+**omp(Oh My Pi)도 pi 와 완전히 동일하게 지원됩니다** — pi 를 포크한 같은 계열
+런타임이라 같은 TS 확장(`myviking.ts`)을 그대로 로드하고(`--extension` 로 직접
+로드해 검증됨: 도구·`/myviking` 명령 모두 그대로 동작), 연결 저장소·폴더 링크도
+pi 와 공유합니다. 설치 위치만 다릅니다 (`~/.omp/agent/extensions/myviking.ts`):
+
+```bash
+jv omp install --url ... --key ...    # 연결 저장 + 이 폴더 기본값 + 허브 확장 설치 (~/.omp)
+jv omp list / switch <이름> / disconnect / remove <이름> / check   # pi 와 동일
+```
 
 **jcode(J-Code)는 폴더 단위로 붙습니다** — pi 와 같은 연결 저장소(`~/.myviking/`)
 를 쓰고, 설치가 3가지를 만듭니다: ① `~/.jcode/config.toml` 의 `[hooks]`
