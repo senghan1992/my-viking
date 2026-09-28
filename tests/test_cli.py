@@ -19,7 +19,7 @@ def test_hook_settings_json_shape(tmp_path, monkeypatch):
     import jv.cli as cli
 
     monkeypatch.setattr(cli, "_self_command", lambda: "jv")
-    monkeypatch.setattr(cli, "_in_container", lambda: False)
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(cli, "_api", lambda *a, **kw: {"version": "1.0.0"})
 
     class Args:
@@ -34,9 +34,157 @@ def test_hook_settings_json_shape(tmp_path, monkeypatch):
     data = json.loads(path.read_text())
     assert {"SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"} <= set(data["hooks"])
     cmd = data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-    assert "MYVIKING_URL=https://viking.example.com" in cmd
-    assert "jv" in cmd
-    assert "user-prompt-submit" in cmd
+    # 주소를 박지 않는다 — 폴더 연결 파일이 기준(git 의 HEAD 처럼). 그래서 switch/disconnect 가 즉시 통한다.
+    assert "MYVIKING_URL" not in cmd
+    assert "jv hook user-prompt-submit" in cmd
+    # hook install 은 폴더 연결(=연결 저장소 + 링크)도 만든다
+    assert (tmp_path / ".myviking-connection.json").exists()
+    conns = json.loads((tmp_path / ".myviking" / "connections.json").read_text())["connections"]
+    assert conns[0]["project"] == "my-app"
+
+
+# ══════════════ git 같은 표면: status / connect / disconnect / switch ══════════════ #
+def _stub_api(monkeypatch, name="데이터자판기"):
+    import jv.cli as cli
+    monkeypatch.setattr(cli, "_api", lambda *a, **kw: {"project_name": name, "orientation": "x"})
+
+
+def test_connect_by_saved_name_and_disconnect(tmp_path, monkeypatch, capsys):
+    """`jv connect <이름>` 은 키를 다시 묻지 않고, `jv disconnect` 는 폴더 흔적을 모두 지운다."""
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "app1"
+    folder.mkdir()
+    _stub_api(monkeypatch)
+
+    class Args:
+        url = "https://viking.example.com"
+        key = "jv_0123456789abcdef01234567"
+        project = "p921a95"
+        name = ""
+        agent = ""
+        timeout = "15"
+        cwd = str(folder)
+
+    cli.connect(Args())            # 1) 새 연결
+    assert (folder / ".myviking-connection.json").exists()
+
+    other = tmp_path / "app2"       # 2) 저장된 이름으로 다른 폴더 연결 (키 재입력 없음)
+    other.mkdir()
+    a2 = Args()
+    a2.url, a2.key, a2.project, a2.cwd = "", "", "", str(other)
+    a2.name = "데이터자판기"
+    cli.connect(a2)
+    capsys.readouterr()
+    assert (other / ".myviking-connection.json").exists()
+
+    # 3) 폴더 해제 — 링크 + 폴더 훅 제거, 저장된 연결은 남음
+    a2.name = ""
+    folder2 = tmp_path / "app3"
+    folder2.mkdir()
+    (folder2 / ".claude").mkdir()
+    hook_file = folder2 / ".claude" / "settings.local.json"
+    hook_file.write_text(json.dumps({"hooks": {
+        "SessionStart": [{"hooks": [{"type": "command", "command": "jv hook session-start --timeout 15"}]}],
+        "Stop": [{"hooks": [{"type": "command", "command": "echo other-hook"}]}],
+    }}, ensure_ascii=False), encoding="utf-8")
+    _link_file = folder2 / ".myviking-connection.json"
+    _link_file.write_text(json.dumps({"connection": "https://viking.example.com|p921a95"}), encoding="utf-8")
+
+    a3 = Args()
+    a3.cwd = str(folder2)
+    a3.all = False
+    cli.disconnect(a3)
+    out = capsys.readouterr().out
+    assert not _link_file.exists()
+    left = json.loads(hook_file.read_text())["hooks"]
+    assert "SessionStart" not in left       # jv 훅만 제거
+    assert "Stop" in left                   # 남의 훅은 보존
+    conns = json.loads((tmp_path / ".myviking" / "connections.json").read_text())["connections"]
+    assert len(conns) == 1                  # 저장된 연결은 남음 → 언제든 다시 붙는다
+
+
+def test_disable_is_machine_wide_kill_switch(tmp_path, monkeypatch):
+    """jv disable → 폴더 연결이 있어도 어디에서도 쓰지 않는다 (status 로 확인 가능)."""
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "app1"
+    folder.mkdir()
+    _stub_api(monkeypatch)
+
+    class Args:
+        url = "https://viking.example.com"
+        key = "jv_0123456789abcdef01234567"
+        project = "p1"
+        timeout = "15"
+        cwd = str(folder)
+
+    cli.pi_install(Args())
+    assert cli._folder_conn(folder) is not None
+
+    class Ns:
+        pass
+    cli._cmd_disable(Ns())
+    assert cli._is_enabled() is False
+    assert cli._folder_conn(folder) is None      # 전역 off → 폴더 연결이 있어도 무시
+
+    cli._cmd_enable(Ns())
+    assert cli._folder_conn(folder) is not None  # 켜면 다시 따라온다
+
+
+def test_hook_handler_is_silent_noop_without_connection(tmp_path, monkeypatch, capsys):
+    """폴더에 연결이 없으면 훅은 조용히 {} 만吐한다 (에이전트 세션을 막지 않는다)."""
+    import io
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "app1"
+    folder.mkdir()
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"session_id": "s1"}'))
+
+    class Args:
+        event = "session-start"
+        url = ""
+        key = ""
+        project = ""
+        timeout = "15"
+        cwd = str(folder)
+
+    cli.hook_handler(Args())
+    assert json.loads(capsys.readouterr().out) == {}
+
+
+def test_status_shows_connection_and_agents(tmp_path, monkeypatch, capsys):
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "app1"
+    folder.mkdir()
+    (tmp_path / ".pi").mkdir()
+    _stub_api(monkeypatch)
+    (tmp_path / ".pi" / "agent" / "extensions").mkdir(parents=True)
+    cli._install_hub_extension("pi")
+
+    class Args:
+        url = "https://viking.example.com"
+        key = "jv_0123456789abcdef01234567"
+        project = "p1"
+        timeout = "15"
+        cwd = str(folder)
+
+    cli.pi_install(Args())
+    capsys.readouterr()
+
+    class S:
+        cwd = str(folder)
+        offline = False
+    cli.status(S())
+    out = capsys.readouterr().out
+    assert "연결: 데이터자판기" in out
+    assert "pi" in out and "확장 설치됨" in out
+    assert "저장된 연결 1개" in out
 
 
 def test_content_text_plain_and_tool():

@@ -90,6 +90,44 @@ jv pi install   --url http://<서버>:8787 --key jv_xxxx   # pi → 이 폴더 �
 `jv connect` 가 위 설치를 하나로 묶은 만능 명령입니다
 (`--agent claude|pi|omp|jcode|mcp` 로 하나만 고를 수도 있습니다).
 
+### git 처럼 쓰기 — 설치 후엔 이것만 알면 됩니다
+
+`pip install` 로 `jv` 가 생기면, 에이전트 종류를 몰라도 아래 여섯 개면 충분합니다.
+폴더마다 붙였다 떼었다가 자유롭게 합니다.
+
+| 명령 | git 으로 | 하는 일 |
+|---|---|---|
+| `jv connect` | `git remote add` | 주소·키만 묻고, 이 폴더를 그 프로젝트에 묶으며 이 머신의 에이전트를 전부 설치 |
+| `jv status` | `git status` | 이 폴더가 도서관을 쓰는지 + 서버·에이전트 연동 상태를 한 화면으로 |
+| `jv disconnect` | (해제) | **이 폴더에서 완전히 해제** — 폴더 연결 파일 + 폴더의 Claude Code 훅 제거. 기록·주입 완전 중단 |
+| `jv connect <이름>` / `jv switch <이름>` | `git checkout` | 저장된 다른 프로젝트로 이 폴더만 전환 (키 재입력 없음) |
+| `jv list` | `git remote -v` | 저장된 연결 목록 (키는 0600 파일에만) |
+| `jv disable` / `jv enable` | 스위치 | 이 **컴퓨터 전체**에서 도서관 끄기/켜기 — 연결은 남겨 두고 어디에서도 안 쓰게 |
+
+```bash
+cd ~/my-project
+jv connect                       # 주소·키만 묻는다 (프로젝트는 키로 자동 식별)
+jv status                        # 무엇이 붙어 있는지 확인
+jv disconnect                    # 이 폴더에서는 안 쓴다
+jv connect 데이터자판기            # 저장된 다른 프로젝트로 이 폴더 전환
+jv disable                       # 이 컴퓨터 전체 OFF (여행·집 검증 등)
+```
+
+원칙은 셋입니다.
+
+1. **폴더 파일(.myviking-connection.json)에는 비밀이 없습니다** — 키는
+   `~/.myviking/connections.json`(0600) 에만 있고, 폴더 파일은 연결 *이름*만 담습니다
+   (git 의 `.git/HEAD` 같은 것). 폴더를 복사해도 키가 새지 않습니다.
+2. **훅도 주소를 박지 않습니다** — Claude Code 훅은 폴더 연결 파일을 보고 움직입니다.
+   그래서 `jv switch` 하면 곧바로 따라가고, `jv disconnect` 하면 조용히 멈춥니다
+   (기존 설치본처럼 주소가 박힌 예전 훅도 `jv connect` 한 번으로 최신으로 갱신됩니다).
+3. **해제는 항상 되돌릴 수 있습니다** — `jv disconnect` 는 폴더만 떼고 저장된 연결(키)은
+   남깁니다. `jv disconnect --all` 로 키까지 지울 수 있고, `jv uninstall --purge --yes` 로
+   전부 초기화할 수 있습니다.
+
+`git` 저장소 안에서 연결하면 `.git/info/exclude` 에 연결 파일이 자동으로 들어가서
+`git status` 에 안 나타납니다.
+
 이후 그 폴더에서 Claude Code 나 pi 를 쓰면 끝입니다. 질문마다 기존 지식이 주입되고,
 작업이 끝나면 자동으로 기록됩니다. 다음 세션은 브리핑을 받고 시작합니다.
 
@@ -198,7 +236,7 @@ docker compose 는 루트의 `.env` 를, Portainer 는 스택의 Environment var
 ```bash
 pip install -e .[dev]
 python -m uvicorn app.main:app --port 8787   # VIKING_DATA=./data VIKING_SECRET=dev
-pytest                                       # 24 tests — 가입→키→에이전트 루프→적응
+pytest                                       # 73 tests — 가입→키→에이전트 루프→적응→연결/해제
 ```
 
 로컬 컨테이너: `docker compose up -d`
