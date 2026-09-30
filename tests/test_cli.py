@@ -1,5 +1,6 @@
-"""jv CLI — 훅 설정 JSON, 마스킹, 트랜스크립트 추출 테스트."""
+"""jv CLI — 훅 설정 JSON, 마스킹, 트랜스크립트 추출, pi 확장 스모크 테스트."""
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -359,16 +360,15 @@ def _fake_jcode_home(tmp_path, monkeypatch):
 
 
 def test_hub_template_is_project_scoped():
-    """pi 허브(hub v9)는 전역 '현재 연결' 을 모른다 — 폴더 설정이 곧 연결.
+    """pi 허브(hub v11)는 전역 '현재 연결' 을 모른다 — 폴더 설정이 곧 연결.
 
-    v9: 도구 4종을 factory 에서 전역 등록하지 않고, 연결된 세션의 session_start
-    (또는 /myviking connect·use·switch) 에서만 등록한다. 연결 안 한 폴더에서는
-    viking_* 도구가 아예 없다.
+    v9/v11: 도구는 factory 가 아니라 '연결된 세션의 session_start' 에서만 등록된다.
+    연결 안 한 폴더에서는 viking_* 도구가 아예 없다.
     """
     import jv.cli as cli
 
     src = cli._PI_EXT_TEMPLATE
-    assert cli._PI_HUB_VERSION in src and cli._PI_HUB_VERSION == "myviking-hub-v10"
+    assert cli._PI_HUB_VERSION in src and cli._PI_HUB_VERSION == "myviking-hub-v11"
     # 0) 도구 등록은 ensureTools 안에서만 — factory 최상위에서 바로 registerTool 하지 않는다
     assert "const ensureTools = " in src
     pre = src[:src.index("const ensureTools = ")]
@@ -532,7 +532,12 @@ def test_pi_install_saves_conn_and_links_folder(tmp_path, monkeypatch, capsys):
     assert "session_start" in src and "sendMessage" in src
     assert "registerCommand" in src and "myviking" in src
     assert "activeByThread" in src and "myviking use" in src
-    assert "before_agent_start" in src and "turn_end" in src and "/commit" in src  # 자동 증류
+    # 서기 역할: MYVIKING_ROLE=secretary 로 열린 세션은 관찰을 올리지 않고 서기 도구를 쓴다
+    assert "MYVIKING_ROLE" in src and "secretaryJobs" in src and "viking_inbox" in src
+    assert "viking_file" in src and "viking_ack" in src and "viking_report" in src
+    # 관찰: 턴마다 질문→답을 서버로 보낸다 — 단 /commit(자동 증류)이 아니라 /observe
+    assert "before_agent_start" in src and "turn_end" in src and "/observe" in src
+    assert "/commit" not in src, "작업 세션은 지식을 만들지 않는다 (서기 역할)"
     # 프로젝트 고정/키 박힘 금지
     assert "viking.example.com" not in src
     assert "jv_0123456789abcdef01234567" not in src
@@ -833,3 +838,26 @@ def test_omp_and_pi_share_folder_link_and_conns_store(tmp_path, monkeypatch):
     assert cli.omp_disconnect is cli.pi_disconnect
     assert cli.omp_remove is cli.pi_remove
 
+
+
+def test_pi_extension_smoke_when_node_available():
+    """확장(v11)의 컨셉을 node 스모크로 검증 — node 가 있는 환경에서만 돈다.
+
+    확인하는 것: 작업 세션은 /observe 만 올리고 /commit 은 쓰지 않는다, 파일·오류가 관찰에
+    들어간다, 서기 세션(MYVIKING_ROLE=secretary)은 서기 도구만 열고 자기 관찰은 안 올린다,
+    연결 안 한 폴더는 도구도 서버 호출도 0건이다.
+    """
+    import shutil
+    import subprocess
+    from pathlib import Path as _P
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음 — pi 확장 스모크는 건너뜁니다")
+    root = _P(__file__).resolve().parent.parent
+    env = dict(os.environ, PYV=sys.executable)
+    r = subprocess.run([node, str(root / "tools" / "pi-extension-smoke.mjs")],
+                       cwd=str(root), capture_output=True, text=True, timeout=180, env=env)
+    tail = (r.stdout + r.stderr).splitlines()[-6:]
+    assert r.returncode == 0, "pi 확장 스모크 실패:\n" + "\n".join(r.stdout.splitlines()) + "\n" + "\n".join(tail)
+    assert "통과" in r.stdout

@@ -6,8 +6,8 @@
   <div>
     <div class="crumb"><a href="/">내 도서관</a> › <a href="/projects/{{ project.slug }}">{{ project.name }}</a> ›</div>
     <h1>{{ icons.icon('link', 'ic-20') }} 에이전트 연결</h1>
-    <p class="muted">키 발급 → 명령 복사 → 프로젝트 폴더 터미널에 붙여 넣기. 이후 모든 작업이 자동으로 기록되고
-      다음 세션부터 자동으로 참조됩니다.</p>
+    <p class="muted">키 발급 → 명령 복사 → 프로젝트 폴더 터미널에 붙여 넣기. 이후 작업은 <b>관찰</b>로 쌓이고,
+      별도 세션으로 열리는 <b>서기 agent</b>가 그중 남길 것만 골라 지식으로 등재합니다.</p>
   </div>
   <a class="btn ghost" href="/projects/{{ project.slug }}">{{ icons.icon('back') }} 서가로</a>
 </div>
@@ -64,15 +64,15 @@
     <ul class="quick-list">
       <li>① 서버·키·프로젝트를 확인하고 <b>연결을 저장</b>합니다 (<code>~/.myviking/connections.json</code>, 키는 0600)</li>
       <li>② 이 폴더를 이 프로젝트의 기본 연결로 지정 (<code>.myviking-connection.json</code>, 비밀 없음)</li>
-      <li>③ 머신에 깔린 에이전트를 찾아 자동 설치 — <b>Claude Code</b> 훅 · <b>pi</b> 허브 확장 · <b>jcode</b> 훅+스킬+MCP</li>
+      <li>③ 머신에 깔린 에이전트를 찾아 자동 설치 — <b>pi</b> 허브 확장(권장) · <b>Claude Code</b> 훅 · <b>jcode</b> 훅+스킬+MCP</li>
       <li>④ 그 외 에이전트(Cursor·Codex 등)용 <b>MCP 설정</b>을 출력해 줍니다</li>
     </ul>
     <h3>{{ icons.icon('flag') }} 마무리 (에이전트별)</h3>
     <ul class="quick-list">
-      <li><b>Claude Code</b> — 이 폴더에서 그대로 시작하면 끝 (브리핑 자동 주입)</li>
-      <li><b>pi</b> — 재시작(또는 /reload) 후 연결할 세션에서 <code>/myviking use</code> (세션은 기본 자유 사용)</li>
+      <li><b>pi</b> — 재시작(또는 /reload) 후 <code>/myviking use</code> · 서기는 <code>/myviking secretary once</code></li>
+      <li><b>Claude Code</b> — 이 폴더에서 그대로 시작하면 관찰이 쌓입니다</li>
       <li><b>jcode</b> — 재시작하면 훅·/myviking 스킬 적용, 세션 시작 시 스킬이 jv brief 를 안내</li>
-      <li><b>확인</b> — <code>jv hook check</code> · <code>jv pi check</code> · <code>jv jcode check</code></li>
+      <li><b>확인</b> — <code>jv status</code> · <code>jv pi check</code> · <code>jv secretary status</code></li>
     </ul>
   </div>
 </section>
@@ -107,7 +107,8 @@ jv hook install --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
         <ul class="muted small" style="margin:4px 0 0;padding-left:18px">
           <li>세션 시작 → 지난 작업 브리핑 자동 주입</li>
           <li>질문마다 → 관련 지식만 골라 주입 (검증 전은 단정하지 않도록 표시)</li>
-          <li>작업 종료 → 지식 자동 증류·기록, 틀린 지식은 '검증 필요'로 강등</li>
+          <li>턴이 끝나면 → 질문·답·파일이 <b>관찰</b>로만 저장됩니다. 지식 승격은 서기가 합니다
+            (즉시 승격이 필요하면 프로젝트 설정의 <b>레거시 자동 증류</b>를 켜세요)</li>
         </ul>
       </div>
     </div>
@@ -115,10 +116,10 @@ jv hook install --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
 
   {# ── pi ── #}
   <div class="tool-pane" data-pane="tools" data-pane-id="pi" hidden>
-    <p class="muted">pi 전용 확장을 설치하면 브리핑 주입·자동 증류·<code>viking_search</code> 같은 도구를
-      세션에서 쓸 수 있습니다. <b>pi 세션은 기본적으로 연결되지 않습니다(자유 사용)</b> —
-      <code>/myviking connect</code> 또는 <code>/myviking use</code> 로 <b>그 세션만</b> 이 프로젝트에 연결됩니다.
-      다른 세션에는 영향이 없습니다.</p>
+    <p class="muted"><b>권장 경로입니다.</b> pi 전용 확장은 ① 이 폴더의 세션에 브리핑·관련 지식을 주입하고,
+      ② 매 턴의 일을 <b>관찰</b>로 올리며, ③ <b>서기 agent</b>를 별도 pi 세션으로 열어 판단·등재를 시킵니다.
+      <b>pi 세션은 기본적으로 연결되지 않습니다(자유 사용)</b> —
+      <code>/myviking connect</code> 또는 <code>/myviking use</code> 로 <b>그 폴더의 세션만</b> 이 프로젝트에 연결됩니다.</p>
     <div class="steps">
       <div class="step">
         <h3><span class="step-num">1</span> 빠른 연결 명령 실행 (jv 없으면 함께 설치)</h3>
@@ -131,7 +132,17 @@ jv hook install --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
           <code>/myviking connect</code>(주소+키 직접) · <code>/myviking switch</code>(저장된 목록). 연결하면 브리핑이 주입됩니다.</p>
       </div>
       <div class="step">
-        <h3><span class="step-num">3</span> 연결 관리 — 세션마다 자유롭게</h3>
+        <h3><span class="step-num">3</span> 서기 agent 두기 — 지식은 서기가 정리합니다</h3>
+        <p class="muted small">서기는 <b>별도의 pi 세션</b>으로 열립니다. 대기 중인 관찰과 반복 요청을 읽고,
+          다음에 실수하지 않을 것만 골라 도서관에 등재합니다 (전부를 옮겨 적지 않습니다).</p>
+        <pre>jv secretary once            # 한 번 정리 (pi 가 백그라운드 세션으로 열립니다)
+jv secretary auto on         # 관찰이 N건 쌓이면 알아서 정리
+jv secretary status          # 대기 중 · 반복 요청 · 마지막 보고</pre>
+        <button class="btn small" data-copy="jv secretary once">{{ icons.icon('copy') }} 복사</button>
+        <p class="muted small">pi 안에서는 <code>/myviking secretary once</code> · <code>/myviking secretary auto on</code> 가 같은 일입니다.</p>
+      </div>
+      <div class="step">
+        <h3><span class="step-num">4</span> 연결 관리 — 폴더마다 자유롭게</h3>
         <ul class="muted small" style="margin:4px 0 0;padding-left:18px">
           <li>터미널: <code>jv pi list</code> · <code>jv pi switch &lt;이름&gt;</code> · <code>jv pi disconnect</code> · <code>jv pi remove &lt;이름&gt;</code></li>
           <li>pi 안에서: <code>/myviking</code> (상태/목록) · <code>/myviking use</code> · <code>/myviking switch</code> · <code>/myviking connect</code> · <code>/myviking disconnect</code> · <code>/myviking remove</code></li>
@@ -142,8 +153,8 @@ jv hook install --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
 
   {# ── jcode ── #}
   <div class="tool-pane" data-pane="tools" data-pane-id="jcode" hidden>
-    <p class="muted">jcode(J-Code)는 훅·스킬·MCP가 모두 지원되므로 <b>질문→답 자동 기록</b>까지
-      pi 와 같은 수준으로 붙습니다. <b>연결은 폴더 단위</b>입니다 — 프로젝트 폴더에서 실행하세요.</p>
+    <p class="muted">jcode(J-Code)는 훅·스킬·MCP가 모두 지원되므로 <b>턴이 끝날 때마다 관찰이 자동 기록</b>됩니다.
+      지식 승격은 pi 와 같은 서기 agent 가 합니다. <b>연결은 폴더 단위</b>입니다 — 프로젝트 폴더에서 실행하세요.</p>
     <div class="steps">
       <div class="step">
         <h3><span class="step-num">1</span> 빠른 연결 명령 실행</h3>
@@ -156,7 +167,8 @@ jv hook install --url {{ base }} --key jv_... --project {{ project.slug }}</pre>
       <div class="step">
         <h3><span class="step-num">2</span> jcode 재시작</h3>
         <p class="muted small">훅 설정은 config 를 다시 읽을 때 적용됩니다 — jcode 를 껐다 켜세요.
-          세션이 시작되면 스킬이 지시하는 대로 <code>jv brief</code> 를 실행하고, 턴이 끝날 때마다 자동 기록됩니다.</p>
+          세션이 시작되면 스킬이 지시하는 대로 <code>jv brief</code> 를 실행하고, 턴이 끝날 때마다 <b>관찰</b>이 올라갑니다.
+          정리는 <code>jv secretary once</code> 로 합니다.</p>
       </div>
       <div class="step">
         <h3><span class="step-num">3</span> 확인·전환</h3>
@@ -242,10 +254,10 @@ jv remember "릴리스는 화요일에만" --content "배포 동결은 월요일
   <h2>{{ icons.icon('copy') }} 에이전트 지침 (AGENTS.md 에 붙여넣기)</h2>
   <p class="muted small">지식이 '확인된 사실'과 '검증 전'으로 나뉘어 주입됩니다. 검증 전은 단정하지 말고 확인하세요.</p>
   <pre class="copy-block">이 프로젝트는 myviking 지식 도서관에 연결되어 있습니다.
-- 세션 시작 시 주입되는 브리핑과 질문마다 주입되는 '관련 지식'은 이전 작업의 축적입니다.
+- 세션 시작 시 주입되는 브리핑과 질문마다 주입되는 '관련 지식'은 서기 agent 가 이전 세션에서 골라낸 축적입니다.
 - ⟨검증 전⟩(fresh) 지식은 사실로 단정하지 말고 코드/문서로 확인하세요.
 - 확립(established) 지식이라도 최근 결과와 어긋나면 "검증 필요" 경고로 표시됩니다.
-- 새로 정한 규칙·함정·결정은 `jv remember "제목" --content "내용"` 또는 도구로 남기세요.
-- 내 답변이 틀렸음을 알게 되면 같은 제목으로 바른 내용을 남겨 교정하세요.</pre>
+- 작업 내용은 자동으로 '관찰'로 쌓입니다 — 지식을 직접 만들지 말고 서기(`jv secretary once`)에 맡기세요.
+- 지금 당장 남길 것이 있으면 `jv note "메모"`(서기에게 전달) 또는 `jv remember "제목" --content "내용"`(즉시 등재)를 쓰세요.</pre>
 </section>
 {% endblock %}

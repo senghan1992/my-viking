@@ -63,6 +63,23 @@ def tokenize(text: str) -> list[str]:
     return tokens
 
 
+def root_words(text: str) -> list[str]:
+    """반복 감지용 어근 세트 — 조사·어미·stopword 를 버리고 남는 말만 (바이그램 없음)."""
+    if not text:
+        return []
+    low = text.lower()
+    out: list[str] = []
+    for m in _WORD.finditer(low):
+        tok = m.group(0)
+        if len(tok) >= 2 and tok not in STOPWORDS:
+            out.append(tok)
+    for m in _HANGUL_WORD.finditer(low):
+        root = _strip_particle(m.group(0))
+        if len(root) >= 2 and root not in STOPWORDS:
+            out.append(root)
+    return out
+
+
 def keywords(text: str, limit: int = 12) -> list[str]:
     """빈도 기반 키워드 추출 (동점이면 앞쪽 우선)."""
     counter: dict[str, int] = {}

@@ -5,7 +5,7 @@
 <div class="page-head dash-head">
   <div>
     <h1>내 도서관</h1>
-    <p class="muted">코딩 에이전트가 일할 때마다 지식이 자동으로 쌓이는 서가입니다.
+    <p class="muted">코딩 에이전트가 남긴 '관찰'을 <b>서기 agent</b>가 골라 정리하는 서가입니다.
       {% if stats.project_count %}지금 <b class="ink-2">{{ stats.project_count or 0 }}개 서가</b>에
       <b class="ink-2">{{ stats.memory_count or 0 }}권</b>의 지식이 있습니다.{% endif %}</p>
   </div>
@@ -13,7 +13,8 @@
     <div class="dash-stat"><b>{{ stats.project_count or 0 }}</b><span>서가</span></div>
     <div class="dash-stat"><b>{{ stats.memory_count or 0 }}</b><span>지식 권</span></div>
     <div class="dash-stat stat-ok"><b>{{ stats.estab_count or 0 }}</b><span>확립</span></div>
-    <div class="dash-stat"><b>{{ stats.session_count or 0 }}</b><span>기록된 작업</span></div>
+    <div class="dash-stat stat-amber"><b>{{ stats.pending_count or 0 }}</b><span>서기 대기 관찰</span></div>
+    <div class="dash-stat"><b>{{ stats.session_count or 0 }}</b><span>작업 세션</span></div>
   </div>
 </div>
 
@@ -27,6 +28,9 @@
       <div class="meta-line">
         <span class="idx">No.{{ loop.index }}</span>
         <span class="chip {{ 'chip-green' if p.session_count else '' }}">{{ icons.icon('book') }} {{ p.memory_count }}권</span>
+        {% if p.pending_count %}
+        <span class="chip chip-amber">{{ icons.icon('bot') }} 서기 대기 {{ p.pending_count }}</span>
+        {% endif %}
         {% if p.session_count %}
         <span class="chip chip-green">{{ icons.icon('link') }} 연결됨 · {{ p.session_count }}회</span>
         {% else %}
@@ -40,11 +44,11 @@
   <div class="empty-shelf">
     {{ icons.icon('map', 'ic-32') }}
     <h3>아직 이 지도에 표식이 없습니다</h3>
-    <p class="muted">첫 프로젝트(서가)를 만들고 코딩 에이전트를 연결하면, 작업 지식이 자동으로 꽂힙니다.</p>
+    <p class="muted">첫 프로젝트(서가)를 만들고 pi 를 연결하면, 작업은 관찰로 쌓이고 서기 agent 가 지식으로 정리합니다.</p>
     <div class="guide-row">
       <div class="guide-step"><span class="step-num">1</span><b>서가 만들기</b><span class="muted small">아래 폼에 이름만 입력</span></div>
       <div class="guide-step"><span class="step-num">2</span><b>키 발급 + 명령 복사</b><span class="muted small">연결 탭에서 한 번</span></div>
-      <div class="guide-step"><span class="step-num">3</span><b>터미널에 붙여 넣기</b><span class="muted small">작업 폴더에서 실행</span></div>
+      <div class="guide-step"><span class="step-num">3</span><b>pi 로 작업 + 서기 실행</b><span class="muted small">jv secretary once</span></div>
     </div>
   </div>
   {% endfor %}
@@ -58,6 +62,6 @@
     <button class="btn primary" type="submit">{{ icons.icon('plus') }} 도서관 만들기</button>
   </form>
   <p class="muted small note">만들면 <b>연결 탭</b>이 열립니다 — 키 하나 발급하고 나오는 명령을 에이전트 머신 터미널에
-    붙이기만 하면, 이후 작업이 자동으로 기록되고 다음 세션에 자동으로 참조됩니다.</p>
+    붙이면, 그 폴더의 작업이 <b>관찰</b>로 쌓이고 <b>서기 agent</b>가 그것을 지식으로 정리합니다.</p>
 </div>
 {% endblock %}

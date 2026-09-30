@@ -184,7 +184,8 @@ def _hook_env(monkeypatch, **kw):
         monkeypatch.setenv(k, v)
 
 
-def test_hook_turn_end_commits(tmp_path, monkeypatch):
+def test_hook_turn_end_observes(tmp_path, monkeypatch):
+    """턴이 끝나면 질문→답을 '관찰'로 넘긴다 — 지식 승격은 서기가 판단한다."""
     home = _fake_home(tmp_path, monkeypatch)
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -202,9 +203,9 @@ def test_hook_turn_end_commits(tmp_path, monkeypatch):
     _hook_env(monkeypatch, JCODE_HOOK_CWD=str(proj),
               JCODE_HOOK_PAYLOAD=json.dumps({"prompt": "배포는 어떻게?"}))
     cli.jcode_hook(_Args())
-    assert sent["path"] == "/projects/p1/commit"
-    assert sent["json"]["question"] == "배포는 어떻게?"
-    assert sent["json"]["answer"] == "답변 답변"
+    assert sent["path"] == "/projects/p1/observe"
+    kinds = {i["kind"]: i["text"] for i in sent["json"]["items"]}
+    assert kinds["prompt"] == "배포는 어떻게?" and kinds["reply"] == "답변 답변"
     assert sent["json"]["agent"] == "jcode" and sent["json"]["session_id"] == "session_x"
     assert cli._jcode_log_file().exists()
 
@@ -257,7 +258,8 @@ def test_hook_question_falls_back_to_session_file(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_api", fake_api)
     _hook_env(monkeypatch, JCODE_HOOK_CWD=str(proj))  # payload 에 prompt 없음
     cli.jcode_hook(_Args())
-    assert sent["json"]["question"] == "질문 파일"
+    assert sent["json"]["items"][0]["kind"] == "prompt"
+    assert sent["json"]["items"][0]["text"] == "질문 파일"
 
 
 def test_hook_no_connection_no_crash(tmp_path, monkeypatch):

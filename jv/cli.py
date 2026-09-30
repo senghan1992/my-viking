@@ -1,7 +1,13 @@
 """jv 명령줄 — 에이전트 머신에서 도서관 서버에 붙는 얇은 클라이언트.
 
-모든 호출은 fail-open: 서버가 죽거나 연결이 틀어져도 코딩 세션을 막지 않고
-흔적만 남깁니다. 훅은 Claude Code hook format v2 JSON 을 stdout 으로 출력합니다.
+역할이 둘로 나뉩니다.
+  · 작업 세션 쪽: 훅/MCP/셸 + pi 허브 확장 — 일한 기록을 **관찰(/observe)** 로 올리고
+    브리핑·관련 지식을 받아온다. 지식을 만들지 않는다.
+  · 서기 쪽: `jv secretary` — **별도 pi 세션**을 열어 관찰함(/inbox)을 읽고, 남길 것만
+    지식으로 등재하고 처리 통보한다. (`jv inbox`/`jv ack`/`jv note` 로 사람도 쓸 수 있다.)
+
+모든 호출은 fail-open: 서버가 죽거나 연결이 틀어져도 코딩 세션을 막지 않고 흔적만 남깁니다.
+훅은 Claude Code hook format v2 JSON 을 stdout 으로 출력합니다.
 """
 from __future__ import annotations
 
@@ -480,10 +486,11 @@ def _hook_stop(url: str, key: str, project: str, session_id: str, payload: dict)
     if not qa:
         return {}
     question, answer = qa
-    _api(url, key, "POST", f"/projects/{project}/commit",
-         json={"question": mask(question)[:2000], "answer": mask(answer)[:20000],
-               "session_id": session_id, "agent": _agent_name(),
-               "files": _touched_files(Path(transcript))})
+    # 이 에이전트에는 서기가 붙지 않는다 — 질문/답을 '관찰'로 넘기고 판단은 맡긴다
+    _api(url, key, "POST", f"/projects/{project}/observe", json={
+        "session_id": session_id, "agent": _agent_name(), "transcript": transcript,
+        "items": [{"kind": "prompt", "text": mask(question)[:2000], "files": _touched_files(Path(transcript))},
+                  {"kind": "reply", "text": mask(answer)[:8000], "files": _touched_files(Path(transcript))}]})
     return {}
 
 
@@ -572,12 +579,57 @@ def remote(args: argparse.Namespace) -> None:
     elif args.cmd == "remember":
         content = args.content or sys.stdin.read()
         data = _api(url, key, "POST", f"/projects/{project}/remember",
-                    json={"title": args.q, "content": mask(content), "category": args.category})
-        print(f"✓ 기록됨 → {data.get('uri', '')}")
+                    json={"title": args.q, "content": mask(content), "category": args.category,
+                          "source": args.source or "manual", "occurrences": int(args.occurrences or 0)})
+        how = "갱신" if data.get("merged") else "등재"
+        print(f"✓ {how} → {data.get('uri', '')}")
+    elif args.cmd == "note":
+        # 지식을 직접 만들지 않고 서기에게 메모만 남긴다 (관찰함으로 들어간다)
+        text = args.content or args.q or sys.stdin.read()
+        data = _api(url, key, "POST", f"/projects/{project}/observe",
+                    json={"kind": "note", "text": mask(text), "agent": _agent_name()})
+        print(f"✓ 서기에게 전달 — 정리 대기 {data.get('pending', 0)}건")
+    elif args.cmd == "observe":
+        data = _api(url, key, "POST", f"/projects/{project}/observe",
+                    json={"kind": args.category or "note", "text": mask(args.q),
+                          "agent": _agent_name(), "transcript": args.transcript or ""})
+        print(json.dumps(data, ensure_ascii=False))
+    elif args.cmd == "inbox":
+        # 기본은 읽기만 — 사람이 편히 보면 서기가 선점당하니 --claim 을 명시할 때만 잡는다
+        claim = bool(getattr(args, "claim", False))
+        q = f"/projects/{project}/inbox?limit={getattr(args, 'limit', 60) or 60}&claim={'true' if claim else 'false'}"
+        if claim:
+            q += "&worker=cli"
+        data = _api(url, key, "GET", q)
+        if getattr(args, "json", False):
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
+        print(f"정리 대기 {data.get('pending', 0)}건")
+        for s in data.get("sessions", []):
+            head = f"── 세션 {s['session_id']} ({s['agent']})"
+            if s.get("transcript"):
+                head += f" · {s['transcript']}"
+            print(head)
+            for o in s["observations"]:
+                repeat = f" ×{o['hits']}" if o.get("hits", 1) > 1 else ""
+                print(f"  #{o['id']} [{o['kind']}]{repeat} {o['text'][:160]}")
+        for r in data.get("repeats", []):
+            print(f"⟳ 반복 {r['hits']}회: {r['text'][:120]}" + ("  (비슷한 지식 있음)" if r.get("already_filed") else ""))
+        for e in data.get("recurrences", []):
+            print(f"✗ 재발 {e['hits']}회: {e['text'][:120]}")
+    elif args.cmd == "ack":
+        ids = [int(x) for x in re.split(r"[,\s]+", args.q or "") if x]
+        data = _api(url, key, "POST", f"/projects/{project}/inbox/ack",
+                    json={"worker": _agent_name(),
+                          "results": [{"ids": ids, "action": args.outcome, "reason": args.reason or ""}]})
+        print(f"✓ 처리 통보 — 남은 대기 {data.get('pending', 0)}건")
     elif args.cmd == "commit":
         data = _api(url, key, "POST", f"/projects/{project}/commit",
                     json={"question": mask(args.q), "answer": mask(args.content or "")})
-        print("✓ 기록됨")
+        if data.get("mode") == "distill":
+            print("✓ [레거시] 서버가 바로 증류했습니다")
+        else:
+            print(f"✓ 관찰로 저장 — 정리 대기 {data.get('pending', 0)}건 (서기가 판단: jv secretary once)")
     elif args.cmd == "score":
         data = _api(url, key, "POST", f"/projects/{project}/score",
                     json={"memory_id": int(args.q or 0), "outcome": args.outcome})
@@ -588,7 +640,7 @@ def remote(args: argparse.Namespace) -> None:
 MCP_TOOLS = [
     {
         "name": "viking_brief",
-        "description": "프로젝트 도서관의 작업 브리핑(확립 지식·검증 필요·최근 작업)을 가져온다. 세션 시작 시 호출.",
+        "description": "프로젝트 도서관의 작업 브리핑(확립 지식·검증 필요·서기 대기)을 가져온다. 세션 시작 시 호출.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -597,8 +649,25 @@ MCP_TOOLS = [
         "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
     },
     {
+        "name": "viking_note",
+        "description": "서기(agent)에게 놓치면 안 되는 일을 한 줄 남긴다. 지식 승격은 서기가 판단해서 한다.",
+        "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+    },
+    {
+        "name": "viking_inbox",
+        "description": "[서기용] 정리 대기 중인 관찰 · 반복 요청 · 재발 오류를 읽는다.",
+        "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}},
+    },
+    {
+        "name": "viking_ack",
+        "description": "[서기용] 등재하지 않기로 한 관찰을 skipped 로 처리 통보한다.",
+        "inputSchema": {"type": "object", "properties": {
+            "ids": {"type": "array", "items": {"type": "integer"}}, "reason": {"type": "string"}},
+            "required": ["ids", "reason"]},
+    },
+    {
         "name": "viking_remember",
-        "description": "새로 정한 규칙·함정·결정을 지식 도서관에 남긴다. confirmed=true 면 확립으로 기록.",
+        "description": "사람이 직접 지식을 등재할 때 쓴다(보통은 서기가 정리한다). confirmed=true 면 확립으로 기록.",
         "inputSchema": {"type": "object", "properties": {
             "title": {"type": "string"}, "content": {"type": "string"},
             "category": {"type": "string", "enum": ["knowledge", "commands", "pitfalls", "decisions"]},
@@ -662,11 +731,37 @@ def mcp(args: argparse.Namespace) -> None:
                 elif name == "viking_search":
                     r = _api(url, key, "GET", f"/projects/{project}/search?q=" + urllib.parse.quote(str(inp.get("query", ""))))
                     text = "\n\n".join(f"[{it['category']}] {it['title']}\n{it['text'][:500]}" for it in r.get("items", [])) or "관련 지식 없음"
+                elif name == "viking_note":
+                    r = _api(url, key, "POST", f"/projects/{project}/observe",
+                             json={"kind": "note", "text": mask(str(inp.get("text", ""))), "agent": _agent_name()})
+                    text = f"서기에게 전달했습니다 (정리 대기 {r.get('pending', 0)}건)"
+                elif name == "viking_inbox":
+                    r = _api(url, key, "GET",
+                             f"/projects/{project}/inbox?limit={int(inp.get('limit') or 60)}&worker=mcp")
+                    lines = [f"정리 대기 {r.get('pending', 0)}건"]
+                    for s in r.get("sessions", []):
+                        lines.append(f"── 세션 {s['session_id']} ({s['agent']}) {s.get('transcript') or ''}")
+                        lines += [f"  #{o['id']} [{o['kind']}] ×{o['hits']} {o['text'][:300]}"
+                                  if o["hits"] > 1 else f"  #{o['id']} [{o['kind']}] {o['text'][:300]}"
+                                  for o in s["observations"]]
+                    for x in r.get("repeats", []):
+                        lines.append(f"⟳ 반복 ×{x['hits']}: {x['text'][:160]}")
+                    for x in r.get("recurrences", []):
+                        lines.append(f"✗ 재발 ×{x['hits']}: {x['text'][:200]}")
+                    text = "\n".join(lines)
+                elif name == "viking_ack":
+                    r = _api(url, key, "POST", f"/projects/{project}/inbox/ack",
+                             json={"worker": "mcp",
+                                   "results": [{"ids": [int(i) for i in inp.get("ids", [])],
+                                                 "action": "skipped", "reason": str(inp.get("reason", ""))}]})
+                    text = f"{r.get('skipped', 0)}건 버림 · 남은 대기 {r.get('pending', 0)}건"
                 elif name == "viking_remember":
                     r = _api(url, key, "POST", f"/projects/{project}/remember",
                              json={"title": inp["title"], "content": mask(str(inp["content"])),
-                                   "category": inp.get("category", "knowledge"), "confirmed": bool(inp.get("confirmed"))})
-                    text = f"기록됨 → {r.get('uri')}"
+                                   "category": inp.get("category", "knowledge"),
+                                   "confirmed": bool(inp.get("confirmed")),
+                                   "source": inp.get("source") or "manual"})
+                    text = f"{'갱신' if r.get('merged') else '기록'}됨 → {r.get('uri')}"
                 elif name == "viking_score":
                     r = _api(url, key, "POST", f"/projects/{project}/score",
                              json={"memory_id": int(inp["memory_id"]), "outcome": inp.get("outcome", "settled")})
@@ -700,11 +795,23 @@ _PI_EXT_FILE = "myviking.ts"
 _PI_LINK_FILE = ".myviking-connection.json"
 # 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
 # 마커가 없는 설치본은 오래된 버전으로 보고 pi install 이 최신으로 갱신한다.
+# ══════════════════ pi/omp 확장 (허브) — 세션 관찰 + 서기 agent ══════════════════ #
+# 개념 (v11 ,git + 사서 비유):
+#   · 작업 세션은 지식을 만들지 않는다 — 매 턴의 일을 **관찰(/observe)** 로만 올린다.
+#   · 판단·요약·등재는 **서기 agent**가 한다. 서기는 MYVIKING_ROLE=secretary 로 열린
+#     '별도의 pi 세션' 이고, 관찰함(/inbox)을 읽고 viking_file 로 등재한 뒤 ack 한다.
+#   · 세션 공유: 관찰에 이 세션의 pi 트랜스크립트 경로를 담는다(같은 머신의 서기가 직접 읽는다).
+#   · 연결 문법은 v10 과 동일 — 허브 1개 전역, 연결의 주인은 폴더, 도구 등록은 연결된 세션에서만.
+_HUB_HOME_DIRS = {"pi": ".pi", "omp": ".omp"}
+_PI_EXT_FILE = "myviking.ts"
+_PI_LINK_FILE = ".myviking-connection.json"
+# 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
 # v9: 도구 4종을 factory 가 아니라 '연결된 세션의 session_start' 에서만 등록한다 —
 #     연결 안 한 폴더에서는 viking 도구가 아예 존재하지 않는다 (전역 연결 현상 제거).
 # v10: 머신 전체 스위치(jv disable / ~/.myviking/config.json)를 확장도 존중한다 —
 #      꺼져 있으면 연결된 폴더라도 도구를 등록하지 않는다.
-_PI_HUB_VERSION = "myviking-hub-v10"
+# v11: 자동 증류(/commit) 폐기 — 관찰(/observe)만 올리고, 서기 세션용 도구를 따로 등록한다.
+_PI_HUB_VERSION = "myviking-hub-v11"
 
 
 def _pi_path(flavor: str = "pi") -> Path:
@@ -807,20 +914,23 @@ def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
         print(f"  [{i}] {c.get('name') or c['project']} — {c['project']} @ {c['url']}{mark}")
 
 
-_PI_EXT_TEMPLATE = r"""// myviking — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
-// myviking-hub-v10 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
+_PI_EXT_TEMPLATE = r"""
+// myviking — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
+// myviking-hub-v11 — 이 마커가 없으면 jv connect/jv pi install 이 최신 템플릿으로 덮어씁니다
 // 이 파일 자체에는 비밀이 없다 — 프로젝트 고정도 없다.
-//   · 연결의 주인은 '폴더'다: 프로젝트 폴더의 .myviking-connection.json (git 의 HEAD 같은 것)
-//     ~/.myviking/connections.json (0600) 은 주소+키 대장일 뿐 — 전역 '현재 연결' 은 존재하지 않는다.
-//   · 도구 4종은 '이 폴더가 연결된 세션' 에서만 등록된다. 연결 설정이 없는 폴더에서는
-//     viking_* 도구가 아예 만들어지지 않는다 — 모델이 도구 목록에서 볼 일이 없고,
-//     안내 문구(noConn)조차 뜨지 않는다. /myviking '관리' 명령만 전역으로 남는다
-//     (연결·주입·기록은 전혀 하지 않음 — 필요하면 이 명령으로 이 폴더를 연결).
-//   · 세션 시작: 이 프로젝트의 설정이 있으면 그 도서관으로 자동 연결, 없으면 자유 사용.
-//     다른 프로젝트의 설정이 여기로 새지 않는다 (git 루트 이상 올라가지 않음).
-//   · /myviking connect·switch 는 항상 "이 폴더"에 묶는다 — 다른 프로젝트는 영향 없음.
-//   · CLI: jv connect / jv status / jv disconnect / jv switch <이름> / jv list / jv disable
-//     (구 명령 jv pi install/switch/disconnect/list/check 도 그대로 동작)
+//
+// 컨셉 (v11 부터): 서버는 지식을 '추출'하지 않는다.
+//   · 작업 세션(여기)은 매 턴의 일을 **관찰(observation)** 로만 올린다 — /observe
+//   · 판단·요약·등재는 **서기 agent**가 별도 pi 세션으로 열어 한다 — MYVIKING_ROLE=secretary
+//   · 세션 공유: 관찰에 이 세션의 트랜스크립트 경로(PI_SESSION_FILE)를 담는다.
+//     같은 머신의 서기가 그 파일을 직접 열어 '무슨 일이 있었나'를 확인한다.
+//
+// 연결 문법 (v10 과 동일 — git checkout 처럼):
+//   · 연결의 주인은 '폴더'다: 프로젝트 폴더의 .myviking-connection.json
+//     ~/.myviking/connections.json (0600) 은 주소+키 대장일 뿐 — 전역 '현재 연결' 은 없다.
+//   · 도구는 '이 폴더가 연결된 세션' 에서만 등록된다 (연결 안 한 폴더에는 viking_* 가 없다).
+//   · /myviking connect·switch 는 항상 이 폴더에 묶는다.
+//   · jv disable = 머신 전체 스위치 — 꺼져 있으면 도구·주입·관찰 모두 0.
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -840,15 +950,32 @@ function machineEnabled(): boolean {
   } catch { return true; }
 }
 
+function secretarySetting(): { auto: boolean; every: number } {
+  // jv secretary auto on / --every N — 작업 세션이 언제 서기를 스스로 깨울지
+  try {
+    const s = JSON.parse(readFileSync(CONFIG_FILE, "utf8"))?.secretary || {};
+    return { auto: s.auto === true, every: Math.max(1, Number(s.every) || 12) };
+  } catch { return { auto: false, every: 12 }; }
+}
+
 interface Conn { id: string; name: string; url: string; key: string; project: string }
 interface Active { name: string; url: string; key: string; project: string }
-interface AnyCtx { sessionManager?: { getSessionId?: () => string } }
+interface AnyCtx { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string } }
 
-const activeByThread = new Map<string, Active>();   // 세션(스레드)별 연결 — 기본: 없음(자유)
-const pendingByThread = new Map<string, string>();  // 세션별 자동 증류 대기 질문
+const SECRETARY = (process.env.MYVIKING_ROLE || "").toLowerCase() === "secretary";
+
+const activeByThread = new Map<string, Active>();     // 세션(스레드)별 연결 — 기본: 없음(자유)
+const pendingByThread = new Map<string, string>();    // 서기에게 넘길 이번 턴의 질문
+const filesByThread = new Map<string, Set<string>>();  // 이번 턴에 건드린 파일
+const errorsByThread = new Map<string, Set<string>>(); // 이번 턴 실패한 도구 (이름으로 기억)
+const toldByThread = new Set<string>();                 // 이 세션에서 이미 일렀다
 
 function threadIdOf(ctx: AnyCtx): string {
   try { return ctx.sessionManager?.getSessionId?.() || ""; } catch { return ""; }
+}
+
+function transcriptOf(ctx: AnyCtx): string {
+  try { return ctx.sessionManager?.getSessionFile?.() || process.env.PI_SESSION_FILE || ""; } catch { return ""; }
 }
 
 function getActive(ctx: AnyCtx): Active | null {
@@ -873,7 +1000,6 @@ const normCid = (s: string): string => {
 
 function findLink(start: string): string | null {
   // 현재 폴더에서 프로젝트 루트(.git)까지만 올라가며 연결 파일을 찾는다.
-  // 프로젝트 루트를 넘지 않는다 — 상위 공유 폴더·다른 프로젝트의 설정이 새는 것을 막는다.
   let dir = resolve(start);
   for (let i = 0; i < 12; i++) {
     const f = join(dir, LINK_NAME);
@@ -887,8 +1013,7 @@ function findLink(start: string): string | null {
 }
 
 function projectFolderOf(cwd: string): string {
-  // 링크가 놓여야 할 '프로젝트 폴더' — 가장 가까운 .git 조상, 없으면 현재 폴더.
-  // 홈(~)에는 절대 쓰지 않는다 — 그게 곧 '전역 연결' 누수의 길이 된다.
+  // 링크가 놓여야 할 '프로젝트 폴더' — 가장 가까운 .git 조상, 없으면 현재 폴더. 홈(~)에는 쓰지 않는다.
   const start = resolve(cwd);
   let dir = start;
   for (let i = 0; i < 12; i++) {
@@ -901,7 +1026,6 @@ function projectFolderOf(cwd: string): string {
 }
 
 function gitExclude(cwd: string, pattern = LINK_NAME): void {
-  // .git/info/exclude 에 추가 — 연결 파일이 git 에 안 잡히게 (best effort)
   try {
     const git = join(cwd, ".git");
     if (!existsSync(git)) return;
@@ -915,7 +1039,6 @@ function gitExclude(cwd: string, pattern = LINK_NAME): void {
 }
 
 function linkInfo(cwd: string): { id: string; conn: Active | null } | null {
-  // 폴더 설정(.myviking-connection.json)이 가리키는 것 — 키가 저장소에 없으면 conn 은 null
   const link = findLink(cwd);
   if (!link) return null;
   try {
@@ -943,21 +1066,56 @@ function noConn(): string {
     + "  · 저장된 다른 키로: /myviking switch  ·  목록: /myviking";
 }
 
-function briefUrl(c: Active, sid: string): string {
-  const q = new URLSearchParams({ agent: "pi" });
+function briefUrl(c: Active, sid: string, role: string): string {
+  const q = new URLSearchParams({ agent: SECRETARY ? "secretary" : "pi", role });
   if (sid) q.set("session_id", sid);
   return `/api/v1/projects/${c.project}/brief?${q.toString()}`;
 }
 
 async function injectBrief(c: Active, sid: string, pi: ExtensionAPI): Promise<void> {
   try {
-    const b = await call<{ orientation: string }>(c, briefUrl(c, sid));
+    const b = await call<{ orientation: string }>(c, briefUrl(c, sid, "worker"));
     if (b.orientation) {
       await pi.sendMessage(
         { customType: "myviking-brief", content: b.orientation, display: false },
         { deliverAs: "nextTurn" });
     }
   } catch { /* 서버에 닿지 않아도 코딩 세션은 계속된다 */ }
+}
+
+// ── 관찰 올리기 (서기가 읽을 재료) ────────────────────── #
+async function observe(c: Active, pi: ExtensionAPI, ctx: AnyCtx, items: any[]): Promise<void> {
+  const sid = threadIdOf(ctx);
+  try {
+    const r = await call<{ pending: number; repeat_hits: number }>(
+      c, `/api/v1/projects/${c.project}/observe`, "POST",
+      { session_id: sid, agent: "pi", transcript: transcriptOf(ctx), items });
+    if (r && r.repeat_hits >= 2 && !toldByThread.has(sid)) {
+      toldByThread.add(sid);
+      if (ctx.hasUI) ctx.ui.notify(`myviking 서기: 같은 요청이 ${r.repeat_hits}번 있었습니다 — 이번 관찰에 기록했습니다`, "info");
+    }
+    const s = secretarySetting();
+    if (s.auto && r && r.pending >= s.every) {
+      // 서기를 스스로 깨운다 — 백그라운드 pi 세션 (jv secretary auto on)
+      toldByThread.add(sid);
+      pi.exec("jv", ["secretary", "once", "--detach"], { timeout: 15000 }).catch(() => {});
+    }
+  } catch { /* 실패해도 코딩 세션은 계속된다 */ }
+}
+
+function noteFile(ctx: AnyCtx, name: string): void {
+  if (!name) return;
+  const t = threadIdOf(ctx);
+  const set = filesByThread.get(t) || new Set<string>();
+  set.add(name);
+  filesByThread.set(t, set);
+}
+
+function noteError(ctx: AnyCtx, label: string): void {
+  const t = threadIdOf(ctx);
+  const set = errorsByThread.get(t) || new Set<string>();
+  set.add(label.slice(0, 120));
+  errorsByThread.set(t, set);
 }
 
 function setActive(ctx: AnyCtx, c: Active): void {
@@ -984,15 +1142,46 @@ function setFolderLink(cwd: string, id: string): void {
   gitExclude(root);
 }
 
+// 세션 파일을 사람이 읽는 형태로 압축 (서기가 read 로 전부 읽기 비효율적이라 도구로 제공)
+function digestTranscript(path: string, maxChars: number): string {
+  if (!path || !existsSync(path)) return "";
+  let raw = "";
+  try { raw = readFileSync(path, "utf8"); } catch { return ""; }
+  const lines: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let e: any;
+    try { e = JSON.parse(line); } catch { continue; }
+    if (e.type !== "message") continue;
+    const m = e.message || {};
+    if (m.role === "user") {
+      const t = Array.isArray(m.content) ? m.content.filter((p: any) => p.type === "text").map((p: any) => p.text).join(" ") : String(m.content || "");
+      if (t.trim() && !t.trim().startsWith("<")) lines.push(`🧑 ${t.trim().slice(0, 400)}`);
+    } else if (m.role === "assistant") {
+      const parts = (m.content || []) as any[];
+      const text = parts.filter((p) => p.type === "text").map((p) => p.text).join(" ").trim();
+      const calls = parts.filter((p) => p.type === "toolCall" || p.type === "tool_use").map((p) => p.name || "?");
+      if (text) lines.push(`🤖 ${text.slice(0, 500)}`);
+      if (calls.length) lines.push(`   ⚙ 도구: ${calls.join(", ")}`);
+      if (m.stopReason === "error" || m.errorMessage) lines.push(`   ✗ 오류: ${String(m.errorMessage || "").slice(0, 200)}`);
+    } else if (m.role === "toolResult" && m.isError) {
+      const t = Array.isArray(m.content) ? m.content.map((p: any) => p.text || "").join(" ") : String(m.content || "");
+      lines.push(`   ✗ ${m.toolName || "tool"} 실패: ${t.slice(0, 200)}`);
+    }
+  }
+  const out = lines.join("\n");
+  return out.length > maxChars ? "…(앞부분 생략)\n" + out.slice(-maxChars) : out;
+}
+
 export default function (pi: ExtensionAPI) {
-  // ── 도구 4종 정의 — 실제 등록은 연결된 세션에서만(ensureTools) ──
-  const jobs: Array<{ name: string; label: string; description: string; params: any; run: (c: Active, p?: any, tid?: string) => Promise<string> }> = [
+  // ── 도구 정의 — 실제 등록은 '연결된 세션' 의 session_start 에서만 (ensureTools) ──
+  const workerJobs: Array<{ name: string; label: string; description: string; params: any; run: (c: Active, p?: any, ctx?: AnyCtx) => Promise<string> }> = [
     {
       name: "viking_brief",
       label: "Viking 브리핑",
-      description: "프로젝트 도서관의 작업 브리핑(확립 지식·검증 필요·최근 작업)을 가져온다. 세션 시작 시 자동 주입되며, 다시 보려면 호출한다.",
+      description: "프로젝트 도서관의 작업 브리핑(확립 지식·검증 필요·서기 대기)을 가져온다. 세션 시작 시 자동 주입되며, 다시 보려면 호출한다.",
       params: Type.Object({}),
-      run: (c, _p, tid) => call<{ orientation: string }>(c, briefUrl(c, tid || "")).then((b) => b.orientation),
+      run: (c, _p, ctx) => call<{ orientation: string }>(c, briefUrl(c, threadIdOf(ctx || {}), "worker")).then((b) => b.orientation),
     },
     {
       name: "viking_search",
@@ -1008,9 +1197,21 @@ export default function (pi: ExtensionAPI) {
       },
     },
     {
+      name: "viking_note",
+      label: "Viking 메모",
+      description: "서기(agent)에게 지금 놓치면 안 되는 일을 한 줄 남긴다. 지식 승격은 서기가 판단해서 한다.",
+      params: Type.Object({ text: Type.String({ description: "메모" }) }),
+      async run(c, p, ctx) {
+        const r = await call<{ pending: number }>(c, `/api/v1/projects/${c.project}/observe`, "POST",
+          { session_id: threadIdOf(ctx || {}), agent: "pi", transcript: transcriptOf(ctx || {}),
+            items: [{ kind: "note", text: p.text }] });
+        return `서기에게 전달했습니다 (정리 대기 ${r.pending}건)`;
+      },
+    },
+    {
       name: "viking_remember",
       label: "Viking 기록",
-      description: "새로 정한 규칙·함정·결정을 지식 도서관에 남긴다. confirmed=true 면 확립으로 기록.",
+      description: "사람이 직접 지식을 등재할 때 쓴다(급할 때만 — 보통은 서기가 정리한다). confirmed=true 면 확립으로 기록.",
       params: Type.Object({
         title: Type.String({ description: "제목" }),
         content: Type.String({ description: "내용" }),
@@ -1019,7 +1220,7 @@ export default function (pi: ExtensionAPI) {
       }),
       async run(c, p) {
         const r = await call<{ uri: string }>(c, `/api/v1/projects/${c.project}/remember`, "POST", {
-          title: p.title, content: p.content,
+          title: p.title, content: p.content, source: "manual",
           category: p.category ?? "knowledge", confirmed: !!p.confirmed,
         });
         return `저장됨: ${r.uri}${p.confirmed ? " (확립)" : " (검증 전 — 대시보드에서 확인하거나 viking_score good)"}`;
@@ -1042,13 +1243,150 @@ export default function (pi: ExtensionAPI) {
     },
   ];
 
-  // 도구는 '연결이 확인된 세션' 에서만 등록한다. 연결 없는 폴더의 세션은 도구가 아예
-  // 존재하지 않아서 모델이 viking_* 를 볼 수도, noConn 안내를 받을 수도 없다.
-  // 한 런타임에서 한 번만 등록한다 (session_start 는 resume/fork 마다 다시 온다).
+  // ── 서기 세션용 도구 (MYVIKING_ROLE=secretary 로 열린 세션에서만 등록) ──
+  const secretaryJobs: Array<{ name: string; label: string; description: string; params: any; run: (c: Active, p?: any, ctx?: AnyCtx) => Promise<string> }> = [
+    {
+      name: "viking_inbox",
+      label: "서기: 관찰함",
+      description: "아직 정리되지 않은 관찰(대기 중)과 반복 요청·재발 오류를 읽는다. 서기 업무의 첫 단계.",
+      params: Type.Object({ limit: Type.Optional(Type.Number({ description: "관찰 최대 수" })) }),
+      async run(c, p, ctx) {
+        const r = await call<any>(c,
+          `/api/v1/projects/${c.project}/inbox?limit=${p.limit ?? 60}&worker=${encodeURIComponent(threadIdOf(ctx || {}))}`);
+        const out: string[] = [`정리 대기 ${r.pending}건 · 세션 ${r.sessions.length}개`];
+        for (const s of r.sessions) {
+          out.push(`\n── 세션 ${s.session_id} (${s.agent})${s.transcript ? " · transcript: " + s.transcript : ""}`);
+          for (const o of s.observations) {
+            out.push(`  #${o.id} [${o.kind}]${o.hits > 1 ? ` ×${o.hits}` : ""} ${o.text.slice(0, 300)}`);
+            if (o.files && o.files.length) out.push(`      파일: ${o.files.join(", ")}`);
+          }
+        }
+        if (r.repeats?.length) {
+          out.push("\n══ 반복 요청 (2번 이상 — 규칙으로 승격 1순위)");
+          for (const x of r.repeats) {
+            out.push(`  ×${x.hits} ${x.text.slice(0, 160)}${x.already_filed ? "  ⟨비슷한 지식 이미 있음 #" + x.similar_memory_ids.join(",") + "⟩" : ""}`);
+          }
+        }
+        if (r.recurrences?.length) {
+          out.push("\n══ 다시 나타난 오류 (함정 후보)");
+          for (const x of r.recurrences) out.push(`  ×${x.hits} ${x.text.slice(0, 200)}`);
+        }
+        if (r.contested?.length) {
+          out.push("\n══ 검증 필요 — 이번 증거로 확립/삭제 판단");
+          for (const m of r.contested) out.push(`  #${m.id} [${m.category}] ${m.title} (틀린 ${m.wrong_count}회)`);
+        }
+        return out.join("\n");
+      },
+    },
+    {
+      name: "viking_session",
+      label: "서기: 세션 공유",
+      description: "작업 세션의 pi 트랜스크립트(JSONL)를 사람이 읽는 로그로 압축해 보여준다. 관찰만으로는 판단이 부족할 때 쓴다.",
+      params: Type.Object({
+        transcript: Type.String({ description: "트랜스크립트 경로 (inbox 에 적힌 것)" }),
+        tail: Type.Optional(Type.Number({ description: "끝부분 몇 자까지" })),
+      }),
+      async run(_c, p) {
+        const d = digestTranscript(String(p.transcript || ""), Math.min(40000, p.tail ?? 12000));
+        return d || "트랜스크립트를 읽을 수 없습니다 (경로를 확인하세요)";
+      },
+    },
+    {
+      name: "viking_file",
+      label: "서기: 지식 등재",
+      description: "판단한 것을 지식 한 권으로 등재한다. 관찰 id 를 넘기면 그 관찰이 filed 로 처리된다. 같은 제목이면 갱신+반복누적.",
+      params: Type.Object({
+        title: Type.String({ description: "제목 — 명령형·짧게" }),
+        content: Type.String({ description: "상황/원인/해결/예외를 3~8줄" }),
+        category: Type.Optional(Type.String({ description: "knowledge|commands|pitfalls|decisions" })),
+        confirmed: Type.Optional(Type.Boolean({ description: "사람이 확인·반복으로 확립된 것" })),
+        occurrences: Type.Optional(Type.Number({ description: "이걸 사람이 몇 번 요청했나" })),
+        observation_ids: Type.Optional(Type.Array(Type.Number())),
+        reason: Type.Optional(Type.String({ description: "왜 남겼는지 한 줄" })),
+      }),
+      async run(c, p, ctx) {
+        const r = await call<{ memory_id: number; uri: string; merged?: number; superseded?: number }>(
+          c, `/api/v1/projects/${c.project}/remember`, "POST", {
+            title: p.title, content: p.content, category: p.category ?? "knowledge",
+            confirmed: !!p.confirmed, source: "secretary", occurrences: p.occurrences ?? 0,
+            observation_ids: p.observation_ids ?? [], reason: p.reason ?? "",
+            session_id: threadIdOf(ctx || {}),
+          });
+        const act = r.merged ? "갱신" : (r.superseded ? `#${r.superseded} 대체하고 신규` : "신규");
+        return `${act} 등재 #${r.memory_id} → ${r.uri}`;
+      },
+    },
+    {
+      name: "viking_ack",
+      label: "서기: 처리 통보",
+      description: "버린 관찰을 skipped 로 처리한다. 등재하지 않기로 했으면 반드시 알려야 다음 업무에서 안 섞인다.",
+      params: Type.Object({
+        ids: Type.Array(Type.Number()),
+        reason: Type.String({ description: "왜 버렸나 (짧게)" }),
+      }),
+      async run(c, p, ctx) {
+        const r = await call<{ skipped: number; pending: number }>(c,
+          `/api/v1/projects/${c.project}/inbox/ack`, "POST", {
+            worker: threadIdOf(ctx || {}),
+            results: [{ ids: p.ids, action: "skipped", reason: p.reason }],
+          });
+        return `${r.skipped}건 버림 · 남은 대기 ${r.pending}건`;
+      },
+    },
+    {
+      name: "viking_report",
+      label: "서기: 업무 보고",
+      description: "이번 서기 업무의 한 줄 보고를 남긴다 (마지막에 반드시 호출).",
+      params: Type.Object({
+        report: Type.String({ description: "무엇을 등재하고 무엇을 버렸나" }),
+        found: Type.Optional(Type.Number({ description: "읽은 관찰 수" })),
+        skipped_ids: Type.Optional(Type.Array(Type.Number())),
+        skip_reason: Type.Optional(Type.String()),
+      }),
+      async run(c, p, ctx) {
+        const results: any[] = [];
+        if (p.skipped_ids?.length) results.push({ ids: p.skipped_ids, action: "skipped", reason: p.skip_reason || "기록 가치 없음" });
+        const r = await call<{ pending: number }>(c, `/api/v1/projects/${c.project}/inbox/ack`, "POST", {
+          worker: threadIdOf(ctx || {}), report: p.report, found: p.found ?? 0, results,
+        });
+        return `보고 완료 · 남은 대기 ${r.pending}건`;
+      },
+    },
+    {
+      name: "viking_search",
+      label: "서기: 기존 지식 검색",
+      description: "등재 전에 중복·근접 지식이 있는지 확인한다.",
+      params: Type.Object({ query: Type.String({ description: "검색어" }) }),
+      async run(c, p) {
+        const r = await call<{ items: Array<{ id: number; category: string; title: string; text: string; status: string }> }>(
+          c, `/api/v1/projects/${c.project}/search?q=${encodeURIComponent(p.query)}`);
+        if (!r.items.length) return "비슷한 지식 없음 — 새로 등재 가능";
+        return r.items.map((it) => `#${it.id} [${it.category}/${it.status}] ${it.title}\n${it.text.slice(0, 400)}`).join("\n\n");
+      },
+    },
+    {
+      name: "viking_score",
+      label: "서기: 채점",
+      description: "이번 세션 증거로 검증 필요 지식을 확립(good)하거나 다시 부정(bad)한다.",
+      params: Type.Object({
+        memory_id: Type.Number({ description: "지식 id" }),
+        outcome: Type.Optional(Type.String({ description: "good|bad|settled" })),
+        note: Type.Optional(Type.String()),
+      }),
+      async run(c, p) {
+        const r = await call<{ status: string }>(c, `/api/v1/projects/${c.project}/score`, "POST", {
+          memory_id: p.memory_id, outcome: p.outcome ?? "settled", note: p.note ?? "서기 판정",
+        });
+        return `상태 ${r.status}`;
+      },
+    },
+  ];
+
   let toolsReady = false;
   const ensureTools = (): void => {
     if (toolsReady) return;
     toolsReady = true;
+    const jobs = SECRETARY ? secretaryJobs : workerJobs;
     for (const job of jobs) {
       pi.registerTool({
         name: job.name,
@@ -1060,7 +1398,7 @@ export default function (pi: ExtensionAPI) {
           try {
             const c = getActive(ctx);
             if (!c) return { content: [{ type: "text", text: noConn() }] };
-            return { content: [{ type: "text", text: await job.run(c, params, threadIdOf(ctx)) }] };
+            return { content: [{ type: "text", text: await job.run(c, params, ctx) }] };
           } catch (e) {
             return { content: [{ type: "text", text: `myviking 오류: ${(e as Error).message}` }] };
           }
@@ -1069,96 +1407,189 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // ── 세션 시작: '이 프로젝트'의 설정이 있으면 그 도서관으로 자동 연결한다.
-  //    설정이 없는 폴더는 자유 사용 — 전역 기본값·남의 프로젝트 폴백은 없다.
+  // ── 세션 시작: '이 프로젝트'의 설정이 있으면 그 도서관으로 자동 연결 ──
   pi.on("session_start", async (_event, ctx) => {
     if (!machineEnabled()) return;           // jv disable — 전 폴더 자유 사용 (도구 등록 안 함)
     const info = linkInfo(ctx.cwd);
     if (!info) return;                       // 설정 없는 폴더는 자유 사용 — 도구도 등록하지 않는다
-    if (!info.conn) {                        // 설정은 있는데 키가 저장소에 없다 (jv remove 후 등)
-      if (ctx.hasUI) ctx.ui.notify(`myviking: 이 폴더의 설정 '${info.id}' 에 저장된 키가 없습니다 — /myviking connect 로 키를 다시 넣으세요 (지금은 자유 사용)`, "info");
+    if (!info.conn) {
+      if (ctx.hasUI) ctx.ui.notify("myviking: 이 폴더의 설정에 저장된 키 없습니다 — /myviking connect (자유 사용 중)", "info");
       return;
     }
-    ensureTools();                           // 연결된 폴더에서만 도구 등록
+    ensureTools();
     setActive(ctx, info.conn);
-    if (ctx.hasUI) {
-      ctx.ui.notify(`myviking: 이 프로젝트는 '${info.conn.name}' 도서관에 연결됨 (폴더 전용 — 해제: /myviking disconnect)`, "info");
+    if (SECRETARY) {
+      if (ctx.hasUI) ctx.ui.notify(`myviking 서기 세션: '${info.conn.name}' 도서관을 정리합니다 (관찰만 읽고, 코드를 고치지 않습니다)`, "info");
+      return;                                // 서기는 관찰을 올리지 않는다 (되먹임 방지)
     }
+    if (ctx.hasUI) ctx.ui.notify(`myviking: 이 프로젝트는 '${info.conn.name}' 도서관에 연결됨 — 작업은 관찰로 쌓이고 서기가 정리합니다`, "info");
     await injectBrief(info.conn, threadIdOf(ctx), pi);
   });
 
-  // ── 자동 증류: 질문마다 답을 프로젝트 도서관에 기록 (Claude Code 훅과 동일 파이프라인) ──
+  // ── 관찰 수집: 질문은 기억했다가, 답이 끝난 턴에서 한 번에 올린다 ──
   pi.on("before_agent_start", (event, ctx) => {
     const c = getActive(ctx);
-    if (!c) return;
+    if (!c || SECRETARY) return;
     const tid = threadIdOf(ctx);
     const q = String(event.prompt || "").trim();
-    if (!q || q.startsWith("/")) return;          // pi 명령어(/myviking 등) 는 미기록
-    if (pendingByThread.has(tid)) return;          // 이미 추적 중인 질문 유지 (도구 연속 턴)
+    if (!q || q.startsWith("/")) return;          // pi 명령어(/myviking 등) 는 관찰하지 않는다
+    if (pendingByThread.has(tid)) return;         // 이미 추적 중인 질문 유지 (도구 연속 턴)
     pendingByThread.set(tid, q.slice(0, 2000));
+  });
+
+  pi.on("tool_call", (event, ctx) => {
+    if (SECRETARY) return;
+    const name = String((event as any).toolName || "");
+    const input = (event as any).input || {};
+    // 이번 턴에 건드린 파일을 기억해둔다 — 서기가 '뭘 바꿨나' 를 관찰에서 보게
+    if (name === "edit" || name === "write") noteFile(ctx, String(input.path || input.file_path || ""));
+  });
+
+  pi.on("tool_execution_end", (event, ctx) => {
+    if (SECRETARY) return;
+    if ((event as any).isError) {
+      const args = (event as any).args || {};
+      const where = String(args.path || args.command || args.query || "").slice(0, 80);
+      noteError(ctx, `${(event as any).toolName || "tool"} 실패${where ? " — " + where : ""}`);
+    }
   });
 
   pi.on("turn_end", async (event, ctx) => {
     const c = getActive(ctx);
     const tid = threadIdOf(ctx);
+    if (!c || SECRETARY) return;
     const q = tid ? pendingByThread.get(tid) : undefined;
-    if (!c || !q) return;
+    if (!q) return;
     const m = event.message as any;
     if (!m || m.role !== "assistant") return;
-    if (m.stopReason !== "stop" && m.stopReason !== "length") return;  // 도구 진행/오류 턴 제외
+    if (m.stopReason !== "stop" && m.stopReason !== "length") return;  // 도구 진행/오류 턴은 마지막까지 대기
     const parts = (m.content || []) as Array<{ type?: string; text?: string }>;
-    const answer = parts
-      .filter((p) => p.type === "text" && typeof p.text === "string")
-      .map((p) => p.text)
-      .join("\n")
-      .trim();
+    const answer = parts.filter((p) => p.type === "text" && typeof p.text === "string")
+      .map((p) => p.text).join("\n").trim();
     if (!answer) return;
+
+    const files = [...(filesByThread.get(tid) || [])];
+    const errs = [...(errorsByThread.get(tid) || [])];
     pendingByThread.delete(tid);
-    try {
-      await call(c, `/api/v1/projects/${c.project}/commit`, "POST", {
-        question: q, answer: answer.slice(0, 20000), session_id: tid, agent: "pi",
-      });
-    } catch { /* 서버에 닿지 않아도 코딩 세션은 계속된다 */ }
+    filesByThread.delete(tid);
+    errorsByThread.delete(tid);
+
+    const items: any[] = [
+      { kind: "prompt", text: q, files, turn: event.turnIndex ?? 0 },
+      { kind: "reply", text: answer.slice(0, 4000), files, turn: event.turnIndex ?? 0 },
+    ];
+    // 재발 실수의 원료 — '뭘 하다가 무엇을 실패했는지'까지 남긴다
+    for (const e of errs) items.push({ kind: "error", text: e, files, turn: event.turnIndex ?? 0 });
+    await observe(c, pi, ctx, items);
   });
 
-  // ── /myviking — 세션별 연결 (list | use | connect | switch | disconnect | remove) ──
+  // 턴이 끝까지 오지 않고 멈추면(오류·abort) 질문이 대기열에 남아 다음 턴을 막는다 —
+  // agent_settled 에서 '질문만'이라도 관찰로 남기고 비운다 (서기는 그걸 판단 재료로 쓴다).
+  pi.on("agent_settled", async (_event, ctx) => {
+    const c = getActive(ctx);
+    if (!c || SECRETARY) return;
+    const tid = threadIdOf(ctx);
+    const q = tid ? pendingByThread.get(tid) : undefined;
+    if (!q) return;
+    pendingByThread.delete(tid);
+    const files = [...(filesByThread.get(tid) || [])];
+    const errs = [...(errorsByThread.get(tid) || [])];
+    filesByThread.delete(tid);
+    errorsByThread.delete(tid);
+    const items: any[] = [{ kind: "prompt", text: q, files }];
+    for (const e of errs) items.push({ kind: "error", text: e, files });
+    await observe(c, pi, ctx, items);
+  });
+
+  // ── /myviking — 연결 관리 + 서기 호출 ──
   pi.registerCommand("myviking", {
-    description: "myviking: 이 프로젝트의 도서관 연결 관리 (list | use | connect | switch | disconnect | remove)",
+    description: "myviking: 도서관 연결·서기 관리 (list | use | connect | switch | disconnect | remove | secretary | inbox | note)",
     getArgumentCompletions: (prefix: string) =>
-      ["list", "use", "connect", "switch", "disconnect", "remove"]
+      ["list", "use", "connect", "switch", "disconnect", "remove", "secretary", "inbox", "note"]
         .filter((v) => v.startsWith(prefix))
         .map((v) => ({ value: v, label: v })),
     handler: async (args, ctx) => {
-      const word = (args || "").trim().split(/\s+/)[0] || "list";
+      const rest = (args || "").trim().split(/\s+/);
+      const word = rest[0] || "list";
+
+      if (word === "note") {
+        const c = getActive(ctx);
+        const text = (args || "").trim().slice(4).trim();
+        if (!c || !text) { ctx.ui.notify(text ? "이 프로젝트는 연결되어 있지 않습니다" : "쓸 내용을 주세요: /myviking note 내용", "info"); return; }
+        const r = await call<{ pending: number }>(c, `/api/v1/projects/${c.project}/observe`, "POST", {
+          session_id: threadIdOf(ctx), agent: "pi", transcript: transcriptOf(ctx),
+          items: [{ kind: "note", text }],
+        });
+        ctx.ui.notify(`✓ 서기에게 전달했습니다 (정리 대기 ${r.pending}건)`, "info");
+        return;
+      }
+
+      if (word === "inbox") {
+        const c = getActive(ctx);
+        if (!c) { ctx.ui.notify(noConn(), "info"); return; }
+        const s = await call<{ pending: number; last_run?: any }>(c, `/api/v1/projects/${c.project}/secretary/status`);
+        const last = s.last_run ? `마지막 정리: ${s.last_run.started_at} · 등재 ${s.last_run.filed} · 버림 ${s.last_run.skipped}` : "아직 서기 실행 없음";
+        ctx.ui.notify(`정리 대기 관찰 ${s.pending}건\n${last}\n정리: /myviking secretary once`, "info");
+        return;
+      }
+
+      if (word === "secretary") {
+        const c = getActive(ctx);
+        if (!c) { ctx.ui.notify(noConn(), "info"); return; }
+        const act = (rest[1] || "once").toLowerCase();
+        if (act === "auto") {
+          const flag = (rest[2] || "on").toLowerCase();
+          await pi.exec("jv", ["secretary", "auto", flag], { timeout: 20000 });
+          ctx.ui.notify(flag === "off" ? "서기 자동 실행을 껐습니다" : `관찰이 쌓이면 서기가 스스로 정리합니다 (끄기: /myviking secretary auto off)`, "info");
+          return;
+        }
+        if (act === "stop") {
+          await pi.exec("jv", ["secretary", "stop"], { timeout: 20000 });
+          ctx.ui.notify("서기 백그라운드 실행을 중지했습니다", "info");
+          return;
+        }
+        if (act === "status") {
+          const s = await call<{ pending: number; repeats?: Array<{ text: string; hits: number }>; last_run?: any }>(
+            c, `/api/v1/projects/${c.project}/secretary/status`);
+          const lines = [`대기 관찰 ${s.pending}건`];
+          for (const r of (s.repeats || []).slice(0, 5)) lines.push(`  ×${r.hits} ${r.text.slice(0, 70)}`);
+          if (s.last_run) lines.push(`마지막: ${s.last_run.started_at} — ${s.last_run.report || "보고 없음"}`);
+          ctx.ui.notify(lines.join("\n"), "info");
+          return;
+        }
+        // once — 백그라운드 서기 세션을 연다 (jv secretary once --detach)
+        ctx.ui.notify("myviking 서기를 열고 있습니다 (별도 pi 세션 — 코드는 건드리지 않습니다)…", "info");
+        const r = await pi.exec("jv", ["secretary", "once", "--detach"], { timeout: 30000 });
+        const msg = (r.stdout || r.stderr || "").trim().split("\n").slice(-3).join("\n");
+        ctx.ui.notify(msg || "서기를 백그라운드에 실행했습니다 — 결과: /myviking secretary status", "info");
+        return;
+      }
 
       if (word === "connect") {
-        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: jv pi install --url ... --key ... (프로젝트는 키로 자동 식별)", "info"); return; }
+        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: jv connect --url ... --key ...", "info"); return; }
         const conns0 = loadConns();
         const lastUrl = conns0[0]?.url || "";
-        // 서버 주소는 보통 한 번만 — 마지막으로 쓴 주소를 기본값으로 넣어 준다
         const url = ((await ctx.ui.input("서버 주소", lastUrl || "http://ip:포트 — 프로젝트를 만든 서버")) || "").replace(/\/+$/, "");
         const key = ((await ctx.ui.input("API 키 (jv_...) — 서버 → 프로젝트 → 🔗 에이전트 연결에서 발급")) || "").trim();
         if (!url || !key) { ctx.ui.notify("연결하지 않았습니다 (입력 취소).", "info"); return; }
         try {
-          // 슬러그를 몰라도 된다 — 키가 어떤 프로젝트의 것인지 서버가 알려 준다 (/api/v1/me)
-          const me = await call<{ project: string; project_name: string }>(
-            { name: "", url, key, project: "" }, "/api/v1/me");
+          const me = await call<{ project: string; project_name: string }>({ name: "", url, key, project: "" }, "/api/v1/me");
           const project = me.project || "";
           if (!project) throw new Error("키가 어떤 프로젝트에도 속하지 않습니다.");
           const conns = loadConns();
           const id = `${url}|${project}`;
-          const rest = conns.filter((c) => c.id !== id);
-          rest.unshift({ id, name: me.project_name || project, url, key, project });
+          const rest2 = conns.filter((x) => x.id !== id);
+          rest2.unshift({ id, name: me.project_name || project, url, key, project });
           try {
             mkdirSync(join(HOME, ".myviking"), { recursive: true });
-            writeFileSync(CONNS_FILE, JSON.stringify({ connections: rest }, null, 2));
+            writeFileSync(CONNS_FILE, JSON.stringify({ connections: rest2 }, null, 2));
             chmodSync(CONNS_FILE, 0o600);
           } catch {}
           const c: Active = { name: me.project_name || project, url, key, project };
-          try { setFolderLink(ctx.cwd, id); } catch {}    // 이 프로젝트에 고정 (폴더 = 연결의 주인)
-          ensureTools();                                 // 방금 연결한 이 세션에서 바로 도구 사용
+          try { setFolderLink(ctx.cwd, id); } catch {}
+          ensureTools();
           setActive(ctx, c);
-          ctx.ui.notify(`✓ 이 프로젝트 폴더를 '${c.name}' 도서관에 연결했습니다\n  · 이 폴더에서 여는 pi 세션은 자동으로 이 도서관을 씁니다\n  · 다른 프로젝트는 영향 없음 (키 저장: ~/.myviking/connections.json)`, "info");
+          ctx.ui.notify(`✓ 이 프로젝트 폴더를 '${c.name}' 도서관에 연결했습니다\n  · 이 폴더에서 여는 pi 세션은 자동으로 관찰을 남깁니다\n  · 정리는 서기가 합니다: /myviking secretary once`, "info");
           await injectBrief(c, threadIdOf(ctx), pi);
         } catch (e) {
           ctx.ui.notify(`연결 실패: ${(e as Error).message} — 키가 유효한지, 서버가 최신 버전인지 확인하세요.`, "error");
@@ -1169,12 +1600,11 @@ export default function (pi: ExtensionAPI) {
       const conns = loadConns();
 
       if (word === "use") {
-        // 이 프로젝트의 설정만 적용한다 — '저장된 첫 연결' 같은 전역 폴백은 없다 (다른 프로젝트로 새는 길).
         const info = linkInfo(ctx.cwd);
         if (!info) { ctx.ui.notify("이 프로젝트에는 연결 설정이 없습니다 — /myviking connect 로 이 폴더만 연결하세요.", "info"); return; }
-        if (!info.conn) { ctx.ui.notify(`이 폴더의 설정 '${info.id}' 는 저장된 키가 없습니다 — /myviking connect 로 키를 다시 넣으세요.`, "error"); return; }
+        if (!info.conn) { ctx.ui.notify(`이 폴더의 설정 '${info.id}' 에 저장된 키가 없습니다 — /myviking connect`, "error"); return; }
         const lc = info.conn;
-        ensureTools();                                 // 이 세션에서 바로 도구 사용
+        ensureTools();
         setActive(ctx, lc);
         ctx.ui.notify(`✓ 이 세션을 '${lc.name}' 프로젝트에 연결했습니다 (이 프로젝트의 설정)`, "info");
         await injectBrief(lc, threadIdOf(ctx), pi);
@@ -1183,18 +1613,18 @@ export default function (pi: ExtensionAPI) {
 
       if (word === "remove") {
         if (!conns.length) { ctx.ui.notify("저장된 연결이 없습니다.", "info"); return; }
-        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: jv pi remove <이름>", "info"); return; }
+        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: jv remove <이름>", "info"); return; }
         const items = conns.map((c, i) => fmtConn(c, i + 1));
         const pick = await ctx.ui.select("삭제할 연결 (키도 함께 제거됩니다)", items);
         if (!pick) { ctx.ui.notify("취소했습니다.", "info"); return; }
         const conn = conns[parseInt(pick.split(".")[0], 10) - 1];
         if (!conn) { ctx.ui.notify("찾을 수 없습니다.", "info"); return; }
-        const rest = conns.filter((c) => c.id !== conn.id);
+        const keep = conns.filter((c) => c.id !== conn.id);
         try {
-          writeFileSync(CONNS_FILE, JSON.stringify({ connections: rest }, null, 2));
+          writeFileSync(CONNS_FILE, JSON.stringify({ connections: keep }, null, 2));
           chmodSync(CONNS_FILE, 0o600);
         } catch {}
-        for (const [t, c] of [...activeByThread]) {          // 이 연결을 쓰던 세션은 자유로
+        for (const [t, c] of [...activeByThread]) {
           if (c.url === conn.url && c.project === conn.project) activeByThread.delete(t);
         }
         let msg = `✓ 연결 삭제: ${conn.name || conn.project} (${conn.project}) — 키도 함께 제거했습니다.`;
@@ -1212,7 +1642,6 @@ export default function (pi: ExtensionAPI) {
       if (word === "disconnect") {
         const cur = getActive(ctx);
         clearActive(ctx);
-        // 이 폴더의 설정이 지금 연결과 같으면 함께 제거 — 다른 프로젝트는 건드리지 않는다
         let unlinked = false;
         const f = linkPath(projectFolderOf(ctx.cwd));
         try {
@@ -1224,32 +1653,26 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (word === "switch") {
-        if (!conns.length) {
-          ctx.ui.notify("저장된 연결이 없습니다. /myviking connect 또는 jv pi install ...", "info");
-          return;
-        }
+        if (!conns.length) { ctx.ui.notify("저장된 연결이 없습니다. /myviking connect 또는 jv connect ...", "info"); return; }
         const cur = getActive(ctx);
         const items = conns.map((c, i) => fmtConn(c, i + 1) + (cur && cur.url === c.url && cur.project === c.project ? " ★현재" : ""))
                              .concat([`${conns.length + 1}. ＋ 새로 연결하기 (/myviking connect)`]);
         const pick = ctx.hasUI ? await ctx.ui.select("연결할 프로젝트 (이 폴더에 적용됩니다)", items) : null;
         if (!pick) { ctx.ui.notify("취소했습니다.", "info"); return; }
         const idx = parseInt(pick.split(".")[0], 10) - 1;
-        if (idx === conns.length) {
-          ctx.ui.notify("터미널에서: jv pi install --url ... --key ... (프로젝트는 키로 자동 식별 — 설명은 연결 탭)", "info");
-          return;
-        }
+        if (idx === conns.length) { ctx.ui.notify("터미널에서: jv connect --url ... --key ...", "info"); return; }
         const conn = conns[idx];
         if (!conn) { ctx.ui.notify("찾을 수 없습니다.", "info"); return; }
         const c: Active = { name: conn.name || conn.project, url: conn.url, key: conn.key, project: conn.project };
-        try { setFolderLink(ctx.cwd, conn.id); } catch {}    // 이 프로젝트의 기본 연결로 고정
-        ensureTools();                                 // 이 세션에서 바로 도구 사용
+        try { setFolderLink(ctx.cwd, conn.id); } catch {}
+        ensureTools();
         setActive(ctx, c);
-        ctx.ui.notify(`✓ 이 프로젝트를 '${c.name}' 으로 바꿔 연결했습니다 — 이 폴더의 새 세션도 이 도서관 (다른 프로젝트 영향 없음)`, "info");
+        ctx.ui.notify(`✓ 이 프로젝트를 '${c.name}' 으로 바꿔 연결했습니다 — 새 세션도 이 도서관`, "info");
         await injectBrief(c, threadIdOf(ctx), pi);
         return;
       }
 
-      // list (기본) — 이 세션의 상태를 보여 준다
+      // list (기본)
       const cur = getActive(ctx);
       const info = linkInfo(ctx.cwd);
       const lc = info?.conn || null;
@@ -1258,15 +1681,18 @@ export default function (pi: ExtensionAPI) {
       else if (lc) lines.push(`이 프로젝트 설정: '${lc.name}' — 이 세션은 연결 없음 → /myviking use`);
       else if (info) lines.push(`이 프로젝트 설정 '${info.id}': 저장된 키가 없음 → /myviking connect`);
       else lines.push(`이 프로젝트는 연결 설정 없음 (자유 사용) — /myviking connect 로 이 폴더만 연결`);
+      const s = secretarySetting();
+      lines.push(`서기: 자동 ${s.auto ? `ON (관찰 ${s.every}건마다)` : "OFF"} — 켜기: /myviking secretary auto on`);
       if (conns.length) {
         lines.push("");
-        lines.push(`이 컴퓨터에 저장된 키 ${conns.length}개 (switch = 이 프로젝트의 연결 변경, remove 로 삭제):`);
+        lines.push(`이 컴퓨터에 저장된 키 ${conns.length}개:`);
         conns.forEach((c, i) => lines.push(fmtConn(c, i + 1) + (cur && cur.url === c.url && cur.project === c.project ? " ★" : "")));
       }
       if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), "info");
     },
   });
-}"""
+}
+"""
 
 
 def _pi_hub_installed(flavor: str = "pi") -> bool:
@@ -1396,9 +1822,14 @@ def pi_install(args: argparse.Namespace, flavor: str = "pi") -> None:
 
     # 3) 허브 확장 (전역 1개) — 구버전이면 최신 템플릿으로 덮어씀
     hub = _install_hub_extension(flavor)
+    # 4) 서기 agent — 관찰함을 읽고 지식을 판단하는 별도 세션의 원칙
+    charter = install_secretary_charter()
+    install_secretary_agent(flavor)
 
     print(f"✓ {flavor} 허브 확장: {hub}")
-    print(f"이 폴더의 기본 연결로 저장했습니다. 이 폴더에서 여는 {flavor} 세션은 자동으로 이 도서관에 붙습니다.")
+    print(f"✓ 서기 원칙: {charter} (필요하면 직접 고쳐도 됩니다)")
+    print(f"이 폴더에서 여는 {flavor} 세션은 자동으로 이 도서관에 붙고, 작업이 '관찰'로 쌓입니다.")
+    print("  · 지식을 정리하는 건 서기입니다 — 지금 하기: jv secretary once · 알아서: jv secretary auto on")
     print("  (연결 안 한 다른 폴더에서는 viking 도구가 아예 등록되지 않습니다 — 전역 연결 없음)")
     print("  (열려 있는 세션은 /myviking use 로 지금 적용) · 해제: jv disconnect 또는 /myviking disconnect")
     print(f"  · 저장된 연결 관리: jv {flavor} list / jv {flavor} switch <이름> / jv {flavor} remove <이름> / jv {flavor} check")
@@ -1458,7 +1889,10 @@ def connect(args: argparse.Namespace) -> None:
     has_pi = (Path.home() / ".pi").exists() or bool(shutil.which("pi"))
     if want in ("", "pi") and has_pi:
         hub = _install_hub_extension("pi")
+        charter = install_secretary_charter()
+        install_secretary_agent("pi")
         print(f"✓ pi 허브 확장: {hub} (전역 설치지만 viking 도구는 '연결된 폴더의 세션' 에서만 등록 — 다른 폴더는 0)")
+        print(f"✓ 서기 원칙: {charter} — 관찰함은 서기 agent 가 지식으로 정리합니다 (jv secretary once)")
         done.append("pi 확장")
     # ── omp (Oh My Pi): ~/.omp 존재 or omp 실행파일 — pi 와 같은 확장 API 공유 ──
     has_omp = (Path.home() / ".omp").exists() or bool(shutil.which("omp"))
@@ -1592,6 +2026,8 @@ def pi_uninstall(args: argparse.Namespace, flavor: str = "pi") -> None:
         print(f"✓ {flavor} 허브 확장 제거: {path}")
     else:
         print(f"설치된 {flavor} 확장이 없습니다.")
+    if _secretary_charter().exists():
+        print(f"참고: 서기 원칙({_secretary_charter()})과 관찰함은 그대로 남습니다 — 작업 기록이라 지우지 않습니다.")
     conns = _load_conns()
     if conns:
         print(f"참고: 저장된 연결 {len(conns)}개는 ~/.myviking/connections.json 에 남아 있습니다. "
@@ -1635,6 +2071,22 @@ def pi_check(args: argparse.Namespace, flavor: str = "pi") -> None:
         print(f"✓ 서버 연결·인증: {conn['url']} · 프로젝트 {conn['project']}")
     except SystemExit as e:
         print(f"⚠ 서버 연결/키 확인 실패: {e}")
+
+    # 서기 — 관찰을 지식으로 바꾸는 주체라서, 이게 없으면 서가는 자라지 않는다
+    charter = _secretary_charter()
+    cfg = _load_config().get("secretary", {})
+    if charter.exists():
+        print(f"✓ 서기 원칙: {charter} · 자동 {'ON (관찰 ' + str(cfg.get('every', 12)) + '건마다)' if cfg.get('auto') else 'OFF'}")
+        try:
+            st = _api(conn["url"], conn["key"], "GET", f"/projects/{conn['project']}/secretary/status")
+            print(f"  관찰함: 정리 대기 {st.get('pending', 0)}건 · 마지막 업무 "
+                  + (st["last_run"]["started_at"] if st.get("last_run") else "없음"))
+            if st.get("pending"):
+                print("  지금 정리: jv secretary once")
+        except SystemExit:
+            print("  (관찰함 수는 확인하지 못했습니다)")
+    else:
+        print("⚠ 서기 원칙이 없습니다 → jv secretary install")
 
 
 def omp_check(args: argparse.Namespace) -> None:
@@ -1825,21 +2277,28 @@ def _mcp_remove() -> bool:
 
 _JCODE_SKILL_MD = """---
 name: myviking
-description: 프로젝트 지식 도서관(myviking). 세션 시작 시 jv brief 로 이전 작업 브리핑을 확인하고, 막힐 때 jv search, 새로 정한 규칙·함정·결정은 jv remember, 틀린 지식은 jv score 로 교정한다. 질문→답은 자동으로 기록된다.
+description: 프로젝트 지식 도서관(myviking). 세션 시작 시 jv brief 로 이전 작업 브리핑을 확인하고, 막힐 때 jv search, 놓치면 안 되는 일은 jv note 로 서기에게 넘긴다. 질문→답은 관찰로 자동 기록된다.
 ---
 
 # myviking — 프로젝트 지식 도서관
 
 이 폴더가 myviking 프로젝트에 연결되어 있으면 (`jv jcode status` 로 확인) 아래 CLI 를 쓴다.
-**질문→답은 매 턴 자동으로 도서관에 기록**되므로 직접 기록할 필요 없고, 중요한 것만 남기면 된다.
+**매 턴의 질문→답은 '관찰'로 자동 저장**되고, 그중 무엇을 지식으로 남길지는 **서기 agent**가 판단한다.
+그러니 여기에 일일이 기록하지 말고, 꼭 남길 것만 `jv note` 로 메모하면 된다.
 
 ## 세션 시작 (반드시)
-- `jv brief` 실행 → 지난 작업 브리핑(확립된 지식·검증 필요·최근 작업)을 확인하고 시작한다.
+- `jv brief` 실행 → 지난 작업 브리핑(확립된 지식·검증 필요·서기 대기)을 확인하고 시작한다.
 
 ## 작업 중
 - 막혔거나 규칙·함정이 궁금할 때: `jv search "<개념>"`
-- 새로 정한 규칙·함정·결정: `jv remember "<제목>" --content "<내용>" --category knowledge|commands|pitfalls|decisions`
+- 지금 당장 놓치면 안 되는 것: `jv note "<메모>"` (서기에게 전달, 지식 승격은 서기가 판단)
+- 급하게 직접 등재: `jv remember "<제목>" --content "<내용>" --category knowledge|commands|pitfalls|decisions`
 - 틀린 지식 발견: `jv score <id> bad` · 확립 확인: `jv score <id> good`
+
+## 서기 (지식 정리 agent)
+- `jv inbox` — 정리 대기 관찰 · 반복 요청을 본다
+- `jv secretary once` — 서기 세션(pi)을 열어 관찰을 지식으로 정리한다
+- `jv secretary status` — 대기 중·마지막 업무 보고
 
 ## 연결 관리 (pi 의 /myviking 대신 — jcode 에는 커스텀 대화형 명령이 없다)
 사용자가 "myviking 연결 상태/전환/해제" 를 요청하면 아래 CLI 를 실행해 답한다:
@@ -1922,10 +2381,11 @@ def jcode_install(args: argparse.Namespace) -> None:
         print(f"⚠ 이미 설정된 훅 이벤트는 건드리지 않았습니다: {', '.join(skipped)} "
               f"(직접 쓴 값 유지 — /myviking 자동 기록은 그 이벤트만 제외)")
     print("✓ jcode 스킬: ~/.jcode/skills/myviking/SKILL.md (브리핑·검색·기록 사용법)")
-    print("✓ jcode MCP: ~/.jcode/mcp.json (myviking 서버 — viking_brief/search/remember/score 도구)")
+    print("✓ jcode MCP: ~/.jcode/mcp.json (myviking 서버 — brief/search/note/inbox/ack/remember/score 도구)")
     print("jcode 는 훅 설정을 config 재로드 시 다시 읽습니다 — jcode 를 껐다 켜거나")
     print("  config 변경 후 실행하세요. 세션 시작 시 스킬이 지시하는 대로 jv brief 를 쓰면")
-    print("  지난 작업 브리핑을 받고, 턴이 끝날 때마다 질문→답이 자동으로 도서관에 기록됩니다.")
+    print("  지난 작업 브리핑을 받고, 턴이 끝날 때마다 질문→답·파일·오류가 '관찰'로 쌓입니다.")
+    print("  지식으로 승격하는 건 서기 agent 입니다 — jv secretary once · jv secretary auto on")
     print("  · 연결 관리: jv jcode list / jv jcode switch <이름> / jv jcode remove <이름> / jv jcode check")
 
 
@@ -2105,10 +2565,11 @@ def jcode_hook(args: argparse.Namespace) -> None:
             if question and not question.lstrip().startswith("/"):
                 try:
                     _api(conn["url"], conn["key"], "POST",
-                         f"/projects/{conn['project']}/commit",
-                         json={"question": mask(question)[:2000], "answer": mask(answer)[:20000],
-                               "session_id": session_id, "agent": "jcode"})
-                    note = f"질문 {len(mask(question))}자 → commit"
+                         f"/projects/{conn['project']}/observe",
+                         json={"session_id": session_id, "agent": "jcode",
+                               "items": [{"kind": "prompt", "text": mask(question)[:2000]},
+                                         {"kind": "reply", "text": mask(answer)[:8000]}]})
+                    note = f"질문 {len(mask(question))}자 → observe"
                 except SystemExit as e:
                     note = str(e)
             elif question and question.lstrip().startswith("/"):
@@ -2168,6 +2629,336 @@ def _jcode_question_from_session(session_id: str) -> str:
 
 
 
+# ══════════════════ 서기 (secretary) agent ══════════════════ #
+# 컨셉: 작업 세션은 관찰만 올린다. 지식을 '판단해서 등재'하는 건 별도 pi 세션으로
+# 열리는 서기 agent 다. 서버는 저장고·검색·반복 카운트만 하고, 모델을 연결하지 않는다.
+
+_SECRETARY_DIRNAME = "secretary"
+_SECRETARY_AGENT_NAME = "myviking-secretary"
+
+SECRETARY_CHARTER = """# 당신은 myviking 서기(secretary)입니다
+
+당신의 일은 **전사가 아니라 기록**입니다. 코드를 고치거나 명령을 실행하지 말고,
+관찰함(inbox)을 읽고 다음 세션에 필요한 것만 골라 도서관에 등재하세요.
+
+## 업무 순서
+1. `viking_inbox` — 아직 정리되지 않은 관찰 · 반복 요청 · 재발 오류 · 검증 필요 지식을 읽는다.
+2. 판단이 부족하면 `viking_session` 로 그 세션의 실제 트랜스크립트를 열어 확인한다
+   (세션이 공유되어 있다 — 관찰은 요약이고, 트랜스크립트가 원문이다).
+3. 등재 전에 `viking_search` 로 비슷한 지식인지 본다. 있으면 새 권을 만들지 말고
+   같은 제목으로 `viking_file` (본문 갱신 + 반복 횟수 누적).
+4. 남길 것은 `viking_file`, 버릴 것은 `viking_ack` 로 통보한다. 통보하지 않으면 다음 업무에서 다시 읽힌다.
+5. 마지막으로 `viking_report` — 무엇을 등재하고 무엇을 버렸는지 한 줄.
+
+## 남길 것 (이 네 종류만)
+- **재발 실수** — 같은 함정에 빠지면 시간이 날아간다 → category=pitfalls
+- **반복 요청** — 같은 것을 두 번 이상 시켰으면 그건 규칙이다 → knowledge / commands
+  (inbox 의 `×N` 표시가 근거다. occurrences 에 그 숫자를 넣는다)
+- **결정과 근거** — 나중에 번복하기 쉬운 선택은 왜 그렇게 했는지 → decisions
+- **재사용 절차** — 외우기 어려운 명령·설정·순서 → commands
+
+## 버릴 것
+- 이번 한 번 하고 끝나는 작업 내용 (일회성 파일 수정 목록 등)
+- 이미 있는 지식의 재진술
+- 추측·미확인 단정, 비밀값(API 키·비밀번호)
+- 사람도 에이전트도 다시 볼 일 없는 설명
+
+## 형식
+- 제목: 명령형·짧게 ("~는 ~해야 한다", "~는 ~로 실행")
+- 본문: 상황 / 원인 / 해결 / 예외 를 3~8줄. 코드를 통째로 옮기지 말고 최소한만.
+- 확립(confirmed=true)은 사람이 직접 확인했거나 3번 이상 반복된 것만. 나머지는 검증 전으로 남는다.
+
+## 태도
+- 관찰이 없으면 "할 일이 없었다" 하고 끝낸다. 억지로 지식을 만들지 않는다.
+- 어떤 파일도 수정하지 않는다. 당신의 도구는 읽기와 도서관 기록만 있다.
+"""
+
+
+def _secretary_home() -> Path:
+    home = os.environ.get("HOME") or str(Path.home())
+    return Path(home) / ".myviking" / _SECRETARY_DIRNAME
+
+
+def _secretary_charter() -> Path:
+    return _secretary_home() / "secretary.md"
+
+
+def _secretary_pid() -> Path:
+    return _secretary_home() / "run.pid"
+
+
+def _secretary_log() -> Path:
+    return _secretary_home() / "last-run.log"
+
+
+def _pi_binary() -> str:
+    """서기를 열 런타임 — pi 우선, omp 도 같은 확장 API 를 쓴다."""
+    for name in (os.environ.get("MYVIKING_PI_BIN", ""), "pi", "omp"):
+        if name:
+            found = shutil.which(name)
+            if found:
+                return found
+    return ""
+
+
+def install_secretary_charter(force: bool = False) -> Path:
+    """서기 원칙(secretary.md) 설치 — 이미 있으면 덮어쓰지 않는다 (사용자가 고칠 수 있게)."""
+    path = _secretary_charter()
+    if path.exists() and not force:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(SECRETARY_CHARTER, encoding="utf-8")
+    try:
+        path.chmod(0o644)
+    except OSError:
+        pass
+    return path
+
+
+def install_secretary_agent(flavor: str = "pi") -> Path | None:
+    """pi 에이전트 정의 + 프롬프트 템플릿 — /myviking 대신 pi 안에서 서기를 부를 수 있게."""
+    home = os.environ.get("HOME") or str(Path.home())
+    base = Path(home) / _HUB_HOME_DIRS.get(flavor, ".pi") / "agent"
+    if not base.exists():
+        return None
+    agents = base / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    body = (
+        "---\n"
+        f"name: {_SECRETARY_AGENT_NAME}\n"
+        "description: myviking 관찰함을 읽고 재발 실수·반복 요청만 골라 지식으로 등재하는 서기. 코드는 고치지 않는다.\n"
+        "tools: read, grep, find, ls\n"
+        "---\n\n"
+        + SECRETARY_CHARTER
+    )
+    path = agents / f"{_SECRETARY_AGENT_NAME}.md"
+    path.write_text(body, encoding="utf-8")
+    prompts = base / "prompts"
+    try:
+        prompts.mkdir(parents=True, exist_ok=True)
+        (prompts / "myviking-secretary.md").write_text(
+            "---\n"
+            "description: myviking 서기 업무 — 관찰함을 읽고 재발 실수·반복 요청만 지식으로 정리\n"
+            'argument-hint: "[이번에 더 신경 쓸 주제]"\n'
+            "---\n\n"
+            "myviking 서기로 일하세요. 순서: `viking_inbox` → (판단이 부족하면) `viking_session` 으로 "
+            "세션 원문 확인 → `viking_search` 로 중복 확인 → `viking_file` 등재 / `viking_ack` 버림 → "
+            "마지막에 `viking_report` 한 줄 보고.\n"
+            "지식 판단 기준(재발 실수·반복 요청·결정과 근거·재사용 절차)은 시스템 프롬프트의 서기 원칙을 따릅니다.\n\n"
+            "추가 지시: ${@:-없음 — 대기 중인 관찰을 모두 정리하세요}\n", encoding="utf-8")
+    except OSError:
+        pass
+    return path
+
+
+def secretary_argv(*, limit: int = 60, task: str = "") -> list[str]:
+    """서기 세션을 여는 명령 — 테스트/dry-run 을 위해 조립만 하는 함수로 분리.
+
+    conn 은 관찰함 확인(서버 API)에 쓰고, 세션 자체는 '폴더 연결' 로 프로젝트를 찾는다 —
+    그래서 서기는 항상 이 프로젝트 폴더 cwd 로 열려야 한다 (전역 env 로 연결하는 길은 없다).
+    """
+    charter = install_secretary_charter()
+    tools = "read,grep,find,ls,viking_inbox,viking_session,viking_search,viking_file,viking_ack,viking_report,viking_score"
+    default_task = (
+        "myviking 서기 업무입니다. 지금 이 프로젝트의 관찰함에서 정리 대기 중인 관찰을 읽고,"
+        f" 남길 것만 지식으로 등재하세요 (최대 {limit}건). 마지막에 viking_report 로 한 줄 보고."
+    )
+    if task:
+        default_task = task
+    return [
+        "--print",
+        "--name", f"myviking-secretary-{_stamp()}",
+        "--session-dir", str(_secretary_home() / "sessions"),
+        "--append-system-prompt", str(charter),
+        "--tools", tools,
+        "--",
+        default_task,
+    ]
+
+
+def _stamp() -> str:
+    """서기 세션 이름용 타임스탬프."""
+    import time
+    return time.strftime("%Y%m%d-%H%M%S")
+
+
+def _secretary_env() -> dict:
+    env = dict(os.environ)
+    env["MYVIKING_ROLE"] = "secretary"      # 확장이 서기 도구를 등록하고 관찰 전송은 끄는 스위치
+    env["MYVIKING_AGENT"] = "secretary"
+    return env
+
+
+def _secretary_running() -> bool:
+    pid_file = _secretary_pid()
+    if not pid_file.exists():
+        return False
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 0)
+        return True
+    except (ValueError, OSError):
+        pid_file.unlink(missing_ok=True)
+        return False
+
+
+def secretary_once(args: argparse.Namespace) -> None:
+    """서기 세션을 한 번 연다 (기본은 백그라운드 — 코딩을 막지 않는다)."""
+    cwd = Path(getattr(args, "cwd", "") or os.getcwd())
+    try:
+        url, key, project = _req_conn(argparse.Namespace(url=getattr(args, "url", ""),
+                                                        key=getattr(args, "key", ""),
+                                                        project=getattr(args, "project", ""),
+                                                        cwd=str(cwd)))
+    except _NoConn as e:
+        print(str(e), file=sys.stderr)
+        raise SystemExit(2)
+
+    if not _folder_conn(cwd):
+        print("⚠ 서기는 '이 폴더의 연결'을 따라갑니다 — 이 폴더를 먼저 연결하세요: jv connect --url … --key …",
+              file=sys.stderr)
+        raise SystemExit(2)
+
+    pending = 0
+    try:
+        st = _api(url, key, "GET", f"/projects/{project}/secretary/status")
+        pending = int(st.get("pending") or 0)
+    except SystemExit:
+        raise
+    if not int(getattr(args, "force", False) or 0) and pending == 0:
+        print("정리 대기 관찰이 없습니다 — 서기가 할 일이 없습니다.")
+        return
+
+    argv = secretary_argv(limit=int(getattr(args, "limit", 60) or 60),
+                          task=getattr(args, "task", "") or "")
+    if int(getattr(args, "dry_run", 0) or 0):
+        binary = _pi_binary() or "pi"
+        print("dry-run — 아래 명령으로 서기 세션이 열립니다 (대기 관찰 {}건)".format(pending))
+        print("  env MYVIKING_ROLE=secretary \\")
+        print("  " + " ".join(_shell_quote(x) for x in [binary] + argv))
+        print(f"  cwd: {cwd} · 관찰함: {url}/api/v1/projects/{project}/inbox")
+        return
+
+    if _secretary_running() and not int(getattr(args, "force", False) or 0):
+        print("이미 서기가 일하고 있습니다 (jv secretary stop 으로 멈출 수 있습니다).")
+        return
+
+    binary = _pi_binary()
+    if not binary:
+        print("⚠ pi(또는 omp) 실행파일을 찾지 못했습니다 — 서기는 pi 세션으로 열리는 구조입니다.\n"
+              "  관찰은 계속 쌓이니 pi 를 설치한 뒤 실행하거나, 급하면 직접 등재하세요: jv remember \"제목\" --content \"내용\"",
+              file=sys.stderr)
+        print(f"  (실행하려던 명령: {' '.join([_shell_quote(x) for x in argv])})", file=sys.stderr)
+        raise SystemExit(3)
+    argv = [binary] + argv
+
+    if int(getattr(args, "foreground", False) or 0):
+        print(f"► 서기 세션을 엽니다 ({project} · 대기 {pending}건)…")
+        rc = subprocess.call(argv, cwd=str(cwd), env=_secretary_env())
+        print(f"✓ 서기 업무 종료 (exit {rc}) — 결과: jv secretary status" if rc == 0
+              else f"⚠ 서기 업무가 중간에 끝났습니다 (exit {rc}) — logs: {_secretary_log()}")
+        return
+
+    log = _secretary_log()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "w", encoding="utf-8") as fh:
+        proc = subprocess.Popen(argv, cwd=str(cwd), env=_secretary_env(),
+                                stdout=fh, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
+    _secretary_pid().write_text(str(proc.pid))
+    print(f"✓ 서기를 백그라운드로 열었습니다 (pid {proc.pid}) · 대기 {pending}건 · 완료 보고: jv secretary status")
+
+
+def _shell_quote(s: str) -> str:
+    return s if all(ch not in s for ch in " \"'&;|<>()") else '"' + s.replace('"', '\\"') + '"'
+
+
+def secretary_status(args: argparse.Namespace) -> None:
+    cwd = Path(getattr(args, "cwd", "") or os.getcwd())
+    try:
+        url, key, project = _req_conn(argparse.Namespace(url=getattr(args, "url", ""), key=getattr(args, "key", ""),
+                                                        project=getattr(args, "project", ""), cwd=str(cwd)))
+    except _NoConn as e:
+        print(str(e), file=sys.stderr)
+        raise SystemExit(2)
+    st = _api(url, key, "GET", f"/projects/{project}/secretary/status")
+    cfg = _load_config().get("secretary", {})
+    print(f"서기 · {project}")
+    print(f"  정리 대기: {st.get('pending', 0)}건 (등재 {st.get('filed_total', 0)} · 버림 {st.get('skipped_total', 0)})")
+    print(f"  자동 실행: {'ON' if cfg.get('auto') else 'OFF'} · 관찰 {cfg.get('every', 12)}건마다")
+    if st.get("repeats"):
+        print("  반복 요청 후보:")
+        for r in st["repeats"][:5]:
+            print(f"    ×{r['hits']} {r['text'][:60]}")
+    last = st.get("last_run")
+    if last:
+        print(f"  마지막 업무: {last['started_at']} · 관찰 {last['found']}건 → 등재 {last['filed']} · 갱신 {last['merged']} · 버림 {last['skipped']}")
+        if last.get("report"):
+            print(f"    보고: {last['report'][:160]}")
+    else:
+        print("  아직 서기 업무 기록이 없습니다 — jv secretary once")
+    running = "예 (pid {})".format(_secretary_pid().read_text().strip()) if _secretary_running() else "아니오"
+    print(f"  지금 일하는 중: {running}")
+    print(f"  서기 원칙: {_secretary_charter()}" + ("" if _secretary_charter().exists() else " (jv secretary install 로 설치)"))
+
+
+def secretary_install(args: argparse.Namespace) -> None:
+    path = install_secretary_charter(force=bool(getattr(args, "force", False)))
+    print(f"✓ 서기 원칙: {path}")
+    for flavor in ("pi", "omp"):
+        agent = install_secretary_agent(flavor)
+        if agent:
+            print(f"✓ {flavor} 에이전트 정의: {agent}")
+    print("실행: jv secretary once (--foreground 로 지켜보기) · 자동: jv secretary auto on")
+
+
+def secretary_auto(args: argparse.Namespace) -> None:
+    flag = (getattr(args, "flag", "") or "on").lower()
+    every = getattr(args, "every", None)
+    p = _config_path()
+    data = _load_config()
+    sec = data.get("secretary") or {}
+    sec["auto"] = flag != "off"
+    if every:
+        sec["every"] = max(1, int(every))
+    data["secretary"] = sec
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    try:
+        p.chmod(0o600)
+    except OSError:
+        pass
+    state = "켜졌습니다" if sec["auto"] else "꺼졌습니다"
+    print(f"✓ 서기 자동 실행 {state} — 관찰 {sec.get('every', 12)}건이 쌓이면 작업 세션이 스스로 서기를 깨웁니다.")
+    print("  (끄기/켜기: jv secretary auto off|on · 지금 정리: jv secretary once)")
+
+
+def secretary_stop(args: argparse.Namespace) -> None:
+    pid_file = _secretary_pid()
+    if not pid_file.exists():
+        print("백그라운드 서기 실행이 없습니다.")
+        return
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 15)
+        print(f"✓ 서기(pid {pid})에 중지를 보냈습니다")
+    except (ValueError, ProcessLookupError):
+        print("실행 중인 서기가 이미 없습니다.")
+    except PermissionError:
+        print(f"⚠ pid {pid} 를 멈출 수 없습니다.", file=sys.stderr)
+    pid_file.unlink(missing_ok=True)
+
+
+def secretary_log(args: argparse.Namespace) -> None:
+    log = _secretary_log()
+    if not log.exists():
+        print("아직 서기 실행 로그가 없습니다.")
+        return
+    lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    n = int(getattr(args, "lines", 40) or 40)
+    print("\n".join(lines[-n:]) or "(빈 로그)")
+
+
 # ══════════════════ git 같은 위 Commands (연결/해제) ══════════════════ #
 # jv connect = git remote add + checkout,  jv disconnect = 폴더에서 떼기
 # jv switch = checkout,  jv list = remote -v,  jv status = status
@@ -2204,6 +2995,16 @@ def _agent_states() -> list[tuple[str, str, str]]:
     rows.append(("jcode", "✓ 연동 설치됨" if _jcode_integration_installed() else "· 미설치",
                  "" if _jcode_integration_installed() else "jv connect 시 자동 설치"))
     rows.append(("MCP (Cursor 등)", "· 설정은 connect 출력에 있음", "JSON 을 에이전트 mcp.json 에 붙여넣기"))
+    # 서기 agent — 지식 판단을 담당하는 별도 pi 세션
+    charter = _secretary_charter()
+    cfg = _load_config().get("secretary", {})
+    if charter.exists():
+        state = f"✓ 원칙 설치됨 · 자동 {'ON' if cfg.get('auto') else 'OFF'}"
+        if _secretary_running():
+            state += " · 지금 일하는 중"
+        rows.append(("서기 agent", state, "jv secretary once · jv secretary status"))
+    else:
+        rows.append(("서기 agent", "· 원칙 미설치", "jv secretary install"))
     return rows
 
 
@@ -2235,6 +3036,18 @@ def status(args: argparse.Namespace) -> None:
     print("에이전트 연동:")
     for name, state, hint in _agent_states():
         print(f"  {name:<16} {state}" + (f"  — {hint}" if hint else ""))
+
+    if conn and not getattr(args, "offline", False):
+        # 서기 현황 — 관찰이 쌓여 있는데 아무도 정리하지 않으면 화면에 보인다
+        try:
+            st = _api(conn["url"], conn["key"], "GET", f"/projects/{conn['project']}/secretary/status")
+            last = st.get("last_run") or {}
+            print(f"서기: 대기 관찰 {st.get('pending', 0)}건 · 등재 {st.get('filed_total', 0)}건"
+                  + (f" · 마지막 {last.get('started_at')}" if last else ""))
+            if st.get("pending"):
+                print("  정리: jv secretary once  (자동: jv secretary auto on)")
+        except SystemExit:
+            print("서기: 서버 확인 실패 — 오프라인이면 jv status --offline 를 쓰세요.")
 
     conns = _load_conns()
     if conns:
@@ -2340,6 +3153,9 @@ def uninstall(args: argparse.Namespace) -> None:
     if getattr(args, "purge", False):
         _save_conns([])
         print("✓ 저장된 연결 삭제 (키 포함)")
+    if _secretary_home().exists():
+        shutil.rmtree(_secretary_home(), ignore_errors=True)
+        print("✓ 서기 실행 기록·원칙 제거 (~/.myviking/secretary)")
     _set_enabled(False)
     print("✓ 제거 완료 — jv connect 로 언제든 다시 연결할 수 있습니다.")
 
@@ -2373,11 +3189,30 @@ def main(argv: list[str] | None = None) -> None:
     sp.set_defaults(func=remote, cmd="brief")
     sp = sub.add_parser("search", help="지식 검색"); hooks_common(sp); sp.add_argument("q")
     sp.set_defaults(func=remote, cmd="search")
-    sp = sub.add_parser("remember", help="지식 기록"); hooks_common(sp)
+    sp = sub.add_parser("remember", help="지식 기록 (보통은 서기가 한다)"); hooks_common(sp)
     sp.add_argument("q", help="제목"); sp.add_argument("--content", default="")
     sp.add_argument("--category", default="knowledge")
+    sp.add_argument("--source", default="manual", help="manual|secretary")
+    sp.add_argument("--occurrences", default="0", help="사람이 이걸 몇 번 요청했나")
     sp.set_defaults(func=remote, cmd="remember")
-    sp = sub.add_parser("commit", help="질문/답 기록"); hooks_common(sp)
+    sp = sub.add_parser("note", aliases=["memo"], help="서기에게 메모만 남긴다 (지식을 만들지 않음)"); hooks_common(sp)
+    sp.add_argument("q", nargs="?", default="", help="메모 내용 (--content 로도 받는다)")
+    sp.add_argument("--content", default="")
+    sp.set_defaults(func=remote, cmd="note", category="note")
+    sp = sub.add_parser("observe", help="관찰 하나를 관찰함에 올린다 (훅·셸 에이전트용)"); hooks_common(sp)
+    sp.add_argument("q", help="관찰 내용"); sp.add_argument("--category", default="note")
+    sp.add_argument("--transcript", default="", help="작업 세션 트랜스크립트 경로 (서기가 열어본다)")
+    sp.set_defaults(func=remote, cmd="observe")
+    sp = sub.add_parser("inbox", help="서기 작업함 — 정리 대기 관찰·반복 요청 보기"); hooks_common(sp)
+    sp.add_argument("--limit", default="60"); sp.add_argument("--json", action="store_true")
+    sp.add_argument("--claim", action="store_true", help="이 목록을 선점한다 (서기만 쓸 것)")
+    sp.set_defaults(func=remote, cmd="inbox")
+    sp = sub.add_parser("ack", help="관찰 처리 통보 (filed|merged|skipped)"); hooks_common(sp)
+    sp.add_argument("q", help="관찰 id 목록 (쉼표 구분)")
+    sp.add_argument("--outcome", default="skipped", help="filed|merged|skipped")
+    sp.add_argument("--reason", default="")
+    sp.set_defaults(func=remote, cmd="ack")
+    sp = sub.add_parser("commit", help="[레거시] 질문/답 넘기기 — 기본은 관찰로만 저장된다"); hooks_common(sp)
     sp.add_argument("q", help="질문"); sp.add_argument("--content", default="", help="답")
     sp.set_defaults(func=remote, cmd="commit")
     sp = sub.add_parser("score", help="결과 피드백"); hooks_common(sp)
@@ -2430,6 +3265,35 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--purge", action="store_true", help="저장된 연결(키)까지 삭제")
     sp.add_argument("--yes", action="store_true", help="확인 없이 실행")
     sp.set_defaults(func=uninstall)
+
+    sp = sub.add_parser("secretary", aliases=["sec"],
+                        help="서기 agent — 관찰함을 읽고 지식으로 정리하는 별도 pi 세션")
+    secrem = sp.add_subparsers(dest="action", required=True)
+    sps = secrem.add_parser("once", help="서기 세션을 연다 (기본 백그라운드)")
+    hooks_common(sps)
+    sps.add_argument("--cwd", default="")
+    sps.add_argument("--limit", default="60", help="한 번에 읽을 관찰 최대수")
+    sps.add_argument("--task", default="", help="서기에게 주는 추가 지시")
+    sps.add_argument("--foreground", "-f", action="store_true", dest="foreground", help="지켜보기")
+    sps.add_argument("--detach", action="store_true", help="백그라운드 (기본)")
+    sps.add_argument("--force", action="store_true", help="대기 0건이어도 실행")
+    sps.add_argument("--dry-run", action="store_true", dest="dry_run", help="실행할 pi 명령만 출력")
+    sps.set_defaults(func=secretary_once)
+    sps = secrem.add_parser("status", help="대기 중·반복 요청·마지막 업무")
+    hooks_common(sps); sps.add_argument("--cwd", default="")
+    sps.set_defaults(func=secretary_status)
+    sps = secrem.add_parser("install", help="서기 원칙 + pi 에이전트 정의 설치")
+    sps.add_argument("--force", action="store_true", help="서기 원칙을 덮어쓴다")
+    sps.set_defaults(func=secretary_install)
+    sps = secrem.add_parser("auto", help="관찰이 N건 쌓이면 서기를 스스로 깨운다")
+    sps.add_argument("flag", nargs="?", default="on", choices=["on", "off"])
+    sps.add_argument("--every", default="", help="몇 건마다 깨울지")
+    sps.set_defaults(func=secretary_auto)
+    sps = secrem.add_parser("stop", help="백그라운드 서기 중지")
+    sps.set_defaults(func=secretary_stop)
+    sps = secrem.add_parser("log", help="마지막 서기 실행 출력")
+    sps.add_argument("--lines", default="40")
+    sps.set_defaults(func=secretary_log)
 
     sp = sub.add_parser("pi", help="pi 코딩 에이전트 확장·프로젝트 연결 관리")
     pisub = sp.add_subparsers(dest="action", required=True)

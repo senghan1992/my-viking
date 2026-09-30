@@ -29,7 +29,7 @@
     <div class="row">
       <button class="btn primary" data-copy="curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key {{ key }} --project {{ project.slug }}">{{ icons.icon('copy') }} 명령 복사</button>
     </div>
-    <p class="muted small">실행 후: <b>pi</b> 는 재시작(또는 /reload) 후 연결할 세션에서 <code>/myviking use</code>,
+    <p class="muted small">실행 후: <b>pi</b> 는 재시작(또는 /reload) 후 <code>/myviking use</code> → <code>/myviking secretary once</code>,
       <b>jcode</b> 는 재시작, <b>Claude Code</b> 는 이 폴더에서 그대로 시작하면 됩니다.</p>
   </div>
 
@@ -45,13 +45,16 @@
 
   {# ── pi ── #}
   <div class="tool-pane" data-pane="krt" data-pane-id="pi" hidden>
-    <p class="muted small">pi 전용. pi 세션은 기본 <b>자유 사용</b> — 연결할 세션에서 <code>/myviking use</code> 로
-      이 프로젝트를 적용합니다 (다른 세션 영향 없음).</p>
+    <p class="muted small"><b>권장.</b> pi 세션은 기본 <b>자유 사용</b> — 연결할 세션에서 <code>/myviking use</code> 로
+      이 프로젝트를 적용합니다 (다른 세션 영향 없음). 그 세션의 작업은 <b>관찰</b>로 쌓이고,
+      <b>서기 agent</b>(별도 pi 세션)가 그것을 지식으로 정리합니다.</p>
     <pre>curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key {{ key }} --project {{ project.slug }}</pre>
     <div class="row">
       <button class="btn primary" data-copy="curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key {{ key }} --project {{ project.slug }}">{{ icons.icon('copy') }} 명령 복사</button>
     </div>
-    <p class="muted small">실행 후 pi 재시작(또는 /reload) → 세션에서 <code>/myviking use</code>.</p>
+    <p class="muted small">실행 후 pi 재시작(또는 /reload) → 세션에서 <code>/myviking use</code> →
+      정리는 <code>jv secretary once</code> (또는 <code>/myviking secretary once</code>),
+      알아서 하게 하려면 <code>jv secretary auto on</code>.</p>
   </div>
 
   {# ── jcode ── #}

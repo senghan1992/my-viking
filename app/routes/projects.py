@@ -9,6 +9,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse
 
 from .. import db
 from ..deps import get_project_or_404, login_required, require_owner
+from ..engine import observe as observe_engine
 from ..engine import redact as redact_engine
 from ..engine import tiers, trust as trust_engine
 from ..engine import llm
@@ -74,6 +75,7 @@ def library(request: Request, slug: str, user: dict = Depends(login_required),
 
 def _library_response(request, project, user, q="", cat="", msg=""):
     trust_engine.sweep_stale_sessions(project["id"])  # 죽은 0회 세션 정리 → 화면 숫자도 바로 반영
+    observe_engine.sweep_closed(project["id"])
     memories = _query_memories(project["id"], q, cat)
     events = db.rows(
         "SELECT * FROM events WHERE project_id=? ORDER BY id DESC LIMIT 20",
@@ -89,16 +91,19 @@ def _library_response(request, project, user, q="", cat="", msg=""):
                   SUM(status='established') AS established,
                   SUM(status='contested') AS contested,
                   SUM(status='fresh') AS fresh,
+                  SUM(source='secretary') AS scribe,
                   (SELECT COUNT(*) FROM sessions s WHERE s.project_id=? AND s.question_count>0) AS session_count
            FROM memories WHERE project_id=? AND status!='superseded'""",
         (project["id"], project["id"]),
-    ) or {"total": 0, "established": 0, "contested": 0, "fresh": 0, "session_count": 0}
+    ) or {"total": 0, "established": 0, "contested": 0, "fresh": 0, "scribe": 0, "session_count": 0}
     return request.app.state.templates.TemplateResponse(request, "project.html", {
             "request": request, "user": user, "project": project,
             "memories": memories, "events": events, "sessions": sessions,
             "counts": counts, "q": q, "cat": cat, "msg": msg,
             "category_labels": CATEGORY_LABELS, "status_labels": STATUS_LABELS,
             "categories": list(CATEGORY_LABELS),
+            "secretary": observe_engine.run_status(project["id"]),
+            "repeats": observe_engine.repeats(project["id"], limit=5),
         },
     )
 
@@ -257,14 +262,42 @@ def export_md(slug: str, user: dict = Depends(login_required)):
 
 @router.post("/projects/{slug}/settings")
 def project_settings(slug: str, user: dict = Depends(login_required),
-                     name: str = Form(""), description: str = Form("")):
+                     name: str = Form(""), description: str = Form(""),
+                     auto_distill: str = Form("")):
     project = get_project_or_404(slug)
     require_owner(project, user)
     db.execute(
-        "UPDATE projects SET name=?, description=?, updated_at=? WHERE id=?",
-        ((name or project["name"]).strip()[:60], (description or "").strip()[:500], db.now(), project["id"]),
+        "UPDATE projects SET name=?, description=?, auto_distill=?, updated_at=? WHERE id=?",
+        ((name or project["name"]).strip()[:60], (description or "").strip()[:500],
+         1 if auto_distill else 0, db.now(), project["id"]),
     )
     return RedirectResponse(f"/projects/{slug}?msg=프로젝트 설정을 저장했습니다.", status_code=303)
+
+
+# ── 서기 관찰함 (별도 화면 — 무엇을 대기 중인지 사람이 확인) ──
+@router.get("/projects/{slug}/secretary")
+def secretary_page(request: Request, slug: str, user: dict = Depends(login_required), msg: str = ""):
+    project = get_project_or_404(slug)
+    require_owner(project, user)
+    feed = observe_engine.inbox(project["id"], limit=80, claim=False)
+    return request.app.state.templates.TemplateResponse(request, "secretary.html", {
+        "request": request, "user": user, "project": project, "feed": feed,
+        "status": observe_engine.run_status(project["id"]), "msg": msg,
+        "category_labels": CATEGORY_LABELS,
+    })
+
+
+@router.post("/projects/{slug}/secretary/clear")
+def secretary_clear(slug: str, user: dict = Depends(login_required)):
+    """대기 중인 관찰을 사람이 직접 버린다 (서기를 기다리지 않고 치우기)."""
+    project = get_project_or_404(slug)
+    require_owner(project, user)
+    rows = db.rows("SELECT id FROM observations WHERE project_id=? AND state IN ('open','claimed')",
+                   (project["id"],))
+    n = observe_engine.mark(project["id"], [r["id"] for r in rows], state="skipped",
+                            note="사람이 대시보드에서 버림")
+    return RedirectResponse(f"/projects/{slug}/secretary?msg=대기 중이던 관찰 {n}건을 버렸습니다.",
+                            status_code=303)
 
 
 @router.post("/projects/{slug}/delete")
@@ -272,6 +305,8 @@ def project_delete(slug: str, user: dict = Depends(login_required)):
     project = get_project_or_404(slug)
     require_owner(project, user)
     db.execute("DELETE FROM sessions WHERE project_id=?", (project["id"],))
+    db.execute("DELETE FROM observations WHERE project_id=?", (project["id"],))
+    db.execute("DELETE FROM secretary_runs WHERE project_id=?", (project["id"],))
     db.execute("DELETE FROM events WHERE project_id=?", (project["id"],))
     db.execute("DELETE FROM api_keys WHERE project_id=?", (project["id"],))
     db.execute("DELETE FROM memories WHERE project_id=?", (project["id"],))

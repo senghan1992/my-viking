@@ -24,16 +24,19 @@
 <div class="banner">
   <div class="banner-text">
     <b>아직 에이전트가 연결되지 않았습니다</b>
-    <span class="muted small">키 발급 → 명령 복사 → 프로젝트 폴더 터미널에 붙여 넣으면 끝입니다. 이후 작업이 자동으로 기록됩니다.</span>
+    <span class="muted small">키 발급 → 명령 복사 → 프로젝트 폴더 터미널에 붙여 넣으면 끝입니다. 이후 작업은 '관찰'로 쌓이고 서기 agent 가 정리합니다.</span>
   </div>
   <a class="btn primary" href="/projects/{{ project.slug }}/connect">{{ icons.icon('link') }} 1분 연결</a>
 </div>
 {% else %}
-<div class="banner banner-ok">
+<div class="banner{{ ' banner-ok' if not secretary.pending else '' }}">
   <div class="banner-text">
-    <b><span class="dot" aria-hidden="true"></span>{{ counts.session_count or 0 }}개 세션이 이 서가에 기록되고 있습니다</b>
-    <span class="muted small">세션이 끝날 때마다 지식이 자동 증류·등재됩니다.</span>
+    <b><span class="dot" aria-hidden="true"></span>{{ counts.session_count or 0 }}개 세션이 이 서가에 관찰을 남기고 있습니다</b>
+    <span class="muted small">세션 내용은 자동으로 지식이 되지 않습니다 — 서기 agent 가 골라 정리합니다.</span>
   </div>
+  <a class="btn {{ 'primary' if secretary.pending else 'ghost' }}" href="/projects/{{ project.slug }}/secretary">
+    {% if secretary.pending %}{{ icons.icon('bot') }} 정리 대기 {{ secretary.pending }}건{% else %}{{ icons.icon('bot') }} 서기 관찰함{% endif %}
+  </a>
 </div>
 {% endif %}
 
@@ -42,6 +45,7 @@
   <div class="stat stat-green"><b>{{ counts.established or 0 }}</b><span>확립</span></div>
   <div class="stat stat-amber"><b>{{ counts.fresh or 0 }}</b><span>검증 전</span></div>
   <div class="stat stat-red"><b>{{ counts.contested or 0 }}</b><span>검증 필요</span></div>
+  <div class="stat"><b>{{ counts.scribe or 0 }}</b><span>서기가 등재</span></div>
 </div>
 
 <div class="two-col">
@@ -96,6 +100,25 @@
       </ul>
     </section>
     <section class="card">
+      <h2>{{ icons.icon('bot') }} 서기 · 지식 정리 agent</h2>
+      {% if secretary.last_run %}
+      <p class="muted small">마지막 업무 {{ secretary.last_run.started_at }} — 관찰 {{ secretary.last_run.found }}건 읽음 ·
+        등재 {{ secretary.last_run.filed or 0 }} · 갱신 {{ secretary.last_run.merged or 0 }} · 버림 {{ secretary.last_run.skipped or 0 }}</p>
+      {% if secretary.last_run.report %}<p class="muted small">{{ secretary.last_run.report }}</p>{% endif %}
+      {% else %}
+      <p class="muted small">아직 서기가 업무를 하지 않았습니다. 연결된 폴더에서 <code>jv secretary once</code> (pi 안에서 <code>/myviking secretary once</code>).</p>
+      {% endif %}
+      {% if repeats %}
+      <h3 class="side-sub">여러 번 요청한 것</h3>
+      <ul class="event-list">
+        {% for r in repeats %}
+        <li><b>×{{ r.hits }}</b> {{ r.text[:60] }} <span class="t">{{ r.last_at }}</span></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <a class="btn small" href="/projects/{{ project.slug }}/secretary">{{ icons.icon('clock', 'ic-18') }} 관찰함 열기</a>
+    </section>
+    <section class="card">
       <h2>{{ icons.icon('bot') }} 에이전트 세션</h2>
       <ul class="event-list">
         {% for s in sessions %}
@@ -130,6 +153,11 @@
       <div class="modal-body">
         <label>이름<input type="text" name="name" value="{{ project.name }}" maxlength="60"></label>
         <label>설명<textarea name="description" rows="3" maxlength="500">{{ project.description }}</textarea></label>
+        <label class="check-row">
+          <input type="checkbox" name="auto_distill" value="1" {% if project.auto_distill %}checked{% endif %}>
+          <span><b>레거시 자동 증류</b> — 서기 없이 서버가 매 턴 질문→답을 지식으로 승격합니다.
+            <span class="muted small">pi 대신 훅만 쓰는 에이전트용. 기본은 OFF (서기가 판단).</span></span>
+        </label>
       </div>
       <div class="modal-foot">
         <button class="btn primary" type="submit">저장</button>

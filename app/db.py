@@ -91,18 +91,52 @@ SCHEMA = [
         agent TEXT NOT NULL DEFAULT 'unknown',
         started_at TEXT NOT NULL,
         ended_at TEXT,
-        question_count INTEGER NOT NULL DEFAULT 0
+        question_count INTEGER NOT NULL DEFAULT 0,
+        transcript TEXT NOT NULL DEFAULT ''   -- 에이전트 세션 트랜스크립트 위치 (서기가 열어본다)
     )""",
     """CREATE TABLE IF NOT EXISTS events(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL REFERENCES projects(id),
-        kind TEXT NOT NULL,                     -- session | memory | key | project
+        kind TEXT NOT NULL,                     -- session | memory | key | project | secretary
         detail TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS observations(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        session_id TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown',
+        turn INTEGER NOT NULL DEFAULT 0,
+        kind TEXT NOT NULL DEFAULT 'note',      -- prompt | reply | error | edit | note | decision | request
+        text TEXT NOT NULL DEFAULT '',
+        norm TEXT NOT NULL DEFAULT '',          -- 반복 감지용 정규화 지문
+        hits INTEGER NOT NULL DEFAULT 1,        -- 이 지문이 몇 번째 관측인가
+        files TEXT NOT NULL DEFAULT '[]',
+        transcript TEXT NOT NULL DEFAULT '',    -- 작업 세션의 로컬 트랜스크립트 경로 (서기가 직접 읽는다)
+        state TEXT NOT NULL DEFAULT 'open',     -- open | claimed | filed | skipped
+        memory_id INTEGER,
+        worker TEXT NOT NULL DEFAULT '',        -- 이 관찰을 처리한 서기 실행 id
+        note TEXT NOT NULL DEFAULT '',          -- 서기의 판정 메모 (skipped 이유 등)
+        created_at TEXT NOT NULL,
+        processed_at TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS secretary_runs(
+        id TEXT PRIMARY KEY,                    -- 서기 세션 실행 id
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        agent TEXT NOT NULL DEFAULT 'pi',
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        found INTEGER NOT NULL DEFAULT 0,       -- 읽은 관찰 수
+        filed INTEGER NOT NULL DEFAULT 0,       -- 지식으로 등재한 건수
+        merged INTEGER NOT NULL DEFAULT 0,      -- 기존 지식을 갱신한 건수
+        skipped INTEGER NOT NULL DEFAULT 0,     -- 버린 건수
+        report TEXT NOT NULL DEFAULT ''         -- 서기가 남긴 한 줄 보고
     )""",
     "CREATE INDEX IF NOT EXISTS idx_mem_proj ON memories(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_mem_status ON memories(status)",
     "CREATE INDEX IF NOT EXISTS idx_events_proj ON events(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_obs_proj ON observations(project_id, state)",
+    "CREATE INDEX IF NOT EXISTS idx_obs_norm ON observations(project_id, norm)",
 ]
 
 
@@ -121,6 +155,18 @@ class DB:
                 con.execute("ALTER TABLE memories ADD COLUMN embedding TEXT")
             if "superseded_by" not in cols:
                 con.execute("ALTER TABLE memories ADD COLUMN superseded_by INTEGER")
+            # 서기가 남기는 지식의 계보 — 몇 번 반복 요청됐고 누가 정리했는지
+            if "occurrences" not in cols:
+                con.execute("ALTER TABLE memories ADD COLUMN occurrences INTEGER NOT NULL DEFAULT 0")
+            if "last_seen_at" not in cols:
+                con.execute("ALTER TABLE memories ADD COLUMN last_seen_at TEXT")
+            # 프로젝트: 관찰만 받고 서기에게 넘긴다(기본) / 옛 서버 자동 증류(레거시)
+            pcols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
+            if "auto_distill" not in pcols:
+                con.execute("ALTER TABLE projects ADD COLUMN auto_distill INTEGER NOT NULL DEFAULT 0")
+            scols = {r[1] for r in con.execute("PRAGMA table_info(sessions)")}
+            if "transcript" not in scols:
+                con.execute("ALTER TABLE sessions ADD COLUMN transcript TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def conn(self):

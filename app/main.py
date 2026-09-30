@@ -12,7 +12,7 @@ from . import model_settings
 from .config import config
 from .routes import admin_models, agent, projects, web
 
-app = FastAPI(title="myviking", version="1.0.0", docs_url="/api/docs")
+app = FastAPI(title="myviking", version="2.0.0", docs_url="/api/docs")
 
 # 데이터베이스 준비 (스키마 + 마이그레이션)
 db.db.init()

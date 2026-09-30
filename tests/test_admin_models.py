@@ -104,14 +104,14 @@ def test_reindex_embeds_all_memories(client, user1, monkeypatch):
     # 임베딩 활성화 (웹 설정으로)
     c.post("/admin/models", data={"embed_api_key": "sk-embed-1"}, follow_redirects=False)
 
-    # 지식 2권 생성 (에이전트 루프로)
+    # 지식 2권 생성 (서기 등재 경로로)
     c.post("/login", data={"email": "a@test.com", "password": "password1"})
     slug = create_project(c, "재색인 프로젝트")
     raw = create_key(c, slug)
     h = auth_h(c, raw)
     for i in range(2):
-        c.post(f"/api/v1/projects/{slug}/commit", headers=h, json={
-            "question": f"질문 {i}", "answer": f"답변 {i} — 이중 결제 방지", "session_id": "s1"})
+        c.post(f"/api/v1/projects/{slug}/remember", headers=h, json={
+            "title": f"질문 {i}", "content": f"답변 {i} — 이중 결제 방지", "source": "secretary"})
 
     r = c.post("/admin/models/reindex", follow_redirects=False)
     assert r.status_code == 303

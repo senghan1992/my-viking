@@ -1,10 +1,12 @@
-"""증류(distill) — 작업 기록(질문→답)을 도서관의 지식 한 권으로 승격합니다.
+"""등재(remember) — 서기 agent 가 판단한 것을 지식 한 권으로 올리는 입구.
 
-OpenViking 의 '세션이 장기 메모리가 된다' 아이디어의 구현:
-- 세션의 질문·답이 끝나면 자동으로 memory 한 건이 됩니다 (사람 손 안 댐).
-- 같은 제목(정규화)이 이미 있으면 본문을 갱신 → 쌓이지 않고 최신 유지.
-- 기존 지식이 '확립' 상태인데 새로운 답이 반박적인 경우 → 옛것은 대체(superseded)
-  처리되고 새것이 교정본이 됩니다.
+컨셉: 서버는 지식을 '추출'하지 않는다. 추출·판단은 서기 agent(별도 pi 세션)가 하고,
+여기서는 그 결과만 받아 보관한다.
+
+- 같은 제목(정규화)이 이미 있으면 새 권을 만들지 않고 본문을 갱신한다 → 서가는 자라지
+  않고 `occurrences`(사람이 이걸 몇 번 요청했나)만 누적된다.
+- 확립된 지식을 같은 제목으로 다시 쓰면 교정으로 본다 → 옛것은 superseded.
+- commit() 은 레거시 경로다 (서버가 직접 증류하던 옛 방식 — auto_distill 켠 프로젝트만).
 """
 from __future__ import annotations
 
@@ -13,7 +15,6 @@ import re
 from .. import db
 from .redact import redact
 from .tiers import make_keywords, make_overview, make_summary
-from .tokens import keywords
 from . import llm
 
 CATEGORIES = ("knowledge", "commands", "pitfalls", "decisions")
@@ -38,7 +39,6 @@ def normalize_title(title: str) -> str:
 def condense_question(question: str, max_chars: int = 80) -> str:
     """질문을 지식 제목으로 압축 — 문장 부호·어미를 정리."""
     q = question.strip()
-    # 물음표·마침표 제거, '어떻게/하는지' 류 어미 정리
     q = re.sub(r"[?？.!。]+$", "", q)
     q = re.sub(r"(하는지|하는 건지|할지|할까요|해줘|해주세요|알려줘|알려주세요|있나요|있을까요)\s*$", "", q)
     q = " ".join(q.split())
@@ -70,27 +70,103 @@ def _store_memory(
     confirmed: bool = False,
     corrects: int | None = None,
     session_ref: str = "",
+    occurrences: int = 0,
+    evidence_notes: list[str] | None = None,
 ) -> int:
     summary = make_summary(title, content)
     overview = make_overview(content)
     kws = make_keywords(title, content)
     status = "established" if confirmed else "fresh"
     now = db.now()
+    seed = [{"at": now, "kind": "filed", "note": (n or "서기 등재")[:120]}
+            for n in (evidence_notes or [])][:10]
     mid = db.execute(
         """INSERT INTO memories(project_id, category, title, summary, overview, content,
-           status, trust, keywords, source, corrects, session_ref, created_at, updated_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           status, trust, keywords, source, corrects, session_ref, created_at, updated_at,
+           occurrences, last_seen_at, evidence)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
 
         (
             project_id, category, title[:200], summary, overview, content[:50000],
             status, 0.7 if confirmed else 0.0, db.jdumps(kws), source,
             corrects, session_ref[:100], now, now,
+            max(0, int(occurrences or 0)), now, db.jdumps(seed),
         ),
     )
     llm.save_embeddings(mid, f"{title} {content}")
     return mid
 
 
+# ══════════════════ 서기·사람이 남기는 길이 (기본) ══════════════════ #
+def remember(
+    project_id: int,
+    title: str,
+    content: str,
+    category: str = "knowledge",
+    confirmed: bool = False,
+    *,
+    source: str = "manual",
+    session_ref: str = "",
+    occurrences: int = 0,
+    evidence: list[str] | None = None,
+) -> dict:
+    """사람·서기가 명시적으로 남기는 지식. confirmed=True 면 확립으로.
+
+    같은 제목(정규화)이 이미 있으면 중복 등재 대신 본문 갱신 + occurrences 누적.
+    확립된 지식을 같은 제목으로 '다시 쓰는' 것만 교정(superseded)으로 본다.
+    """
+    if category not in CATEGORIES:
+        category = "knowledge"
+    title = (title or "").strip()[:200]
+    body = redact((content or "").strip())[:50000]
+    norm = normalize_title(title)
+    match = next((m for m in db.rows(
+        "SELECT * FROM memories WHERE project_id=? AND status!='superseded'", (project_id,),
+    ) if normalize_title(m["title"]) == norm), None)
+
+    correcting = bool(match and confirmed and match["status"] == "established"
+                      and normalize_title(match["content"])[:120] != normalize_title(body)[:120])
+
+    if match and not correcting:
+        now = db.now()
+        db.execute(
+            """UPDATE memories SET category=?, summary=?, overview=?, content=?, keywords=?,
+               source=?, updated_at=?, session_ref=?, occurrences=?, last_seen_at=? WHERE id=?""",
+            (category, make_summary(title, body), make_overview(body), body,
+             db.jdumps(make_keywords(title, body)), source, now, session_ref[:100],
+             int(match["occurrences"] or 0) + max(1, int(occurrences or 0)), now, match["id"]),
+        )
+        llm.save_embeddings(match["id"], f"{title} {body}")
+        for note in (evidence or [])[:3]:
+            _append_evidence(match["id"], "updated", note)
+        db.log_event(project_id, "memory", f"갱신 [{category}] {title[:50]}")
+        return {"memory_id": match["id"], "merged": match["id"], "superseded": 0,
+                "uri": f"viking://{project_id}/memories/{category}/{match['id']}"}
+
+    superseded = match["id"] if (correcting and match) else 0
+    mid = _store_memory(project_id, category, title, body, source or "manual",
+                        confirmed=confirmed, corrects=superseded or None,
+                        session_ref=session_ref, occurrences=occurrences,
+                        evidence_notes=evidence)
+    if superseded:
+        db.execute("UPDATE memories SET status='superseded', superseded_by=? WHERE id=?",
+                   (mid, superseded))
+        _append_evidence(superseded, "superseded", f"같은 제목으로 교정 → 새 지식 #{mid}")
+    db.log_event(project_id, "memory", f"기록 [{category}] {title[:60]}")
+    return {"memory_id": mid, "uri": f"viking://{project_id}/memories/{category}/{mid}",
+            "superseded": superseded}
+
+
+def score_existing(project_id: int, memory_id: int, occurrences: int = 1) -> None:
+    """서기가 '이미 있던 지식이 다시 쓰였다'고 보고한 횟수 — 반복 요청의 증거."""
+    db.execute(
+        """UPDATE memories SET occurrences=occurrences+?, last_seen_at=?
+           WHERE id=? AND project_id=?""",
+        (max(1, int(occurrences or 1)), db.now(), memory_id, project_id),
+    )
+
+
+# ══════════════════ 레거시: 서버가 매 턴을 증류하던 길 ══════════════════ #
 def commit(
     project_id: int,
     question: str,
@@ -99,7 +175,11 @@ def commit(
     model: str = "",
     files: list[str] | None = None,
 ) -> dict:
-    """세션 한 턴(질문→답)을 지식으로 승격. → {created, updated, superseded, memory_id}"""
+    """[레거시] 세션 한 턴(질문→답)을 서버가 직접 지식으로 승격.
+
+    새 컨셉에서는 쓰지 않는다 — auto_distill 이 켜진 프로젝트(서기에 의존하지 않는
+    에이전트)에서만 이 경로가 동작한다. → {created, updated, superseded, memory_id}
+    """
     question = redact(question.strip())
     answer = redact(answer.strip())
     if not question or not answer:
@@ -109,7 +189,6 @@ def commit(
     norm = normalize_title(title)
     category = guess_category(question, answer)
 
-    # 같은 제목이 이미 있는가 (도서관 중복 방지)
     existing = db.rows(
         "SELECT * FROM memories WHERE project_id=? AND status!='superseded'",
         (project_id,),
@@ -118,7 +197,6 @@ def commit(
 
     superseded = 0
     if match:
-        # 반박적 새 답 + 옛것이 확립 상태 → 교정으로 취급
         if is_complaint(question) and match["status"] == "established":
             mid = _store_memory(
                 project_id, category, title, answer, "session",
@@ -131,7 +209,6 @@ def commit(
             superseded = match["id"]
             return {"created": 1, "updated": 0, "superseded": superseded, "memory_id": mid}
 
-        # 같은 주제의 갱신 → 본문 교체, 상태 유지 (증거에 기록)
         now = db.now()
         summary = make_summary(title, answer)
         overview = make_overview(answer)
@@ -150,43 +227,6 @@ def commit(
     _attach_files(mid, files)
     db.log_event(project_id, "memory", f"지식 추가 [{category}] {title}")
     return {"created": 1, "updated": 0, "superseded": 0, "memory_id": mid}
-
-
-def remember(
-    project_id: int,
-    title: str,
-    content: str,
-    category: str = "knowledge",
-    confirmed: bool = False,
-) -> dict:
-    """에이전트·사람이 명시적으로 남기는 지식. confirmed=True 면 확립으로.
-
-    같은 제목(정규화)의 확립 지식이 이미 있으면, 이 기록을 교정으로 보고
-    옛것을 대체합니다 (사람이 '같은 제목으로 다시 쓴다' = 정정).
-    """
-    if category not in CATEGORIES:
-        category = "knowledge"
-    norm = normalize_title(title)
-    superseded = 0
-    if confirmed:
-        existing = db.rows(
-            "SELECT * FROM memories WHERE project_id=? AND status='established'",
-            (project_id,),
-        )
-        match = next((m for m in existing if normalize_title(m["title"]) == norm), None)
-        if match:
-            superseded = match["id"]
-    mid = _store_memory(project_id, category, title.strip(), redact(content.strip()),
-                        "manual", confirmed=confirmed,
-                        corrects=superseded or None)
-    if superseded:
-        db.execute(
-            "UPDATE memories SET status='superseded', superseded_by=? WHERE id=?",
-            (mid, superseded),
-        )
-        _append_evidence(superseded, "superseded", f"사람이 같은 제목으로 교정 → 새 지식 #{mid}")
-    db.log_event(project_id, "memory", f"기록 [{category}] {title.strip()[:60]}")
-    return {"memory_id": mid, "uri": f"viking://{project_id}/memories/{category}/{mid}", "superseded": superseded}
 
 
 def _attach_files(memory_id: int, files: list[str] | None) -> None:

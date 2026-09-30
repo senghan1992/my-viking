@@ -455,6 +455,30 @@ label input, label textarea, label select { margin-top: 6px; font-weight: 400; }
 .quick-list li { margin: 3px 0; }
 .quick-list code { font-size: 12px; }
 
+/* ── 서기(secretary) 관찰함 ── */
+.mono { font-family: var(--font-mono); font-size: 12px; letter-spacing: -.2px; }
+.obs-session {
+  border: 1px solid var(--line); border-left: 3px solid var(--line-2); border-radius: 10px;
+  background: var(--surface-2); padding: 12px 14px 8px; margin-bottom: 14px;
+}
+.obs-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; }
+.obs-row {
+  display: flex; gap: 9px; align-items: baseline; padding: 5px 0;
+  border-top: 1px dashed var(--line); font-size: 13px;
+}
+.obs-kind {
+  flex: none; font-size: 11px; font-weight: 700; letter-spacing: .02em; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; background: var(--surface);
+}
+.obs-kind.k-error { color: var(--red); border-color: #e0b8ae; background: var(--red-bg); }
+.obs-kind.k-prompt, .obs-kind.k-request { color: var(--brass-ink); border-color: #d9c491; background: var(--brass-bg); }
+.obs-kind.k-decision { color: var(--green); border-color: #c9d6c8; background: var(--green-bg); }
+.obs-text { flex: 1 1 320px; min-width: 0; color: var(--ink-2); }
+.cmd-code {
+  cursor: pointer; background: var(--ink); color: #f4efe2; border: none; padding: 8px 13px;
+  border-radius: 9px; font-size: 12.5px; box-shadow: var(--shadow-sm);
+}
+.cmd-code:hover { background: #33301f; }
 /* ── 반응형 ── */
 @media (max-width: 700px) {
   body { font-size: 14.5px; }

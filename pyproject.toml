@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myviking"
-version = "1.0.0"
+version = "2.0.0"
 description = "사람별 프로젝트 지식 도서관 — coding agent가 자동으로 채우고 참조하는 knowledge library"
 readme = "README.md"
 requires-python = ">=3.10"

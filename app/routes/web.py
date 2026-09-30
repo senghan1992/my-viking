@@ -108,9 +108,10 @@ if command -v jv >/dev/null 2>&1; then
   else
     jv connect --url "$URL" --key "$KEY"
   fi
-  echo "  pi/omp: 이 폴더에서 여는 새 세션만 자동 연결 — 연결 안 한 다른 폴더는 viking 도구·주입 0"
+  echo "  pi/omp: 이 폴더에서 여는 새 세션만 자동 연결 — 작업은 '관찰'로 쌓입니다"
   echo "  (열려 있는 세션은 /myviking use)"
-  echo "상태: jv status · 이 폴더에서 쓰지 않기: jv disconnect · 다시 붙이기: jv connect <이름> · 전체 끄기: jv disable"
+  echo "  서기 agent 가 관찰을 지식으로 정리합니다 → jv secretary once · 자동: jv secretary auto on"
+  echo "상태: jv status · 관찰함: jv inbox · 이 폴더에서 쓰지 않기: jv disconnect · 전체 끄기: jv disable"
 else
   echo "⚠ jv 를 찾지 못했습니다 — python3/pip 가 설치되어 있는지 확인하고,"
   echo "  pip install git+https://github.com/senghan1992/my-viking.git 후 다시 시도하세요."
@@ -150,7 +151,9 @@ def dashboard(request: Request, user: dict = Depends(login_required), msg: str =
     projects = db.rows(
         """SELECT p.*,
                   (SELECT COUNT(*) FROM memories m WHERE m.project_id=p.id AND m.status!='superseded') AS memory_count,
-                  (SELECT COUNT(*) FROM sessions s WHERE s.project_id=p.id) AS session_count
+                  (SELECT COUNT(*) FROM sessions s WHERE s.project_id=p.id) AS session_count,
+                  (SELECT COUNT(*) FROM observations o WHERE o.project_id=p.id
+                     AND o.state IN ('open','claimed')) AS pending_count
            FROM projects p WHERE p.user_id=? ORDER BY p.updated_at DESC""",
         (user["id"],),
     )
