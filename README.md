@@ -99,7 +99,7 @@ jv pi install   --url http://<서버>:8787 --key jv_xxxx   # pi → 이 폴더 �
 |---|---|---|
 | `jv connect` | `git remote add` | 주소·키만 묻고, 이 폴더를 그 프로젝트에 묶으며 이 머신의 에이전트를 전부 설치 |
 | `jv status` | `git status` | 이 폴더가 도서관을 쓰는지 + 서버·에이전트 연동 상태를 한 화면으로 |
-| `jv disconnect` | (해제) | **이 폴더에서 완전히 해제** — 폴더 연결 파일 + 폴더의 Claude Code 훅 제거. 기록·주입 완전 중단 |
+| `jv disconnect` | (해제) | **이 폴더에서 완전히 해제** — 폴더 연결 파일 + 폴더의 Claude Code 훅 제거. jcode 연동이라면 전역 MCP 환경도 함께 정리해 다른 프로젝트로 새지 않도록 |
 | `jv connect <이름>` / `jv switch <이름>` | `git checkout` | 저장된 다른 프로젝트로 이 폴더만 전환 (키 재입력 없음) |
 | `jv list` | `git remote -v` | 저장된 연결 목록 (키는 0600 파일에만) |
 | `jv disable` / `jv enable` | 스위치 | 이 **컴퓨터 전체**에서 도서관 끄기/켜기 — 연결은 남겨 두고 어디에서도 안 쓰게 |
@@ -131,12 +131,19 @@ jv disable                       # 이 컴퓨터 전체 OFF (여행·집 검증 
 이후 그 폴더에서 Claude Code 나 pi 를 쓰면 끝입니다. 질문마다 기존 지식이 주입되고,
 작업이 끝나면 자동으로 기록됩니다. 다음 세션은 브리핑을 받고 시작합니다.
 
-**pi 세션은 기본적으로 자유 사용이며, 연결은 세션(스레드) 단위입니다** — 한 세션에서
-`/myviking connect`·`switch` 를 써도 다른 세션에는 영향이 없습니다. 키·주소는
-`~/.myviking/connections.json`(0600)에 저장되고, `jv pi install` 은 해당 폴더에
-`.myviking-connection.json`(비밀 없음, 폴더 기본값)을 남겨 `jv pi install` 또는
-`/myviking use` 로 바로 적용할 수 있게 합니다. pi 도 매 턴 질문→답이 자동으로
-도서관에 기록됩니다. 그래서:
+**연결은 모든 에이전트에 '프로젝트(폴더) 단위'입니다 — 전역 "현재 연결" 이란 것 자체가
+존재하지 않습니다** (pi hub v8 + CLI 통일). 그 폴더에서 여는 세션은 그 폴더의
+`.myviking-connection.json` 이 가리키는 도서관에만 붙고, **설정 파일이 없는 폴더는
+아무 설정 없이 자유롭게 쓰입니다** (기록도 주입도 0). 다른 프로젝트에서 연결했다고
+이 프로젝트가 그 도서관으로 붙지 않으며, 연결 파일 탐색은 git 저장소 루트까지만
+올라갑니다(상위 공유 폴더·홈으로 새지 않음). 셸·프로필에 `MYVIKING_*` 환경변수를
+걸어도 연결을 정하지 못하도록 끊어뒀습니다 — 전역으로 모든 폴더를 한 프로젝트로
+새던 마지막 길이었습니다. (단, 에이전트 설정에 스스로 env 를 박아준 MCP 서버는 그
+에이전트의 opt-in 으로 존중되되, 폴더 연결이 있으면 폴더가 우선입니다.)
+키·주소는 `~/.myviking/connections.json`(0600)에 저장될 뿐이고, `jv pi install`·
+`/myviking connect`·`/myviking switch` 는 그 키를 **현재 폴더에 묶습니다**. pi 는 연결된 세션의
+매 턴 질문→답이 자동으로 도서관에 기록됩니다(그래서 다른 프로젝트 기록이 섞이지 않음).
+그래서:
 
 ```bash
 jv pi install --url ... --key ...                  # 연결 저장 + 이 폴더 기본값 + 허브 확장 설치
@@ -147,10 +154,12 @@ jv pi remove <이름>                                  # 저장된 연결 삭제
 jv pi check                                           # 폴더 연결·서버 인증 확인
 ```
 
-pi 안에서는 `/myviking`(상태/목록) · `/myviking use`(폴더 기본값을 이 세션에 적용) ·
-`/myviking switch`(선택 전환) · `/myviking connect`(새 연결) · `/myviking disconnect`
-(이 세션 해제) · `/myviking remove`(저장된 연결 삭제) 로 같은 일을 할 수
-있습니다. 연결이 없는 세션에서 pi 는 지식 도서관 없이 그냥 자유롭게 쓰입니다.
+pi 안에서는 `/myviking`(이 프로젝트 상태/저장된 키 목록) · `/myviking use`(이 프로젝트의
+설정를 이 세션에 다시 적용) · `/myviking switch`(이 프로젝트의 연결을 저장된 키로 교체)
+· `/myviking connect`(새 연결을 만들어 **이 폴더**에 묶기) · `/myviking disconnect`
+(이 세션 해제 + 이 폴더의 설정도 제거) · `/myviking remove`(저장된 연결 삭제, 이 폴더가
+가리키면 함께 해제) 로 같은 일을 할 수 있습니다. 연결 파일이 없는 폴더에서 pi 는
+지식 도서관 없이 그냥 자유롭게 쓰입니다.
 
 **omp(Oh My Pi)도 pi 와 완전히 동일하게 지원됩니다** — pi 를 포크한 같은 계열
 런타임이라 같은 TS 확장(`myviking.ts`)을 그대로 로드하고(`--extension` 로 직접
@@ -173,7 +182,7 @@ jv jcode install --url ... --key ...      # 연결 저장 + 폴더 링크 + 훅/
 jv jcode check                              # 훅·스킬·MCP·서버 인증 점검
 jv jcode status                             # 이 폴더 연결 + 연동 상태
 jv jcode list / jv jcode switch <이름>     # 저장된 연결 목록 / 폴더 전환 (MCP env 도 갱신)
-jv jcode disconnect                         # 폴더 연결 해제
+jv jcode disconnect                         # 폴더 연결 해제 (+ 전역 jcode MCP 의 myviking 제거 — 다른 프로젝트로 새지 않음)
 jv jcode remove <이름>                     # 연결 삭제 (키 포함) + 연동 제거
 jv jcode uninstall                          # 연동만 제거 (연결은 유지)
 ```

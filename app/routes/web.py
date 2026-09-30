@@ -107,7 +107,7 @@ if command -v jv >/dev/null 2>&1; then
   else
     jv connect --url "$URL" --key "$KEY"
   fi
-  echo "  pi/omp: 재시작하거나 /reload 후 연결할 세션에서 /myviking use"
+  echo "  pi/omp: 이 폴더에서 여는 새 세션은 자동 연결 — 열려 있는 세션은 /myviking use"
   echo "상태: jv status · 이 폴더에서 쓰지 않기: jv disconnect · 다시 붙이기: jv connect <이름> · 전체 끄기: jv disable"
 else
   echo "⚠ jv 를 찾지 못했습니다 — python3/pip 가 설치되어 있는지 확인하고,"

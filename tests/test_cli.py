@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jv.cli import _last_exchange, mask, _content_text
@@ -132,6 +134,248 @@ def test_disable_is_machine_wide_kill_switch(tmp_path, monkeypatch):
 
     cli._cmd_enable(Ns())
     assert cli._folder_conn(folder) is not None  # 켜면 다시 따라온다
+
+
+def test_folder_conn_does_not_escape_project_root(tmp_path, monkeypatch):
+    """연결은 프로젝트 단위 — 상위 공유 폴더/홈의 설정이 안으로 새지 않는다."""
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    conn = {"id": "https://v|p1", "name": "A", "url": "https://v", "key": "jv_k", "project": "p1"}
+    cli._save_conns([conn])
+
+    # 홈에 누군가 실수로 링크 파일을 놓았어도 — git 프로젝트 안에서는 무시된다
+    (tmp_path / cli._PI_LINK_FILE).write_text(json.dumps({"connection": conn["id"]}))
+
+    proj = tmp_path / "proj"
+    (proj / ".git").mkdir(parents=True)
+    sub = proj / "src" / "deep"
+    sub.mkdir(parents=True)
+    assert cli._folder_conn(sub) is None            # 전역으로 보이는 링크는 없다
+
+    # 프로젝트 루트에 두면 서브폴더까지 따라온다 (git 과 같게)
+    (proj / cli._PI_LINK_FILE).write_text(json.dumps({"connection": conn["id"]}))
+    assert cli._folder_conn(sub)["project"] == "p1"
+    assert cli._folder_conn(proj)["project"] == "p1"
+
+    # 옛 id(뒤에 슬래시)도 같은 연결로 본다
+    (proj / cli._PI_LINK_FILE).write_text(json.dumps({"connection": "https://v/|p1"}))
+    assert cli._folder_conn(sub)["project"] == "p1"
+
+
+def test_link_writes_to_git_root_from_subfolder(tmp_path, monkeypatch, capsys):
+    """git 저장소 안의 서브폴더에서 connect 하면 링크가 git 루트에 간다 (pi 허브와 대칭)."""
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    sub = repo / "src" / "deep"
+    sub.mkdir(parents=True)
+    capsys.readouterr()
+    monkeypatch.setattr(cli, "_resolve_project_by_key", lambda u, k: {"project": "p1", "project_name": "앱"})
+    monkeypatch.setattr(cli, "_verify_server", lambda u, k, p: {"project_name": "앱"})
+    monkeypatch.setattr(cli, "_self_command", lambda: "jv")
+
+    class Args:
+        url = "https://viking.example.com"
+        key = "jv_0123456789abcdef01234567"
+        project = "p1"
+        name = ""
+        agent = ""
+        timeout = "15"
+        cwd = str(sub)
+
+    cli.connect(Args())
+    assert not (sub / ".myviking-connection.json").exists()      # 서브폴더에 두지 않는다
+    link = repo / ".myviking-connection.json"
+    assert link.exists()                                          # git 루트에 쓴다
+    assert json.loads(link.read_text())["connection"] == "https://viking.example.com|p1"
+    assert ".myviking-connection.json" in (repo / ".git" / "info" / "exclude").read_text()
+    assert cli._folder_conn(sub)["project"] == "p1"
+
+
+def test_ambient_env_does_not_leak_to_shell_commands(tmp_path, monkeypatch, capsys):
+    """쉘/프로필의 MYVIKING_* 는 이제 연결을 정하지 못한다 — 모든 폴더가 자유 사용."""
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("MYVIKING_URL", "https://viking.example.com")
+    monkeypatch.setenv("MYVIKING_KEY", "jv_0123456789abcdef01234567")
+    monkeypatch.setenv("MYVIKING_PROJECT", "p1")
+    monkeypatch.setattr(cli, "_api", lambda *a, **kw: {"orientation": "잠겨있어서 실행 안 됨"})
+    monkeypatch.setattr(cli, "_resolve_project_by_key", lambda u, k: {"project": "p1"})
+
+    folder = tmp_path / "free"
+    folder.mkdir()
+
+    class A:
+        url = ""; key = ""; project = ""; timeout = "15"
+        cwd = str(folder); q = "x"; cmd = "brief"; content = ""; category = "knowledge"
+
+    # brief: env 로는 연결이 안 된다 — 폴더 연결을 먼저 만들어야 한다
+    with pytest.raises(SystemExit):
+        cli.remote(A())
+    err = capsys.readouterr().err
+    assert "이 폴더에 myviking 연결이 없습니다" in err
+    out = capsys.readouterr().out
+    assert "잠겨있어서" not in out          # API 호출은 실제로 안 됐다
+    assert cli._load_conns() == []         # env 만으로 저장소도 생기는 것이 아니다
+
+
+def test_mcp_honors_baked_env_from_agent_config(tmp_path, monkeypatch):
+    """jcode/Cursor/Codex 의 mcp.json 이 박아둔 MYVIKING_* 는 그 에이전트의 연결이라 존중한다."""
+    import io
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("MYVIKING_URL", "https://viking.example.com")
+    monkeypatch.setenv("MYVIKING_KEY", "jv_0123456789abcdef01234567")
+    monkeypatch.setenv("MYVIKING_PROJECT", "p9")
+    calls = []
+    monkeypatch.setattr(cli, "_api", lambda *a, **kw: calls.append(a[0:3]) or {"orientation": "BRIEF"})
+
+    folder = tmp_path / "agent"          # 폴더 연결 없는 곳 — 에이전트 설정(env) 만 있다
+    folder.mkdir()
+    lines = ["{\"jsonrpc\": \"2.0\", \"id\": 0, \"method\": \"initialize\"}",
+             "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/call\", "
+             "\"params\": {\"name\": \"viking_brief\", \"arguments\": {}}}"]
+    old_stdin, old_out = sys.stdin, sys.stdout
+    sys.stdin = io.StringIO("\n".join(lines) + "\n")
+    sys.stdout = io.StringIO()
+    try:
+        class Args:
+            url = ""; key = ""; project = ""; timeout = "15"
+            cwd = str(folder)
+        cli.mcp(Args())
+        out = sys.stdout.getvalue()
+    finally:
+        sys.stdin, sys.stdout = old_stdin, old_out
+    assert "BRIEF" in out                        # env 로 연결을 풀어냈다
+    assert ("https://viking.example.com", "jv_0123456789abcdef01234567", "GET") in calls
+
+
+def test_mcp_folder_conn_beats_baked_env(tmp_path, monkeypatch):
+    """폴더 연결이 있으면 에이전트 설정(env) 이 아니라 폴더가 우선 — 프로젝트 이동 후의 새임 방지."""
+    import io
+    import jv.cli as cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("MYVIKING_URL", "https://old.example.com")
+    monkeypatch.setenv("MYVIKING_KEY", "jv_0123456789abcdef01234567")
+    monkeypatch.setenv("MYVIKING_PROJECT", "old")
+    conn = {"id": "https://new.example.com|new", "name": "new", "url": "https://new.example.com",
+            "key": "jv_ffffffffffffffffffffffff", "project": "new"}
+    cli._save_conns([conn])
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    (folder / cli._PI_LINK_FILE).write_text(json.dumps({"connection": conn["id"]}))
+    calls = []
+    monkeypatch.setattr(cli, "_api", lambda *a, **kw: calls.append(a[0:3]) or {"orientation": "OK"})
+
+    lines = ["{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/call\", "
+             "\"params\": {\"name\": \"viking_brief\", \"arguments\": {}}}"]
+    old_stdin, old_out = sys.stdin, sys.stdout
+    sys.stdin = io.StringIO(lines[0] + "\n")
+    sys.stdout = io.StringIO()
+    try:
+        class Args:
+            url = ""; key = ""; project = ""; timeout = "15"
+            cwd = str(folder)
+        cli.mcp(Args())
+        out = sys.stdout.getvalue()
+    finally:
+        sys.stdin, sys.stdout = old_stdin, old_out
+    assert "OK" in out
+    assert ("https://new.example.com", "jv_ffffffffffffffffffffffff", "GET") in calls   # 폴더 연결 승
+    assert not any(c[0] == "https://old.example.com" for c in calls)
+
+
+def test_jcode_disconnect_clears_mcp_env(tmp_path, monkeypatch, capsys):
+    """jcode disconnect — 폴더 링크 제거와 함께 전역 jcode MCP(env) 도 지운다 (해제 완전성)."""
+    import jv.cli as cli
+
+    home = _fake_jcode_home(tmp_path, monkeypatch)
+    conn = {"id": "http://srv|p1", "name": "앱", "url": "http://srv",
+            "key": "jv_0123456789abcdef01234567", "project": "p1"}
+    cli._save_conns([conn])
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / cli._PI_LINK_FILE).write_text(json.dumps({"connection": conn["id"]}))
+    cli._jcode_mcp_file().write_text(json.dumps(cli._mcp_merge(conn), ensure_ascii=False), encoding="utf-8")
+    assert "myviking" in json.loads(cli._jcode_mcp_file().read_text())["servers"]
+
+    class Args:
+        cwd = str(proj)
+    cli.jcode_disconnect(Args())
+    out = capsys.readouterr().out
+    assert not (proj / cli._PI_LINK_FILE).exists()
+    mcp = json.loads(cli._jcode_mcp_file().read_text())
+    assert "myviking" not in mcp.get("servers", {})          # 다른 폴더로 새는 길이 닫힘
+    assert "jcode MCP" in out and "제거" in out
+
+
+def test_disconnect_clears_mcp_env_when_jcode_installed(tmp_path, monkeypatch, capsys):
+    """최상위 disconnect — git 루트 링크 제거 + jcode 연동이라면 전역 MCP 도 지운다."""
+    import jv.cli as cli
+
+    home = _fake_jcode_home(tmp_path, monkeypatch)
+    conn = {"id": "http://srv|p1", "name": "앱", "url": "http://srv",
+            "key": "jv_0123456789abcdef01234567", "project": "p1"}
+    cli._save_conns([conn])
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    sub = repo / "src"
+    sub.mkdir()
+    (repo / cli._PI_LINK_FILE).write_text(json.dumps({"connection": conn["id"]}))   # git 루트
+    cli._jcode_mcp_file().write_text(json.dumps(cli._mcp_merge(conn), ensure_ascii=False), encoding="utf-8")
+
+    class Args:
+        cwd = str(sub)
+        all = False
+    cli.disconnect(Args())
+    out = capsys.readouterr().out
+    assert not (repo / cli._PI_LINK_FILE).exists()        # 서브폴더에서 해도 git 루트가 정리됨
+    assert "myviking" not in json.loads(cli._jcode_mcp_file().read_text()).get("servers", {})
+    assert "새지 않습니다" in out
+
+
+def _fake_jcode_home(tmp_path, monkeypatch):
+    """jcode 연동 마커·config.toml·런처를 가짜 홈에 설치해 _jcode_integration_installed()=True 로 만든다."""
+    import jv.cli as cli
+
+    home = tmp_path / "home"
+    (home / ".jcode").mkdir(parents=True)
+    (home / ".myviking").mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    launcher = home / ".jcode" / "myviking-hook.sh"
+    launcher.write_text("#!/bin/bash\n")
+    monkeypatch.setattr(cli, "_jcode_hook_cmd", lambda: str(launcher))
+    cfg = home / ".jcode" / "config.toml"
+    cfg.write_text(f'[hooks]\nturn_end = "{launcher}"\n', encoding="utf-8")
+    cli._jcode_marker().write_text(
+        json.dumps({"version": cli._JCODE_VERSION, "launcher": str(launcher), "events": ["turn_end"]}))
+    return home
+
+
+def test_hub_template_is_project_scoped():
+    """pi 허브(hub v8)는 전역 '현재 연결' 을 모른다 — 폴더 설정이 곧 연결."""
+    import jv.cli as cli
+
+    src = cli._PI_EXT_TEMPLATE
+    assert cli._PI_HUB_VERSION in src and cli._PI_HUB_VERSION == "myviking-hub-v8"
+    # 1) 세션 시작: 이 프로젝트의 설정을 자동 적용한다 (전역 폴백 아님)
+    start = src[src.index('pi.on("session_start"'):src.index('pi.on("before_agent_start"')]
+    assert "linkInfo(ctx.cwd)" in start and "setActive(ctx, info.conn)" in start
+    assert "linkConn(ctx.cwd)" not in start
+    # 2) /myviking use 의 '저장된 첫 연결' 전역 폴백 금지 (다른 프로젝트로 새던 길)
+    use = src[src.index('if (word === "use")'):src.index('if (word === "remove")')]
+    assert "conns[0]" not in use and "linkInfo(ctx.cwd)" in use
+    # 3) connect·switch 는 이 프로젝트에 묶는다 (폴더 링크 쓰기)
+    assert src.count("setFolderLink(ctx.cwd") >= 2
+    # 4) 링크 탐색은 git 루트까지만
+    find = src[src.index("function findLink"):src.index("function projectFolderOf")]
+    assert '".git"' in find
 
 
 def test_hook_handler_is_silent_noop_without_connection(tmp_path, monkeypatch, capsys):

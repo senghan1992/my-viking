@@ -90,35 +90,54 @@ def _set_enabled(flag: bool) -> None:
 
 
 def _env_args(args: argparse.Namespace) -> tuple[str, str, str]:
-    url = (args.url or os.environ.get("MYVIKING_URL") or "").rstrip("/")
-    key = args.key or os.environ.get("MYVIKING_KEY") or ""
-    project = args.project or os.environ.get("MYVIKING_PROJECT") or ""
-    if not url or not key:
-        raise _NoConn("jv: MYVIKING_URL / MYVIKING_KEY 가 필요합니다 (--url, --key 또는 환경 변수).")
-    return url, key, project
+    """명시 인자(--url/--key/--project)와 폴더 연결만 쓴다 — 전역 env 는 안 씀.
+
+    쉘/프로필에 MYVIKING_* 를 걸면 연결 안 한 모든 폴더가 그 프로젝트로 새는 길이 되므로
+    자동 캡처 경로는 .myviking-connection.json(프로젝트 루트)이 유일하게 연결을 정한다.
+    """
+    url = (args.url or "").rstrip("/")
+    key = args.key or ""
+    project = (args.project or "").strip()
+    if url and key and project:
+        return url, key, project
+    if url or key:
+        raise _NoConn("jv: --url 과 --key(· --project)를 함께 주세요. "
+                      "전역 환경 변수(MYVIKING_*)로 연결하는 방식은 더 이상 없습니다.")
+    conn = _folder_conn(Path(getattr(args, "cwd", "") or os.getcwd()))
+    if conn:
+        return conn["url"], conn["key"], conn["project"]
+    raise _NoConn("jv: 연결을 찾을 수 없습니다 — 연결된 프로젝트 폴더에서 실행하거나 "
+                  "jv connect 로 이 폴더를 연결하세요.")
 
 
-def _req_conn(args: argparse.Namespace) -> tuple[str, str, str]:
-    """url/key/project 결정 — 명시 인자·환경변수 다음에 폴더 연결(.myviking-connection.json)을 폴백.
+def _req_conn(args: argparse.Namespace, allow_env: bool = False) -> tuple[str, str, str]:
+    """url/key/project 결정 — 명시 인자(--url/--key/--project) → 폴더 연결(.myviking-connection.json).
 
-    jcode 스킬이 jv brief/search/remember/score 를 폴더마다 아무 인자 없이 쓰게 해 준다.
+    전역 환경 변수는 연결을 정하지 못한다 — 쉘/프로필에 걸면 모든 폴더가 한 프로젝트로
+    새는 길이 되기 때문이다. 유일한 예외는 allow_env (MCP 서버) — 에이전트 설정에 per-launch
+    환경으로 MYVIKING_* 를 박은 경우(어떤 프로젝트의 에이전트인지 '그 에이전트의 설정' 이
+    정하는 것이라 전역 새임이 아님). 이 경우에도 폴더 연결이 있으면 폴더 연결이 우선한다.
     """
     if not _is_enabled():
         raise _NoConn("jv: 이 컴퓨터의 도서관이 꺼져 있습니다 (jv enable 로 켜기).")
-    url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
-    key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
-    project = (getattr(args, "project", "") or os.environ.get("MYVIKING_PROJECT") or "").strip()
+    url = (getattr(args, "url", "") or "").rstrip("/")
+    key = getattr(args, "key", "") or ""
+    project = (getattr(args, "project", "") or "").strip()
     if url and key and project:
         return url, key, project
-    if not url or not key:
-        conn = _folder_conn(Path(getattr(args, "cwd", "") or os.getcwd()))
-        if conn:
-            return conn["url"], conn["key"], conn["project"]
+    conn = _folder_conn(Path(getattr(args, "cwd", "") or os.getcwd()))
+    if conn:
+        return conn["url"], conn["key"], conn["project"]
+    if allow_env:
+        eurl = os.environ.get("MYVIKING_URL", "").rstrip("/")
+        ekey = os.environ.get("MYVIKING_KEY", "")
+        eproj = os.environ.get("MYVIKING_PROJECT", "").strip()
+        if eurl and ekey and eproj:
+            return eurl, ekey, eproj
     hint = ("이 컴퓨터의 도서관이 꺼져 있습니다 (jv enable 로 켜기)." if not _is_enabled()
             else "연결된 프로젝트 폴더에서 실행하거나: jv connect --url <서버> --key jv_...")
-    raise _NoConn("jv: MYVIKING_URL / MYVIKING_KEY 가 필요합니다 (--url, --key, 환경 변수, "
-                  f"또는 연결된 프로젝트 폴더에서 실행). {hint}")
-    raise SystemExit("jv: 연결을 찾을 수 없습니다 — jv status 로 확인하세요.")
+    raise _NoConn("jv: 이 폴더에 myviking 연결이 없습니다 — 그래서 아무 지식도 주입·기록되지 않습니다. "
+                  f"{hint}")
 
 
 def _folder_conn(cwd: Path) -> dict | None:
@@ -141,9 +160,9 @@ def _folder_conn(cwd: Path) -> dict | None:
             except (OSError, ValueError):
                 cid = None
             if cid:
-                return next((c for c in conns if c.get("id") == cid), None)
-        if dir_ == home or dir_.parent == dir_:
-            return None
+                return _conn_by_id(conns, cid)
+        if (dir_ / ".git").exists() or dir_ == home or dir_.parent == dir_:
+            return None   # 프로젝트 루트 이상은 올라가지 않는다 — 다른 폴더로 새는 것 방지
         dir_ = dir_.parent
     return None
 
@@ -211,6 +230,16 @@ def _settings_path(cwd: Path) -> Path:
 
 
 def hook_install(args: argparse.Namespace) -> None:
+    """Claude Code 훅을 이 폴더에 설치 — 폴더 연결(자동 캡처의 기준)이 먼저 확보돼야 한다."""
+    cwd = Path(args.cwd or os.getcwd())
+    timeout = int(args.timeout or 15)
+    folder = _folder_conn(cwd)
+    if folder:
+        # 이 폴더에 이미 연결이 있으면 그 연결을 그대로 훅에 쓴다 (인자 무관)
+        url, key, project = folder["url"], folder["key"], folder["project"]
+        _hook_write(url, key, project, cwd, timeout)
+        print(f"✓ 이 폴더의 연결({(folder.get('name') or project)})으로 훅 재설치 완료")
+        return
     url, key, project = _env_args(args)
     # 서버 확인 — 틀린 주소/키로 몇 주 방치되는 것을 막는다 (인증까지 검사)
     try:
@@ -222,13 +251,9 @@ def hook_install(args: argparse.Namespace) -> None:
         print(f"⚠ 서버 확인 실패: {e}")
         print("  연결 탭의 주소(URL)와 방금 발급받은 키(jv_...)를 다시 확인하고 명령을 다시 실행하세요.")
         raise
-
-    cwd = Path(args.cwd or os.getcwd())
-    timeout = int(args.timeout or 15)
-    # 폴더 연결을 먼저 확보한다 — 훅은 '폴더 연결' 만 보고 동작하므로 이것 없으면 무동작.
-    if project and not _folder_conn(cwd):
-        _link_folder(_conn_id(url, project), cwd, url, key, project,
-                     name if isinstance(name, str) else project)
+    # 폴더 연결을 확보한다 — 훅은 '폴더 연결' 만 보고 동작하므로 이것 없으면 무동작.
+    _link_folder(_conn_id(url, project), cwd, url, key, project,
+                 name if isinstance(name, str) and name else project)
     _hook_write(url, key, project, cwd, timeout)
     print("이제 이 폴더에서 Claude Code 를 열면 기록이 쌓이기 시작합니다.")
 
@@ -270,18 +295,19 @@ def _strip_jv_hooks(data: dict) -> tuple[dict, int]:
 
 def _git_exclude_add(cwd: Path, pattern: str = ".myviking-connection.json") -> None:
     """git 저장소 안이면 .git/info/exclude 에 연결 파일을 넣는다 (git 과 같은 배려)."""
-    for d in [cwd, *cwd.parents]:
-        if (d / ".git").exists():
-            try:
-                info = d / ".git" / "info"
-                info.mkdir(parents=True, exist_ok=True)
-                exc = info / "exclude"
-                text = exc.read_text() if exc.exists() else ""
-                if pattern not in text:
-                    exc.write_text(text.rstrip("\n") + f"\n# myviking\n{pattern}\n")
-            except OSError:
-                pass
-            return
+    root = _project_root(cwd)
+    git = root / ".git"
+    if not git.exists():
+        return
+    try:
+        info = git / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        exc = info / "exclude"
+        text = exc.read_text() if exc.exists() else ""
+        if pattern not in text:
+            exc.write_text(text.rstrip("\n") + f"\n# myviking\n{pattern}\n")
+    except OSError:
+        pass
 
 
 def _hook_write(url: str, key: str, project: str, cwd: Path, timeout: int = 15) -> Path:
@@ -363,21 +389,22 @@ def hook_check(args: argparse.Namespace) -> None:
         print(f"⚠ 빠진 이벤트: {', '.join(missing)} — jv hook install 로 다시 설치하세요.")
     else:
         print(f"✓ 이벤트: {', '.join(e for e, _ in HOOK_EVENTS)}")
-    # 환경 변수로 서버 확인 시도 — 예전 설치본(주소 박음) 호환, 없으면 폴더 연결로 확인
-    env = os.environ
-    for cfg in hooks.values():
-        cmd = cfg[0]["hooks"][0]["command"] if cfg else ""
-        m = re.search(r"MYVIKING_URL=(\S+)", cmd)
-        if m:
-            env = {**env, "MYVIKING_URL": m.group(1)}
-        m = re.search(r"MYVIKING_KEY=(\S+)", cmd)
-        if m:
-            env = {**env, "MYVIKING_KEY": m.group(1)}
-    if not (env.get("MYVIKING_URL") and env.get("MYVIKING_KEY")):
-        conn = _folder_conn(Path(args.cwd or os.getcwd()))
-        if conn:
-            env = {**env, "MYVIKING_URL": conn["url"], "MYVIKING_KEY": conn["key"],
-                   "MYVIKING_PROJECT": conn["project"]}
+    # 폴더 연결이 우선 — 이게 실제로 캡처되는 기준. shell 의 MYVIKING_* 로는 연결이 정해지지 않는다.
+    env = {}
+    conn = _folder_conn(Path(args.cwd or os.getcwd()))
+    if conn:
+        env = {"MYVIKING_URL": conn["url"], "MYVIKING_KEY": conn["key"], "MYVIKING_PROJECT": conn["project"]}
+    if not env:
+        # 예전 설치본(주소 박음 훅)은 명령 안에 MYVIKING_* 가 박혀 있다 — 점검 용도로만 파싱.
+        env = {k: os.environ.get(k, "") for k in ("MYVIKING_URL", "MYVIKING_KEY", "MYVIKING_PROJECT")}
+        for cfg in hooks.values():
+            cmd = cfg[0]["hooks"][0]["command"] if cfg else ""
+            m = re.search(r"MYVIKING_URL=(\S+)", cmd)
+            if m:
+                env["MYVIKING_URL"] = m.group(1)
+            m = re.search(r"MYVIKING_KEY=(\S+)", cmd)
+            if m:
+                env["MYVIKING_KEY"] = m.group(1)
     if env.get("MYVIKING_URL") and env.get("MYVIKING_KEY"):
         try:
             data = _verify_server(env.get("MYVIKING_URL", ""), env.get("MYVIKING_KEY", ""),
@@ -588,8 +615,10 @@ MCP_TOOLS = [
 
 
 def mcp(args: argparse.Namespace) -> None:
+    # allow_env: MCP 서버는 에이전트 설정이 주는 MYVIKING_* 도 존중한다 (그 에이전트 프로젝트의
+    # 연결을 설정이 정하는 것). 그래도 폴더 연결이 있으면 폴더가 우선 — 새는 것 방지.
     try:
-        url, key, project = _req_conn(args)
+        url, key, project = _req_conn(args, allow_env=True)
         offline = False
     except _NoConn as e:
         url = key = project = ""
@@ -671,7 +700,7 @@ _PI_EXT_FILE = "myviking.ts"
 _PI_LINK_FILE = ".myviking-connection.json"
 # 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
 # 마커가 없는 설치본은 오래된 버전으로 보고 pi install 이 최신으로 갱신한다.
-_PI_HUB_VERSION = "myviking-hub-v7"
+_PI_HUB_VERSION = "myviking-hub-v8"
 
 
 def _pi_path(flavor: str = "pi") -> Path:
@@ -693,8 +722,44 @@ def _pi_link_path(cwd: Path) -> Path:
     return cwd / _PI_LINK_FILE
 
 
+def _project_root(cwd: Path) -> Path:
+    """링크 파일을 놓는 '프로젝트 폴더' — 가장 가까운 .git 조상 (pi 허브 projectFolderOf와 같은 규칙).
+
+    .git 이 없으면 현재 폴더를 그대로 쓰고, 홈(~)이나 그 위로는 절대 올라가지 않는다 —
+    상위 공유 폴더·홈의 설정이 다른 프로젝트로 새는 길이 되기 때문이다.
+    """
+    start = cwd.resolve()
+    home = Path(os.environ.get("HOME") or str(Path.home())).resolve()
+    dir_ = start
+    for _ in range(12):
+        if (dir_ / ".git").exists():
+            return dir_
+        parent = dir_.parent
+        if parent == dir_ or parent == home or dir_ == home:
+            return start
+        dir_ = parent
+    return start
+
+
+def _project_link(cwd: Path) -> Path:
+    """이 프로젝트의 폴더 연결 파일 — git 루트(없으면 현재 폴더) 기준."""
+    return _pi_link_path(_project_root(cwd))
+
+
 def _conn_id(url: str, project: str) -> str:
-    return f"{url}|{project}"
+    # 뒤쪽 슬래시는 빼고 붙인다 — 같은 서버가 id 두 개로 갈라지지 않도록
+    return f"{(url or '').rstrip('/')}|{project}"
+
+
+def _norm_cid(cid: str) -> str:
+    """id 비교용 정규화 — 'http://h:1/|proj' 와 'http://h:1|proj' 를 같은 것으로 본다."""
+    url, _, project = (cid or "").rpartition("|")
+    return f"{url.rstrip('/')}|{project}"
+
+
+def _conn_by_id(conns: list[dict], cid: str) -> dict | None:
+    want = _norm_cid(str(cid or ""))
+    return next((c for c in conns if _norm_cid(str(c.get("id", ""))) == want), None)
 
 
 def _load_conns() -> list[dict]:
@@ -724,9 +789,9 @@ def _save_conns(conns: list[dict]) -> None:
 
 def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
     cwd_link = None
-    if cwd is not None and _pi_link_path(cwd).exists():
+    if cwd is not None and _project_link(cwd).exists():
         try:
-            cwd_link = json.loads(_pi_link_path(cwd).read_text()).get("connection")
+            cwd_link = json.loads(_project_link(cwd).read_text()).get("connection")
         except (OSError, ValueError):
             pass
     if not conns:
@@ -739,12 +804,13 @@ def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
 
 
 _PI_EXT_TEMPLATE = r"""// myviking — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
-// myviking-hub-v7 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
+// myviking-hub-v8 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
 // 이 파일 자체에는 비밀이 없다 — 프로젝트 고정도 없다.
-//   · 연결(주소+키+프로젝트): ~/.myviking/connections.json  (0600, jv pi install 이 저장)
-//   · 폴더 설정: 각 프로젝트 폴더의 .myviking-connection.json  (git 의 HEAD 같은 것 — '기본값')
-//   · pi 세션은 기본적으로 연결 없음(자유 사용). /myviking connect 또는 switch 로
-//     그 세션만 연결한다. 폴더 설정은 /myviking use 로 이 세션에 적용한다.
+//   · 연결의 주인은 '폴더'다: 프로젝트 폴더의 .myviking-connection.json (git 의 HEAD 같은 것)
+//     ~/.myviking/connections.json (0600) 은 주소+키 대장일 뿐 — 전역 '현재 연결' 은 존재하지 않는다.
+//   · 세션 시작: 이 프로젝트의 설정이 있으면 그 도서관으로 자동 연결, 없으면 자유 사용.
+//     다른 프로젝트의 설정이 여기로 새지 않는다 (git 루트 이상 올라가지 않음).
+//   · /myviking connect·switch 는 항상 "이 폴더"에 묶는다 — 다른 프로젝트는 영향 없음.
 //   · CLI: jv connect / jv status / jv disconnect / jv switch <이름> / jv list / jv disable
 //     (구 명령 jv pi install/switch/disconnect/list/check 도 그대로 동작)
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -782,28 +848,65 @@ function loadConns(): Conn[] {
   } catch { return []; }
 }
 
+const normCid = (s: string): string => {
+  // 'http://h:1/|proj' 와 'http://h:1|proj' 를 같은 연결로 본다
+  const i = (s || "").lastIndexOf("|");
+  return i < 0 ? (s || "") : s.slice(0, i).replace(/\/+$/, "") + s.slice(i);
+};
+
 function findLink(start: string): string | null {
-  // 현재 폴더에서 위로 홈까지 올라가며 연결 파일을 찾는다 (git 과 비슷하게)
+  // 현재 폴더에서 프로젝트 루트(.git)까지만 올라가며 연결 파일을 찾는다.
+  // 프로젝트 루트를 넘지 않는다 — 상위 공유 폴더·다른 프로젝트의 설정이 새는 것을 막는다.
   let dir = resolve(start);
   for (let i = 0; i < 12; i++) {
     const f = join(dir, LINK_NAME);
     if (existsSync(f)) return f;
+    if (existsSync(join(dir, ".git")) || dir === HOME) return null;   // 이 프로젝트의 끝
     const parent = resolve(dir, "..");
-    if (parent === dir || dir === HOME) return null;
+    if (parent === dir) return null;
     dir = parent;
   }
   return null;
 }
 
-function linkConn(cwd: string): Active | null {
-  // 폴더 설정(.myviking-connection.json)이 가리키는 저장된 연결
+function projectFolderOf(cwd: string): string {
+  // 링크가 놓여야 할 '프로젝트 폴더' — 가장 가까운 .git 조상, 없으면 현재 폴더.
+  // 홈(~)에는 절대 쓰지 않는다 — 그게 곧 '전역 연결' 누수의 길이 된다.
+  const start = resolve(cwd);
+  let dir = start;
+  for (let i = 0; i < 12; i++) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = resolve(dir, "..");
+    if (parent === dir || parent === HOME || dir === HOME) return start;
+    dir = parent;
+  }
+  return start;
+}
+
+function gitExclude(cwd: string, pattern = LINK_NAME): void {
+  // .git/info/exclude 에 추가 — 연결 파일이 git 에 안 잡히게 (best effort)
+  try {
+    const git = join(cwd, ".git");
+    if (!existsSync(git)) return;
+    mkdirSync(join(git, "info"), { recursive: true });
+    const f = join(git, "info", "exclude");
+    const cur = existsSync(f) ? readFileSync(f, "utf8") : "";
+    if (!cur.split(/\r?\n/).some((l) => l.trim() === pattern)) {
+      writeFileSync(f, (cur === "" || cur.endsWith("\n") ? cur : cur + "\n") + pattern + "\n");
+    }
+  } catch { /* 실패해도 연결 자체는 유효하다 */ }
+}
+
+function linkInfo(cwd: string): { id: string; conn: Active | null } | null {
+  // 폴더 설정(.myviking-connection.json)이 가리키는 것 — 키가 저장소에 없으면 conn 은 null
   const link = findLink(cwd);
   if (!link) return null;
   try {
     const j = JSON.parse(readFileSync(link, "utf8"));
     const id = String(j?.connection || "");
-    const conn = loadConns().find((c) => c.id === id);
-    return conn ? { name: conn.name || conn.project, url: conn.url, key: conn.key, project: conn.project } : null;
+    const c = loadConns().find((x) => normCid(x.id) === normCid(id));
+    const conn: Active | null = c ? { name: c.name || c.project, url: c.url, key: c.key, project: c.project } : null;
+    return { id, conn };
   } catch { return null; }
 }
 
@@ -818,9 +921,9 @@ async function call<T>(c: Active, path: string, method = "GET", body?: unknown):
 }
 
 function noConn(): string {
-  return "이 세션은 myviking 프로젝트에 연결되어 있지 않습니다 (자유 사용).\n"
-    + "  · 새로 연결: /myviking connect (서버 주소 + API 키만 입력 — 키는 서버 → 프로젝트 → 🔗 에이전트 연결 탭)\n"
-    + "  · 폴더 설정 적용: /myviking use  ·  저장된 연결로: /myviking switch  ·  목록: /myviking";
+  return "이 프로젝트는 myviking 도서관에 연결되어 있지 않습니다 (자유 사용 — 전역 연결이라는 것은 없습니다).\n"
+    + "  · 이 폴더만 연결: /myviking connect (서버 주소 + API 키 — 키는 서버 → 프로젝트 → 🔗 에이전트 연결 탭)\n"
+    + "  · 저장된 다른 키로: /myviking switch  ·  목록: /myviking";
 }
 
 function briefUrl(c: Active, sid: string): string {
@@ -859,8 +962,9 @@ function linkPath(cwd: string): string {
 }
 
 function setFolderLink(cwd: string, id: string): void {
-  const f = linkPath(cwd);
-  writeFileSync(f, JSON.stringify({ connection: id }, null, 2));
+  const root = projectFolderOf(cwd);
+  writeFileSync(join(root, LINK_NAME), JSON.stringify({ connection: id }, null, 2));
+  gitExclude(root);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -940,13 +1044,20 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // ── 세션 시작: 기본은 항상 연결 없음(자유). 어떤 프로젝트에도 자동 연결하지 않는다.
-  //    (env vars·폴더 설정 모두 자동 적용 안 함 — /myviking use·connect 만 연결한다)
-  pi.on("session_start", async (event, ctx) => {
-    const lc = linkConn(ctx.cwd);
-    if (lc && ctx.hasUI) {
-      ctx.ui.notify(`myviking: 이 폴더는 '${lc.name}' 로 설정돼 있습니다 — 자동 연결 안 함. /myviking use 로 적용하세요.`, "info");
+  // ── 세션 시작: '이 프로젝트'의 설정이 있으면 그 도서관으로 자동 연결한다.
+  //    설정이 없는 폴더는 자유 사용 — 전역 기본값·남의 프로젝트 폴백은 없다.
+  pi.on("session_start", async (_event, ctx) => {
+    const info = linkInfo(ctx.cwd);
+    if (!info) return;                       // 설정 없는 폴더는 자유 사용
+    if (!info.conn) {                        // 설정은 있는데 키가 저장소에 없다 (jv remove 후 등)
+      if (ctx.hasUI) ctx.ui.notify(`myviking: 이 폴더의 설정 '${info.id}' 에 저장된 키가 없습니다 — /myviking connect 로 키를 다시 넣으세요 (지금은 자유 사용)`, "info");
+      return;
     }
+    setActive(ctx, info.conn);
+    if (ctx.hasUI) {
+      ctx.ui.notify(`myviking: 이 프로젝트는 '${info.conn.name}' 도서관에 연결됨 (폴더 전용 — 해제: /myviking disconnect)`, "info");
+    }
+    await injectBrief(info.conn, threadIdOf(ctx), pi);
   });
 
   // ── 자동 증류: 질문마다 답을 프로젝트 도서관에 기록 (Claude Code 훅과 동일 파이프라인) ──
@@ -985,7 +1096,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── /myviking — 세션별 연결 (list | use | connect | switch | disconnect | remove) ──
   pi.registerCommand("myviking", {
-    description: "myviking: 세션 연결 관리 — 기본은 자유 (list | use | connect | switch | disconnect | remove)",
+    description: "myviking: 이 프로젝트의 도서관 연결 관리 (list | use | connect | switch | disconnect | remove)",
     getArgumentCompletions: (prefix: string) =>
       ["list", "use", "connect", "switch", "disconnect", "remove"]
         .filter((v) => v.startsWith(prefix))
@@ -998,8 +1109,8 @@ export default function (pi: ExtensionAPI) {
         const conns0 = loadConns();
         const lastUrl = conns0[0]?.url || "";
         // 서버 주소는 보통 한 번만 — 마지막으로 쓴 주소를 기본값으로 넣어 준다
-        const url = (await ctx.ui.input("서버 주소", lastUrl || "http://ip:포트 — 프로젝트를 만든 서버")) || "";
-        const key = (await ctx.ui.input("API 키 (jv_...) — 서버 → 프로젝트 → 🔗 에이전트 연결에서 발급")) || "";
+        const url = ((await ctx.ui.input("서버 주소", lastUrl || "http://ip:포트 — 프로젝트를 만든 서버")) || "").replace(/\/+$/, "");
+        const key = ((await ctx.ui.input("API 키 (jv_...) — 서버 → 프로젝트 → 🔗 에이전트 연결에서 발급")) || "").trim();
         if (!url || !key) { ctx.ui.notify("연결하지 않았습니다 (입력 취소).", "info"); return; }
         try {
           // 슬러그를 몰라도 된다 — 키가 어떤 프로젝트의 것인지 서버가 알려 준다 (/api/v1/me)
@@ -1017,8 +1128,9 @@ export default function (pi: ExtensionAPI) {
             chmodSync(CONNS_FILE, 0o600);
           } catch {}
           const c: Active = { name: me.project_name || project, url, key, project };
-          setActive(ctx, c);                        // 이 세션만 연결 (폴더 파일 안 건드림)
-          ctx.ui.notify(`✓ 이 세션을 '${c.name}' 프로젝트에 연결했습니다 — 다른 세션에는 영향 없음 (키 저장: ~/.myviking/connections.json)`, "info");
+          try { setFolderLink(ctx.cwd, id); } catch {}    // 이 프로젝트에 고정 (폴더 = 연결의 주인)
+          setActive(ctx, c);
+          ctx.ui.notify(`✓ 이 프로젝트 폴더를 '${c.name}' 도서관에 연결했습니다\n  · 이 폴더에서 여는 pi 세션은 자동으로 이 도서관을 씁니다\n  · 다른 프로젝트는 영향 없음 (키 저장: ~/.myviking/connections.json)`, "info");
           await injectBrief(c, threadIdOf(ctx), pi);
         } catch (e) {
           ctx.ui.notify(`연결 실패: ${(e as Error).message} — 키가 유효한지, 서버가 최신 버전인지 확인하세요.`, "error");
@@ -1029,11 +1141,13 @@ export default function (pi: ExtensionAPI) {
       const conns = loadConns();
 
       if (word === "use") {
-        // 폴더 설정(.myviking-connection.json)을 이 세션에 적용 — 없으면 저장된 첫 연결
-        const lc = linkConn(ctx.cwd) || (conns.length ? { name: conns[0].name, url: conns[0].url, key: conns[0].key, project: conns[0].project } : null);
-        if (!lc) { ctx.ui.notify("적용할 연결이 없습니다 — /myviking connect 또는 jv pi install ...", "info"); return; }
+        // 이 프로젝트의 설정만 적용한다 — '저장된 첫 연결' 같은 전역 폴백은 없다 (다른 프로젝트로 새는 길).
+        const info = linkInfo(ctx.cwd);
+        if (!info) { ctx.ui.notify("이 프로젝트에는 연결 설정이 없습니다 — /myviking connect 로 이 폴더만 연결하세요.", "info"); return; }
+        if (!info.conn) { ctx.ui.notify(`이 폴더의 설정 '${info.id}' 는 저장된 키가 없습니다 — /myviking connect 로 키를 다시 넣으세요.`, "error"); return; }
+        const lc = info.conn;
         setActive(ctx, lc);
-        ctx.ui.notify(`✓ 이 세션을 '${lc.name}' 프로젝트에 연결했습니다 (기본: 자유 — 이 세션만 변경)`, "info");
+        ctx.ui.notify(`✓ 이 세션을 '${lc.name}' 프로젝트에 연결했습니다 (이 프로젝트의 설정)`, "info");
         await injectBrief(lc, threadIdOf(ctx), pi);
         return;
       }
@@ -1055,10 +1169,10 @@ export default function (pi: ExtensionAPI) {
           if (c.url === conn.url && c.project === conn.project) activeByThread.delete(t);
         }
         let msg = `✓ 연결 삭제: ${conn.name || conn.project} (${conn.project}) — 키도 함께 제거했습니다.`;
-        const f = linkPath(ctx.cwd);
+        const f = linkPath(projectFolderOf(ctx.cwd));
         let linkedId: string | null = null;
         try { linkedId = (JSON.parse(readFileSync(f, "utf8")) as { connection?: string }).connection || null; } catch {}
-        if (existsSync(f) && linkedId === conn.id) {
+        if (existsSync(f) && normCid(linkedId || "") === normCid(conn.id)) {
           try { unlinkSync(f); } catch {}
           msg += `\n이 폴더의 설정도 함께 해제했습니다.`;
         }
@@ -1067,9 +1181,16 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (word === "disconnect") {
-        if (!getActive(ctx)) { ctx.ui.notify("이 세션은 연결되어 있지 않습니다.", "info"); return; }
+        const cur = getActive(ctx);
         clearActive(ctx);
-        ctx.ui.notify("이 세션의 myviking 연결을 해제했습니다 — 자유 사용.", "info");
+        // 이 폴더의 설정이 지금 연결과 같으면 함께 제거 — 다른 프로젝트는 건드리지 않는다
+        let unlinked = false;
+        const f = linkPath(projectFolderOf(ctx.cwd));
+        try {
+          const cid = (JSON.parse(readFileSync(f, "utf8")) as { connection?: string }).connection || "";
+          if (cid && (!cur || normCid(cid) === normCid(`${cur.url}|${cur.project}`))) { unlinkSync(f); unlinked = true; }
+        } catch {}
+        ctx.ui.notify(`✓ 이 세션을 해제했습니다${unlinked ? " — 이 프로젝트의 연결 설정도 제거했으니 다시 열면 자유 사용입니다" : ""}`, "info");
         return;
       }
 
@@ -1081,7 +1202,7 @@ export default function (pi: ExtensionAPI) {
         const cur = getActive(ctx);
         const items = conns.map((c, i) => fmtConn(c, i + 1) + (cur && cur.url === c.url && cur.project === c.project ? " ★현재" : ""))
                              .concat([`${conns.length + 1}. ＋ 새로 연결하기 (/myviking connect)`]);
-        const pick = ctx.hasUI ? await ctx.ui.select("연결할 프로젝트 (이 세션만 바꿉니다)", items) : null;
+        const pick = ctx.hasUI ? await ctx.ui.select("연결할 프로젝트 (이 폴더에 적용됩니다)", items) : null;
         if (!pick) { ctx.ui.notify("취소했습니다.", "info"); return; }
         const idx = parseInt(pick.split(".")[0], 10) - 1;
         if (idx === conns.length) {
@@ -1091,22 +1212,25 @@ export default function (pi: ExtensionAPI) {
         const conn = conns[idx];
         if (!conn) { ctx.ui.notify("찾을 수 없습니다.", "info"); return; }
         const c: Active = { name: conn.name || conn.project, url: conn.url, key: conn.key, project: conn.project };
-        setActive(ctx, c);                            // 이 세션만 변경 (폴더 파일 안 건드림)
-        ctx.ui.notify(`✓ 이 세션을 '${c.name}' 프로젝트로 바꿔 연결했습니다 (다른 세션 영향 없음)`, "info");
+        try { setFolderLink(ctx.cwd, conn.id); } catch {}    // 이 프로젝트의 기본 연결로 고정
+        setActive(ctx, c);
+        ctx.ui.notify(`✓ 이 프로젝트를 '${c.name}' 으로 바꿔 연결했습니다 — 이 폴더의 새 세션도 이 도서관 (다른 프로젝트 영향 없음)`, "info");
         await injectBrief(c, threadIdOf(ctx), pi);
         return;
       }
 
       // list (기본) — 이 세션의 상태를 보여 준다
       const cur = getActive(ctx);
-      const lc = linkConn(ctx.cwd);
+      const info = linkInfo(ctx.cwd);
+      const lc = info?.conn || null;
       const lines: string[] = [];
-      if (cur) lines.push(`현재 세션 연결: ${cur.name} — ${cur.project} (${cur.url})`);
-      else if (lc) lines.push(`이 세션: 연결 없음 (자유 사용) — 폴더 설정: '${lc.name}' → /myviking use 로 적용`);
-      else lines.push(`이 세션: 연결 없음 (자유 사용). /myviking connect 또는 switch`);
+      if (cur) lines.push(`이 프로젝트 연결: ${cur.name} — ${cur.project} (${cur.url})`);
+      else if (lc) lines.push(`이 프로젝트 설정: '${lc.name}' — 이 세션은 연결 없음 → /myviking use`);
+      else if (info) lines.push(`이 프로젝트 설정 '${info.id}': 저장된 키가 없음 → /myviking connect`);
+      else lines.push(`이 프로젝트는 연결 설정 없음 (자유 사용) — /myviking connect 로 이 폴더만 연결`);
       if (conns.length) {
         lines.push("");
-        lines.push(`저장된 연결 ${conns.length}개 — /myviking switch 로 전환, remove 로 삭제:`);
+        lines.push(`이 컴퓨터에 저장된 키 ${conns.length}개 (switch = 이 프로젝트의 연결 변경, remove 로 삭제):`);
         conns.forEach((c, i) => lines.push(fmtConn(c, i + 1) + (cur && cur.url === c.url && cur.project === c.project ? " ★" : "")));
       }
       if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), "info");
@@ -1167,7 +1291,7 @@ def _link_folder(conn_id: str, cwd: Path, url: str, key: str, project: str,
     conns.insert(0, conn)
     _save_conns(conns)
 
-    link = _pi_link_path(cwd)
+    link = _project_link(cwd)
     try:
         link.write_text(json.dumps({"connection": conn_id}, ensure_ascii=False, indent=2))
     except OSError as e:
@@ -1216,7 +1340,13 @@ def _connect_flow(url: str, key: str, project: str, cwd: Path) -> dict:
 
     print(f"✓ 서버 확인: {url} · 프로젝트 {project} · {name}")
     print(f"✓ 연결 저장: {_pi_conns_path()} (키 0600, 현재 {len(_load_conns())}개 연결)")
-    print(f"✓ 이 폴더 기본 연결: {cwd} → {name} ({_PI_LINK_FILE})")
+    link_path = _project_link(cwd)
+    if link_path.parent == cwd:
+        where = str(cwd)
+    else:
+        where = f"{cwd} → git 저장소 루트 {link_path.parent} 에 놓았습니다 ({_PI_LINK_FILE})"
+    print(f"✓ 이 폴더 기본 연결: {where}")
+    print(f"  · 이 폴더의 에이전트 세션은 자동으로 이 도서관을 쓰고, 다른 폴더에는 영향 없음")
     return conn
 
 
@@ -1227,9 +1357,9 @@ def pi_install(args: argparse.Namespace, flavor: str = "pi") -> None:
     flavor="omp" 면 omp(Oh My Pi)용으로 같은 허브를 설치 — pi 와 동일한 TS 확장
     포맷을 쓰는 같은 계열 런타임이라 연결 저장소·폴더 링크를 그대로 공유한다.
     """
-    url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
-    key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
-    project = (getattr(args, "project", "") or os.environ.get("MYVIKING_PROJECT") or "").strip()
+    url = (getattr(args, "url", "") or "").rstrip("/")
+    key = getattr(args, "key", "") or ""
+    project = (getattr(args, "project", "") or "").strip()
     cwd = Path(getattr(args, "cwd", "") or os.getcwd())
 
     _connect_flow(url, key, project, cwd)
@@ -1238,8 +1368,8 @@ def pi_install(args: argparse.Namespace, flavor: str = "pi") -> None:
     hub = _install_hub_extension(flavor)
 
     print(f"✓ {flavor} 허브 확장: {hub}")
-    print(f"이 폴더의 기본 연결로 저장했습니다. {flavor} 세션은 기본이 자유 사용이므로,")
-    print("  세션에서 /myviking use 로 적용하거나 /myviking connect·switch 로 직접 연결하세요.")
+    print(f"이 폴더의 기본 연결로 저장했습니다. 이 폴더에서 여는 {flavor} 세션은 자동으로 이 도서관에 붙습니다.")
+    print("  (열려 있는 세션은 /myviking use 로 지금 적용) · 해제: jv disconnect 또는 /myviking disconnect")
     print(f"  · 저장된 연결 관리: jv {flavor} list / jv {flavor} switch <이름> / jv {flavor} remove <이름> / jv {flavor} check")
 
 
@@ -1257,9 +1387,9 @@ def connect(args: argparse.Namespace) -> None:
     공유)·jcode(훅+스킬+MCP)를 감지해 전부 설치하고, 그 외 에이전트(Cursor·Codex 등)용
     MCP 설정도 출력한다.
     """
-    url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
-    key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
-    project = (getattr(args, "project", "") or os.environ.get("MYVIKING_PROJECT") or "").strip()
+    url = (getattr(args, "url", "") or "").rstrip("/")
+    key = getattr(args, "key", "") or ""
+    project = (getattr(args, "project", "") or "").strip()
     cwd = Path(getattr(args, "cwd", "") or os.getcwd())
     want = (getattr(args, "agent", "") or "").strip().lower()
 
@@ -1297,13 +1427,13 @@ def connect(args: argparse.Namespace) -> None:
     has_pi = (Path.home() / ".pi").exists() or bool(shutil.which("pi"))
     if want in ("", "pi") and has_pi:
         hub = _install_hub_extension("pi")
-        print(f"✓ pi 허브 확장: {hub} (전역 — pi 재시작 후 이 세션은 /myviking use 로 연결)")
+        print(f"✓ pi 허브 확장: {hub} (전역 — 이 폴더의 새 세션은 자동 연결, 열린 세션은 /myviking use)")
         done.append("pi 확장")
     # ── omp (Oh My Pi): ~/.omp 존재 or omp 실행파일 — pi 와 같은 확장 API 공유 ──
     has_omp = (Path.home() / ".omp").exists() or bool(shutil.which("omp"))
     if want in ("", "omp") and has_omp:
         hub_omp = _install_hub_extension("omp")
-        print(f"✓ omp 허브 확장: {hub_omp} (전역 — omp 재시작 후 이 세션은 /myviking use 로 연결)")
+        print(f"✓ omp 허브 확장: {hub_omp} (전역 — 이 폴더의 새 세션은 자동 연결, 열린 세션은 /myviking use)")
         done.append("omp 확장")
     # ── jcode: ~/.jcode 존재 ──
     has_jcode = (Path.home() / ".jcode").exists()
@@ -1328,7 +1458,7 @@ def connect(args: argparse.Namespace) -> None:
         print(f"설치 완료: {', '.join(done)}")
     print("다음 단계:")
     print("  · Claude Code: 이 폴더에서 곧바로 사용")
-    print("  · pi/omp: 재시작하거나 /reload 후 연결할 세션에서 /myviking use")
+    print("  · pi/omp: 이 폴더에서 여는 새 세션은 자동 연결 — 열려 있는 세션은 /myviking use")
     print("  · jcode: jcode 재시작 (config 재로드) 후 세션 시작 시 jv brief 가 안내됨")
     print("  · 상태: jv status  ·  이 폴더에서 쓰지 않기: jv disconnect")
     print("  · 저장된 연결: jv list · 다른 프로젝트로: jv switch <이름>")
@@ -1360,12 +1490,12 @@ def _resolve_conn_name(conns: list[dict], q: str, cwd: Path, verb: str) -> dict:
 
 
 def _refresh_jcode_mcp(cwd: Path) -> None:
-    """jcode MCP 의 env(地址·키)를 현재 폴더 연결로 맞춘다 (설치돼 있을 때만)."""
+    """jcode MCP 의 env(주소·키)를 현재 폴더 연결로 맞춘다 (설치돼 있을 때만)."""
     try:
-        cid = json.loads(_pi_link_path(cwd).read_text()).get("connection")
+        cid = json.loads(_project_link(cwd).read_text()).get("connection")
     except (OSError, ValueError):
         return
-    conn = next((c for c in _load_conns() if c.get("id") == cid), None)
+    conn = _conn_by_id(_load_conns(), cid)
     if conn and _jcode_mcp_file().exists():
         _jcode_mcp_file().write_text(json.dumps(_mcp_merge(conn), ensure_ascii=False, indent=2),
                                      encoding="utf-8")
@@ -1378,11 +1508,14 @@ def pi_switch(args: argparse.Namespace) -> None:
     cwd = Path(args.cwd or os.getcwd())
     conn = _resolve_conn_name(conns, getattr(args, "name", "") or "", cwd, "바꿀")
 
-    _pi_link_path(cwd).write_text(json.dumps({"connection": conn["id"]}, ensure_ascii=False, indent=2))
+    link = _project_link(cwd)
+    link.write_text(json.dumps({"connection": conn["id"]}, ensure_ascii=False, indent=2))
     _git_exclude_add(cwd)
     _refresh_jcode_mcp(cwd)
-    print(f"✓ 이 폴더의 기본 연결을 '{conn.get('name') or conn['project']}' 프로젝트로 바꿨습니다: {cwd}")
-    print("pi/omp 세션에서는 /myviking use 로 적용하거나 /myviking switch 로 선택하세요.")
+    print(f"✓ 이 폴더의 기본 연결을 '{conn.get('name') or conn['project']}' 프로젝트로 바꿨습니다")
+    if link.parent != cwd:
+        print(f"  · 링크는 git 저장소 루트 {link.parent} 에 있습니다 (서브폴더에서 실행해도 여기가 반영됩니다)")
+    print("pi/omp 에서: 새 세션은 자동 연결 · 열린 세션은 /myviking switch 로 바로 전환 (해제: /myviking disconnect)")
 
 
 def pi_disconnect(args: argparse.Namespace) -> None:
@@ -1400,7 +1533,7 @@ def pi_remove(args: argparse.Namespace) -> None:
     _save_conns(rest)
     print(f"✓ 연결 삭제: {conn.get('name') or conn['project']} ({conn['project']} @ {conn['url']}) — 키도 함께 제거했습니다")
 
-    link = _pi_link_path(cwd)
+    link = _project_link(cwd)
     cid = None
     if link.exists():
         try:
@@ -1450,7 +1583,7 @@ def pi_check(args: argparse.Namespace, flavor: str = "pi") -> None:
     mode = hub.stat().st_mode & 0o777
     print(f"✓ {flavor} 허브 확장: {hub}" + ("" if mode == 0o600 else f"  ⚠ 권한 {oct(mode)} (0600 권장)"))
 
-    link = _pi_link_path(cwd)
+    link = _project_link(cwd)
     if not link.exists():
         print(f"이 폴더({cwd})는 연결되어 있지 않습니다 (자유 사용).")
         print(f"  연결: jv {flavor} install --url ... --key ... --project ... · 저장된 연결에서: jv {flavor} switch")
@@ -1461,7 +1594,7 @@ def pi_check(args: argparse.Namespace, flavor: str = "pi") -> None:
         print(f"⚠ .myviking-connection.json 을 읽을 수 없습니다. jv {flavor} install 을 다시 실행하세요.")
         return
     conns = _load_conns()
-    conn = next((c for c in conns if c.get("id") == cid), None)
+    conn = _conn_by_id(conns, cid)
     if not conn:
         print(f"⚠ 이 폴더가 가리키는 연결({cid})이 저장소에 없습니다 → jv {flavor} install 또는 jv {flavor} switch")
         return
@@ -1745,9 +1878,9 @@ def _jcode_write_integration(conn: dict) -> tuple[Path, list[str], list[str]]:
 
 def jcode_install(args: argparse.Namespace) -> None:
     """연결 저장 + 폴더 연결 + jcode 연동(훅·스킬·MCP) 설치."""
-    url = (getattr(args, "url", "") or os.environ.get("MYVIKING_URL") or "").rstrip("/")
-    key = getattr(args, "key", "") or os.environ.get("MYVIKING_KEY") or ""
-    project = (getattr(args, "project", "") or os.environ.get("MYVIKING_PROJECT") or "").strip()
+    url = (getattr(args, "url", "") or "").rstrip("/")
+    key = getattr(args, "key", "") or ""
+    project = (getattr(args, "project", "") or "").strip()
     cwd = Path(getattr(args, "cwd", "") or os.getcwd())
 
     conn = _connect_flow(url, key, project, cwd)
@@ -1801,7 +1934,7 @@ def jcode_check(args: argparse.Namespace) -> None:
         pass
     print("✓ jcode MCP: ~/.jcode/mcp.json (myviking)" if mcp_ok else "⚠ jcode MCP 항목이 없습니다 → jv jcode install")
 
-    link = _pi_link_path(cwd)
+    link = _project_link(cwd)
     if not link.exists():
         print(f"이 폴더({cwd})는 연결되어 있지 않습니다 (자유 사용) — 다른 프로젝트 폴더에서 실행하거나 jv jcode install/switch")
         return
@@ -1846,7 +1979,7 @@ def jcode_switch(args: argparse.Namespace) -> None:
     conns = _load_conns()
     cwd = Path(args.cwd or os.getcwd())
     conn = _resolve_conn_name(conns, getattr(args, "name", "") or "", cwd, "바꿀")
-    _pi_link_path(cwd).write_text(json.dumps({"connection": conn["id"]}, ensure_ascii=False, indent=2))
+    _project_link(cwd).write_text(json.dumps({"connection": conn["id"]}, ensure_ascii=False, indent=2))
     # MCP env 도 같은 연결을 보게 갱신 (설치돼 있으면)
     if _jcode_mcp_file().exists():
         _jcode_mcp_file().write_text(json.dumps(_mcp_merge(conn), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1856,11 +1989,14 @@ def jcode_switch(args: argparse.Namespace) -> None:
 
 def jcode_disconnect(args: argparse.Namespace) -> None:
     cwd = Path(args.cwd or os.getcwd())
-    link = _pi_link_path(cwd)
-    if not link.exists():
+    link = _project_link(cwd)
+    had = link.exists()
+    if had:
+        link.unlink()
+    if _mcp_remove():
+        print(f"✓ jcode MCP(~/.jcode/mcp.json) 의 myviking 항목도 제거했습니다")
+    if not had:
         print("이 폴더는 연결되어 있지 않습니다.")
-        return
-    link.unlink()
     print(f"✓ 이 폴더의 기본 연결을 해제했습니다: {cwd} — jcode 세션은 자유 사용입니다")
 
 
@@ -1897,7 +2033,7 @@ def jcode_remove(args: argparse.Namespace) -> None:
         rest = [c for c in conns if c.get("id") != conn["id"]]
         _save_conns(rest)
         print(f"✓ 연결 삭제: {conn.get('name') or conn['project']} ({conn['project']} @ {conn['url']}) — 키도 함께 제거했습니다")
-        link = _pi_link_path(cwd)
+        link = _project_link(cwd)
         cid = None
         if link.exists():
             try:
@@ -2088,7 +2224,7 @@ def disconnect(args: argparse.Namespace) -> None:
     """
     cwd = Path(getattr(args, "cwd", "") or os.getcwd())
     did = []
-    link = _pi_link_path(cwd)
+    link = _project_link(cwd)
     had_conn = link.exists()
     link.unlink(missing_ok=True)
     if had_conn:
@@ -2106,9 +2242,13 @@ def disconnect(args: argparse.Namespace) -> None:
             did.append(f"Claude Code 훅 제거 {removed}개")
 
     if not did:
-        print("이 폴더에는 이미 연결이 없습니다 (자유 사용).")
+        print("이 폴더에는 연결이 없습니다 (이미 자유 사용 중).")
     else:
         print("✓ " + " · ".join(did) + f" → {cwd}")
+    # jcode MCP 는 '전역' 파일(~/.jcode/mcp.json)이라 폴더 해제로도 남으면 '이 머신의 모든 jcode
+    # 세션' 이 마지막 연결된 프로젝트로 기록된다 — 연동이 설치돼 있으면 무조건 함께 제거한다.
+    if _jcode_integration_installed() and _mcp_remove():
+        print("✓ jcode MCP(~/.jcode/mcp.json) 의 myviking 항목도 제거했습니다 — 다른 프로젝트로 새지 않습니다")
     print("  이 폴더의 세션(pi·omp·Claude Code·jcode)은 이제 도서관 없이 동작합니다.")
 
     if getattr(args, "all", False):
@@ -2160,7 +2300,7 @@ def uninstall(args: argparse.Namespace) -> None:
             print("취소했습니다.")
             return
 
-    _pi_link_path(cwd).unlink(missing_ok=True)
+    _project_link(cwd).unlink(missing_ok=True)
     ns = argparse.Namespace(cwd=str(cwd))
     hook_uninstall(ns)
     for flavor in ("pi", "omp"):

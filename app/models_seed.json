@@ -1,5 +1,5 @@
 {
- "seed_comment": "~/.pi/agent/models.json (databricks) 기반 기본 시드. 첫 실행 때 자동 적용. 비밀(API 키)은 저장소에 넣지 않는다 — VIKING_LLM_API_KEY 또는 관리자 화면에서 넣는다. VIKING_SEED_MODELS=false 로 시드를 끌 수 있다.",
+ "seed_comment": "~/.pi/agent/models.json (databricks) \uae30\ubc18 \uae30\ubcf8 \uc2dc\ub4dc. \uccab \uc2e4\ud589 \ub54c \uc790\ub3d9 \uc801\uc6a9. \ube44\ubc00(API \ud0a4)\uc740 \uc800\uc7a5\uc18c\uc5d0 \ub123\uc9c0 \uc54a\ub294\ub2e4 \u2014 VIKING_LLM_API_KEY \ub610\ub294 \uad00\ub9ac\uc790 \ud654\uba74\uc5d0\uc11c \ub123\ub294\ub2e4. VIKING_SEED_MODELS=false \ub85c \uc2dc\ub4dc\ub97c \ub04c \uc218 \uc788\ub2e4.",
  "llm": {
   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-deepseek-v4-flash-0731/invocations",
   "model": "databricks-deepseek-v4-flash-0731"
@@ -461,6 +461,114 @@
    "name": "Databricks Qwen3.5 122B A10B",
    "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-qwen35-122b-a10b/invocations",
    "model": "databricks-qwen35-122b-a10b",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-2.5-pro-alpha",
+   "kind": "llm",
+   "name": "Agnes 2.5 Pro Alpha",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-2.5-pro-alpha",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-video-2.5-flash",
+   "kind": "llm",
+   "name": "Agnes Video 2.5 Flash",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-video-2.5-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-3.0-flash",
+   "kind": "llm",
+   "name": "Agnes 3.0 Flash",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-3.0-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-image-2.1-flash",
+   "kind": "llm",
+   "name": "Agnes Image 2.1 Flash",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-image-2.1-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-video-2.5",
+   "kind": "llm",
+   "name": "Agnes Video 2.5",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-video-2.5",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-2.0-flash",
+   "kind": "llm",
+   "name": "Agnes 2.0 Flash",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-2.0-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-image-2.0-flash",
+   "kind": "llm",
+   "name": "Agnes Image 2.0 Flash",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-image-2.0-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-2.5-flash",
+   "kind": "llm",
+   "name": "Agnes 2.5 Flash",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-2.5-flash",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-2.5-pro",
+   "kind": "llm",
+   "name": "Agnes 2.5 Pro",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-2.5-pro",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-2.5-pro-beta",
+   "kind": "llm",
+   "name": "Agnes 2.5 Pro Beta",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-2.5-pro-beta",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-video-v2.0",
+   "kind": "llm",
+   "name": "Agnes Video V2.0",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-video-v2.0",
+   "api_key": "",
+   "endpoint": "direct"
+  },
+  {
+   "id": "agnes-image-2.5-flash",
+   "kind": "llm",
+   "name": "Agnes Image 2.5 Flash",
+   "base_url": "https://apihub.agnes-ai.com/v1",
+   "model": "agnes-image-2.5-flash",
    "api_key": "",
    "endpoint": "direct"
   }
