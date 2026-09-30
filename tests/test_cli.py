@@ -359,14 +359,26 @@ def _fake_jcode_home(tmp_path, monkeypatch):
 
 
 def test_hub_template_is_project_scoped():
-    """pi 허브(hub v8)는 전역 '현재 연결' 을 모른다 — 폴더 설정이 곧 연결."""
+    """pi 허브(hub v9)는 전역 '현재 연결' 을 모른다 — 폴더 설정이 곧 연결.
+
+    v9: 도구 4종을 factory 에서 전역 등록하지 않고, 연결된 세션의 session_start
+    (또는 /myviking connect·use·switch) 에서만 등록한다. 연결 안 한 폴더에서는
+    viking_* 도구가 아예 없다.
+    """
     import jv.cli as cli
 
     src = cli._PI_EXT_TEMPLATE
-    assert cli._PI_HUB_VERSION in src and cli._PI_HUB_VERSION == "myviking-hub-v8"
+    assert cli._PI_HUB_VERSION in src and cli._PI_HUB_VERSION == "myviking-hub-v10"
+    # 0) 도구 등록은 ensureTools 안에서만 — factory 최상위에서 바로 registerTool 하지 않는다
+    assert "const ensureTools = " in src
+    pre = src[:src.index("const ensureTools = ")]
+    assert "registerTool" not in pre, "factory 가 도구를 전역 등록하면 연결 안 한 폴더에도 도구가 뜬다"
+    ensure = src[src.index("const ensureTools = "):src.index('pi.on("session_start"')]
+    assert "pi.registerTool(" in ensure
     # 1) 세션 시작: 이 프로젝트의 설정을 자동 적용한다 (전역 폴백 아님)
     start = src[src.index('pi.on("session_start"'):src.index('pi.on("before_agent_start"')]
     assert "linkInfo(ctx.cwd)" in start and "setActive(ctx, info.conn)" in start
+    assert "ensureTools()" in start, "연결된 세션이면 session_start 에서 도구를 등록해야 한다"
     assert "linkConn(ctx.cwd)" not in start
     # 2) /myviking use 의 '저장된 첫 연결' 전역 폴백 금지 (다른 프로젝트로 새던 길)
     use = src[src.index('if (word === "use")'):src.index('if (word === "remove")')]

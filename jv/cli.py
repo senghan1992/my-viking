@@ -700,7 +700,11 @@ _PI_EXT_FILE = "myviking.ts"
 _PI_LINK_FILE = ".myviking-connection.json"
 # 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
 # 마커가 없는 설치본은 오래된 버전으로 보고 pi install 이 최신으로 갱신한다.
-_PI_HUB_VERSION = "myviking-hub-v8"
+# v9: 도구 4종을 factory 가 아니라 '연결된 세션의 session_start' 에서만 등록한다 —
+#     연결 안 한 폴더에서는 viking 도구가 아예 존재하지 않는다 (전역 연결 현상 제거).
+# v10: 머신 전체 스위치(jv disable / ~/.myviking/config.json)를 확장도 존중한다 —
+#      꺼져 있으면 연결된 폴더라도 도구를 등록하지 않는다.
+_PI_HUB_VERSION = "myviking-hub-v10"
 
 
 def _pi_path(flavor: str = "pi") -> Path:
@@ -804,10 +808,14 @@ def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
 
 
 _PI_EXT_TEMPLATE = r"""// myviking — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
-// myviking-hub-v8 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
+// myviking-hub-v10 — 이 마커가 없으면 jv pi install 이 최신 템플릿으로 덮어씁니다
 // 이 파일 자체에는 비밀이 없다 — 프로젝트 고정도 없다.
 //   · 연결의 주인은 '폴더'다: 프로젝트 폴더의 .myviking-connection.json (git 의 HEAD 같은 것)
 //     ~/.myviking/connections.json (0600) 은 주소+키 대장일 뿐 — 전역 '현재 연결' 은 존재하지 않는다.
+//   · 도구 4종은 '이 폴더가 연결된 세션' 에서만 등록된다. 연결 설정이 없는 폴더에서는
+//     viking_* 도구가 아예 만들어지지 않는다 — 모델이 도구 목록에서 볼 일이 없고,
+//     안내 문구(noConn)조차 뜨지 않는다. /myviking '관리' 명령만 전역으로 남는다
+//     (연결·주입·기록은 전혀 하지 않음 — 필요하면 이 명령으로 이 폴더를 연결).
 //   · 세션 시작: 이 프로젝트의 설정이 있으면 그 도서관으로 자동 연결, 없으면 자유 사용.
 //     다른 프로젝트의 설정이 여기로 새지 않는다 (git 루트 이상 올라가지 않음).
 //   · /myviking connect·switch 는 항상 "이 폴더"에 묶는다 — 다른 프로젝트는 영향 없음.
@@ -822,6 +830,15 @@ import { join, resolve } from "node:path";
 const HOME = homedir();
 const LINK_NAME = ".myviking-connection.json";
 const CONNS_FILE = join(HOME, ".myviking", "connections.json");
+const CONFIG_FILE = join(HOME, ".myviking", "config.json");
+
+function machineEnabled(): boolean {
+  // 머신 전체 스위치 (jv disable). 꺼져 있으면 어느 폴더든 도구를 등록하지 않는다.
+  try {
+    if (!existsSync(CONFIG_FILE)) return true;
+    return JSON.parse(readFileSync(CONFIG_FILE, "utf8"))?.enabled !== false;
+  } catch { return true; }
+}
 
 interface Conn { id: string; name: string; url: string; key: string; project: string }
 interface Active { name: string; url: string; key: string; project: string }
@@ -968,7 +985,7 @@ function setFolderLink(cwd: string, id: string): void {
 }
 
 export default function (pi: ExtensionAPI) {
-  // ── 도구 4종 — 호출한 그 세션이 연결된 프로젝트로만 동작 ──
+  // ── 도구 4종 정의 — 실제 등록은 연결된 세션에서만(ensureTools) ──
   const jobs: Array<{ name: string; label: string; description: string; params: any; run: (c: Active, p?: any, tid?: string) => Promise<string> }> = [
     {
       name: "viking_brief",
@@ -1025,34 +1042,44 @@ export default function (pi: ExtensionAPI) {
     },
   ];
 
-  for (const job of jobs) {
-    pi.registerTool({
-      name: job.name,
-      label: job.label,
-      description: job.description,
-      promptSnippet: `${job.name} — ${job.description.split(".")[0]}.`,
-      parameters: job.params,
-      async execute(_id: string, params: any, _sig: unknown, _upd: unknown, ctx: ExtensionContext) {
-        try {
-          const c = getActive(ctx);
-          if (!c) return { content: [{ type: "text", text: noConn() }] };
-          return { content: [{ type: "text", text: await job.run(c, params, threadIdOf(ctx)) }] };
-        } catch (e) {
-          return { content: [{ type: "text", text: `myviking 오류: ${(e as Error).message}` }] };
-        }
-      },
-    });
-  }
+  // 도구는 '연결이 확인된 세션' 에서만 등록한다. 연결 없는 폴더의 세션은 도구가 아예
+  // 존재하지 않아서 모델이 viking_* 를 볼 수도, noConn 안내를 받을 수도 없다.
+  // 한 런타임에서 한 번만 등록한다 (session_start 는 resume/fork 마다 다시 온다).
+  let toolsReady = false;
+  const ensureTools = (): void => {
+    if (toolsReady) return;
+    toolsReady = true;
+    for (const job of jobs) {
+      pi.registerTool({
+        name: job.name,
+        label: job.label,
+        description: job.description,
+        promptSnippet: `${job.name} — ${job.description.split(".")[0]}.`,
+        parameters: job.params,
+        async execute(_id: string, params: any, _sig: unknown, _upd: unknown, ctx: ExtensionContext) {
+          try {
+            const c = getActive(ctx);
+            if (!c) return { content: [{ type: "text", text: noConn() }] };
+            return { content: [{ type: "text", text: await job.run(c, params, threadIdOf(ctx)) }] };
+          } catch (e) {
+            return { content: [{ type: "text", text: `myviking 오류: ${(e as Error).message}` }] };
+          }
+        },
+      });
+    }
+  };
 
   // ── 세션 시작: '이 프로젝트'의 설정이 있으면 그 도서관으로 자동 연결한다.
   //    설정이 없는 폴더는 자유 사용 — 전역 기본값·남의 프로젝트 폴백은 없다.
   pi.on("session_start", async (_event, ctx) => {
+    if (!machineEnabled()) return;           // jv disable — 전 폴더 자유 사용 (도구 등록 안 함)
     const info = linkInfo(ctx.cwd);
-    if (!info) return;                       // 설정 없는 폴더는 자유 사용
+    if (!info) return;                       // 설정 없는 폴더는 자유 사용 — 도구도 등록하지 않는다
     if (!info.conn) {                        // 설정은 있는데 키가 저장소에 없다 (jv remove 후 등)
       if (ctx.hasUI) ctx.ui.notify(`myviking: 이 폴더의 설정 '${info.id}' 에 저장된 키가 없습니다 — /myviking connect 로 키를 다시 넣으세요 (지금은 자유 사용)`, "info");
       return;
     }
+    ensureTools();                           // 연결된 폴더에서만 도구 등록
     setActive(ctx, info.conn);
     if (ctx.hasUI) {
       ctx.ui.notify(`myviking: 이 프로젝트는 '${info.conn.name}' 도서관에 연결됨 (폴더 전용 — 해제: /myviking disconnect)`, "info");
@@ -1129,6 +1156,7 @@ export default function (pi: ExtensionAPI) {
           } catch {}
           const c: Active = { name: me.project_name || project, url, key, project };
           try { setFolderLink(ctx.cwd, id); } catch {}    // 이 프로젝트에 고정 (폴더 = 연결의 주인)
+          ensureTools();                                 // 방금 연결한 이 세션에서 바로 도구 사용
           setActive(ctx, c);
           ctx.ui.notify(`✓ 이 프로젝트 폴더를 '${c.name}' 도서관에 연결했습니다\n  · 이 폴더에서 여는 pi 세션은 자동으로 이 도서관을 씁니다\n  · 다른 프로젝트는 영향 없음 (키 저장: ~/.myviking/connections.json)`, "info");
           await injectBrief(c, threadIdOf(ctx), pi);
@@ -1146,6 +1174,7 @@ export default function (pi: ExtensionAPI) {
         if (!info) { ctx.ui.notify("이 프로젝트에는 연결 설정이 없습니다 — /myviking connect 로 이 폴더만 연결하세요.", "info"); return; }
         if (!info.conn) { ctx.ui.notify(`이 폴더의 설정 '${info.id}' 는 저장된 키가 없습니다 — /myviking connect 로 키를 다시 넣으세요.`, "error"); return; }
         const lc = info.conn;
+        ensureTools();                                 // 이 세션에서 바로 도구 사용
         setActive(ctx, lc);
         ctx.ui.notify(`✓ 이 세션을 '${lc.name}' 프로젝트에 연결했습니다 (이 프로젝트의 설정)`, "info");
         await injectBrief(lc, threadIdOf(ctx), pi);
@@ -1213,6 +1242,7 @@ export default function (pi: ExtensionAPI) {
         if (!conn) { ctx.ui.notify("찾을 수 없습니다.", "info"); return; }
         const c: Active = { name: conn.name || conn.project, url: conn.url, key: conn.key, project: conn.project };
         try { setFolderLink(ctx.cwd, conn.id); } catch {}    // 이 프로젝트의 기본 연결로 고정
+        ensureTools();                                 // 이 세션에서 바로 도구 사용
         setActive(ctx, c);
         ctx.ui.notify(`✓ 이 프로젝트를 '${c.name}' 으로 바꿔 연결했습니다 — 이 폴더의 새 세션도 이 도서관 (다른 프로젝트 영향 없음)`, "info");
         await injectBrief(c, threadIdOf(ctx), pi);
@@ -1369,6 +1399,7 @@ def pi_install(args: argparse.Namespace, flavor: str = "pi") -> None:
 
     print(f"✓ {flavor} 허브 확장: {hub}")
     print(f"이 폴더의 기본 연결로 저장했습니다. 이 폴더에서 여는 {flavor} 세션은 자동으로 이 도서관에 붙습니다.")
+    print("  (연결 안 한 다른 폴더에서는 viking 도구가 아예 등록되지 않습니다 — 전역 연결 없음)")
     print("  (열려 있는 세션은 /myviking use 로 지금 적용) · 해제: jv disconnect 또는 /myviking disconnect")
     print(f"  · 저장된 연결 관리: jv {flavor} list / jv {flavor} switch <이름> / jv {flavor} remove <이름> / jv {flavor} check")
 
@@ -1427,13 +1458,13 @@ def connect(args: argparse.Namespace) -> None:
     has_pi = (Path.home() / ".pi").exists() or bool(shutil.which("pi"))
     if want in ("", "pi") and has_pi:
         hub = _install_hub_extension("pi")
-        print(f"✓ pi 허브 확장: {hub} (전역 — 이 폴더의 새 세션은 자동 연결, 열린 세션은 /myviking use)")
+        print(f"✓ pi 허브 확장: {hub} (전역 설치지만 viking 도구는 '연결된 폴더의 세션' 에서만 등록 — 다른 폴더는 0)")
         done.append("pi 확장")
     # ── omp (Oh My Pi): ~/.omp 존재 or omp 실행파일 — pi 와 같은 확장 API 공유 ──
     has_omp = (Path.home() / ".omp").exists() or bool(shutil.which("omp"))
     if want in ("", "omp") and has_omp:
         hub_omp = _install_hub_extension("omp")
-        print(f"✓ omp 허브 확장: {hub_omp} (전역 — 이 폴더의 새 세션은 자동 연결, 열린 세션은 /myviking use)")
+        print(f"✓ omp 허브 확장: {hub_omp} (전역 설치지만 viking 도구는 '연결된 폴더의 세션' 에서만 등록 — 다른 폴더는 0)")
         done.append("omp 확장")
     # ── jcode: ~/.jcode 존재 ──
     has_jcode = (Path.home() / ".jcode").exists()

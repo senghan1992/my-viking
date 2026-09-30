@@ -69,7 +69,8 @@ def signup(request: Request, name: str = Form(""), email: str = Form(""), passwo
 
 
 _INSTALL_SH = r"""#!/usr/bin/env bash
-# myviking 자동 연결 (install.sh) — jv 설치(없으면) + 이 폴더를 프로젝트에 연결 + 이 머신의 에이전트 전부 설치
+# myviking 자동 연결 (install.sh) — jv 설치(없으면) + '이 폴더만' 프로젝트에 연결 + 이 머신의 에이전트 전부 설치
+# 연결은 폴더 단위다: 이 명령을 실행한 폴더에서 여는 세션만 도서관을 쓰고, 다른 폴더는 영향 없다.
 # 사용법: curl -fsSL __BASE__/install.sh | bash -s -- --url __BASE__ --key jv_... --project <슬러그>
 set -u
 URL=""; KEY=""; PROJECT=""
@@ -107,7 +108,8 @@ if command -v jv >/dev/null 2>&1; then
   else
     jv connect --url "$URL" --key "$KEY"
   fi
-  echo "  pi/omp: 이 폴더에서 여는 새 세션은 자동 연결 — 열려 있는 세션은 /myviking use"
+  echo "  pi/omp: 이 폴더에서 여는 새 세션만 자동 연결 — 연결 안 한 다른 폴더는 viking 도구·주입 0"
+  echo "  (열려 있는 세션은 /myviking use)"
   echo "상태: jv status · 이 폴더에서 쓰지 않기: jv disconnect · 다시 붙이기: jv connect <이름> · 전체 끄기: jv disable"
 else
   echo "⚠ jv 를 찾지 못했습니다 — python3/pip 가 설치되어 있는지 확인하고,"
