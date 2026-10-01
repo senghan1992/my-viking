@@ -1,4 +1,4 @@
-# myviking — 단일 컨테이너 서버 (대시보드 + Agent API + 지식 저장소)
+# scribe — 단일 컨테이너 서버 (대시보드 + Agent API + 지식 저장소)
 FROM python:3.12-slim
 
 WORKDIR /srv
@@ -7,8 +7,8 @@ COPY . .
 RUN pip install --no-cache-dir . && \
     rm -rf tests docs examples tools src/jarvis
 
-ENV VIKING_DATA=/data \
-    MYVIKING_IN_CONTAINER=1 \
+ENV SCRIBE_DATA=/data \
+    SCRIBE_IN_CONTAINER=1 \
     PYTHONUNBUFFERED=1
 
 VOLUME /data

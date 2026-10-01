@@ -50,22 +50,22 @@ def models_page(request: Request, user: dict = Depends(admin_required), msg: str
     env = os.environ
     status = [
         {"label": "LLM 주소", "value": config.llm_base_url,
-         "src": _source(web.get("llm_base_url", ""), "VIKING_LLM_BASE_URL")},
+         "src": _source(web.get("llm_base_url", ""), "SCRIBE_LLM_BASE_URL")},
         {"label": "LLM 모델", "value": config.llm_model,
-         "src": _source(web.get("llm_model", ""), "VIKING_LLM_MODEL")},
+         "src": _source(web.get("llm_model", ""), "SCRIBE_LLM_MODEL")},
         {"label": "임베딩 주소", "value": config.embed_base_url,
-         "src": ("LLM과 동일" if not web.get("embed_base_url") and not env.get("VIKING_EMBED_BASE_URL", "").strip()
-                 else _source(web.get("embed_base_url", ""), "VIKING_EMBED_BASE_URL"))},
+         "src": ("LLM과 동일" if not web.get("embed_base_url") and not env.get("SCRIBE_EMBED_BASE_URL", "").strip()
+                 else _source(web.get("embed_base_url", ""), "SCRIBE_EMBED_BASE_URL"))},
         {"label": "임베딩 모델", "value": config.embed_model,
-         "src": _source(web.get("embed_model", ""), "VIKING_EMBED_MODEL")},
+         "src": _source(web.get("embed_model", ""), "SCRIBE_EMBED_MODEL")},
     ]
     keys = {
         "llm": {"set": bool(config.llm_api_key), "masked": model_settings.mask(config.llm_api_key),
                 "src": ("웹 설정" if web.get("llm_api_key") else
-                        ("환경변수" if env.get("VIKING_LLM_API_KEY", "").strip() else "미설정"))},
+                        ("환경변수" if env.get("SCRIBE_LLM_API_KEY", "").strip() else "미설정"))},
         "embed": {"set": bool(config.embed_api_key), "masked": model_settings.mask(config.embed_api_key),
                   "src": ("웹 설정" if web.get("embed_api_key") else
-                          ("환경변수" if env.get("VIKING_EMBED_API_KEY", "").strip() else "미설정"))},
+                          ("환경변수" if env.get("SCRIBE_EMBED_API_KEY", "").strip() else "미설정"))},
     }
     registered = model_settings.load_registered()
     return request.app.state.templates.TemplateResponse(

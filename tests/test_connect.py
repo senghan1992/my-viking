@@ -5,7 +5,7 @@ from conftest import create_key, create_project
 
 CMD = re.compile(
     r'id="connect-cmd"[^>]*>(?P<pre>curl -fsSL [^<]*install\.sh \| bash -s -- --url [^<]*?)'
-    r'<span class="k" id="connect-key">(?P<key>jv_[0-9a-f]{20,})</span>'
+    r'<span class="k" id="connect-key">(?P<key>sc_[0-9a-f]{20,})</span>'
     r'(?P<post> --project [^<]*)</pre>'
 )
 
@@ -32,7 +32,7 @@ def test_connect_page_is_one_copy_ready_command(client, user1):
     assert m, "연결 명령판이 없습니다"
     assert m.group("pre").startswith("curl -fsSL ")
     assert m.group("post") == f" --project {slug}"
-    assert "jv_..." not in html                      # placesholder 로 복사되는 일 없다
+    assert "sc_..." not in html                      # placesholder 로 복사되는 일 없다
 
     # 복사는 화면의 텍스트를 근원으로 삼는다 (버튼 속성에 명령을 중복 저장하지 않음)
     assert html.count('data-copy-src="#connect-cmd"') == 2      # 판 자체 + 명령 복사 버튼
@@ -42,7 +42,7 @@ def test_connect_page_is_one_copy_ready_command(client, user1):
     assert '<details class="more">' in html
     assert 'data-tab="mcp"' in html and 'data-tab="shell"' in html
     assert 'data-tab="pi"' not in html               # pi 는 기본 경로: 접지 않고 명령 아래에
-    assert "/myviking use" in html and "jv secretary once" in html
+    assert "/scribe use" in html and "scribe secretary once" in html
 
 
 def test_issued_key_is_still_copyable_afterwards(client, user1):
@@ -81,7 +81,7 @@ def test_keyring_lists_keys_and_switches_active_key(client, user1):
     assert _key_of(html) == first
     assert "이 키로 연결" in html                    # 나머지 키는 링크로 전환
     plate = _plain(html[html.index('id="connect-cmd"'):html.index("</pre>", html.index('id="connect-cmd"'))])
-    assert plate.count("jv_") == 1                   # 명령판에는 고른 키 하나만
+    assert plate.count("sc_") == 1                   # 명령판에는 고른 키 하나만
     assert second not in plate
 
 
@@ -117,7 +117,7 @@ def test_legacy_key_without_sealed_plain_text_offers_reissue(client, user1):
     db.execute(
         "INSERT INTO api_keys(project_id, user_id, name, key_hash, key_prefix, key_secret, created_at)"
         " VALUES(?,?,?,?,?,?,?)",
-        (pid, 1, "옛날 키", "deadbeef", "jv_oldpr", None, db.now()),
+        (pid, 1, "옛날 키", "deadbeef", "sc_oldpr", None, db.now()),
     )
     html = c.get(f"/projects/{slug}/connect").text
     assert "평문 미보관" in html and "재발급" in html
@@ -129,14 +129,14 @@ def test_legacy_key_without_sealed_plain_text_offers_reissue(client, user1):
 
 
 def test_install_script_endpoint(client, user1):
-    """GET /install.sh — 키 없이 스크립트만 내려주며 jv connect 를 호출한다."""
+    """GET /install.sh — 키 없이 스크립트만 내려주며 scribe connect 를 호출한다."""
     c, _ = client
     c.post("/login", data={"email": "a@test.com", "password": "password1"})
     r = c.get("/install.sh")
     assert r.status_code == 200
     assert "text/x-shellscript" in r.headers["Content-Type"]
-    assert "jv connect" in r.text and "pip install" in r.text
-    assert "MYVIKING_KEY" not in r.text              # 키가 서버 URL 에 실리지 않는다
+    assert "scribe connect" in r.text and "pip install" in r.text
+    assert "SCRIBE_KEY" not in r.text              # 키가 서버 URL 에 실리지 않는다
 
 
 def test_project_creation_prepares_the_command(client, user1):

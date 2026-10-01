@@ -24,7 +24,7 @@
   </div>
 
   {% if active and active.usable %}
-  <p class="muted small">jv 설치(없으면) + 이 폴더 연결 + 이 머신의 에이전트(Claude Code·pi·jcode) 설치까지 한 번에 합니다.</p>
+  <p class="muted small">scribe 설치(없으면) + 이 폴더 연결 + 이 머신의 에이전트(Claude Code·pi·jcode) 설치까지 한 번에 합니다.</p>
   <pre class="cmd-plate" id="connect-cmd" data-copy-src="#connect-cmd" title="클릭하면 통째로 복사됩니다">curl -fsSL {{ base }}/install.sh | bash -s -- --url {{ base }} --key <span class="k" id="connect-key">{{ active.secret }}</span> --project {{ project.slug }}</pre>
   <div class="row copy-row">
     <button class="btn primary" type="button" data-copy-src="#connect-cmd">{{ icons.icon('copy') }} 명령 복사</button>
@@ -34,8 +34,8 @@
 
   <ol class="flow">
     <li><b>터미널에 붙여 넣고 실행</b><span class="muted small">이 프로젝트 코드가 있는 폴더에서</span></li>
-    <li><b>pi 재시작 → 세션에서 연결</b><code class="cmd-code" data-copy-src="#c-use" id="c-use">/myviking use</code><span class="muted small">그 세션만 이 프로젝트에 붙습니다</span></li>
-    <li><b>서기에게 정리시키기</b><code class="cmd-code" data-copy-src="#c-sec" id="c-sec">jv secretary once</code><span class="muted small">작업은 '관찰'로 쌓이고, 서기가 남길 것만 지식으로 등재 — 매번 시키지 않으려면 <code>jv secretary auto on</code></span></li>
+    <li><b>pi 재시작 → 세션에서 연결</b><code class="cmd-code" data-copy-src="#c-use" id="c-use">/scribe use</code><span class="muted small">그 세션만 이 프로젝트에 붙습니다</span></li>
+    <li><b>서기에게 정리시키기</b><code class="cmd-code" data-copy-src="#c-sec" id="c-sec">scribe secretary once</code><span class="muted small">작업은 '관찰'로 쌓이고, 서기가 남길 것만 지식으로 등재 — 매번 시키지 않으려면 <code>scribe secretary auto on</code></span></li>
   </ol>
   {% else %}
   <div class="empty">
@@ -107,49 +107,49 @@
     </nav>
 
     <div class="tool-pane" data-pane="tools" data-pane-id="claude">
-      <p class="muted small">위 명령 하나면 충분합니다 (Claude Code 훅 4개 이벤트 설치). jv 가 이미 있는 머신에서는:</p>
-      <pre id="c-hook">jv hook install --url {{ base }} --key {{ active.secret if active and active.usable else 'jv_...' }} --project {{ project.slug }}</pre>
+      <p class="muted small">위 명령 하나면 충분합니다 (Claude Code 훅 4개 이벤트 설치). scribe 가 이미 있는 머신에서는:</p>
+      <pre id="c-hook">scribe hook install --url {{ base }} --key {{ active.secret if active and active.usable else 'sc_...' }} --project {{ project.slug }}</pre>
       <button class="btn small" type="button" data-copy-src="#c-hook">{{ icons.icon('copy') }} 복사</button>
-      <p class="muted small"><span style="color:var(--green)">✓ 확인:</span> <code>jv hook check</code> — 세션 시작 시 브리핑이 주입되고 턴마다 관찰이 올라갑니다.</p>
+      <p class="muted small"><span style="color:var(--green)">✓ 확인:</span> <code>scribe hook check</code> — 세션 시작 시 브리핑이 주입되고 턴마다 관찰이 올라갑니다.</p>
       <p class="muted small">즉시 승격이 필요하면 프로젝트 설정에서 <b>레거시 자동 증류</b>를 켜세요 (기본은 서기 판단).</p>
     </div>
 
     <div class="tool-pane" data-pane="tools" data-pane-id="jcode" hidden>
       <p class="muted small">위 명령 하나로 훅 + 스킬 + MCP 가 설치됩니다. 실행 후 <b>jcode 를 재시작</b>하면 턴마다 관찰이 자동 기록됩니다.</p>
-      <pre id="c-jcode">jv jcode check       # 훅·스킬·MCP·서버 한 번에 확인
-jv secretary once    # 관찰을 서기가 지식으로 정리</pre>
+      <pre id="c-jcode">scribe jcode check       # 훅·스킬·MCP·서버 한 번에 확인
+scribe secretary once    # 관찰을 서기가 지식으로 정리</pre>
       <button class="btn small" type="button" data-copy-src="#c-jcode">{{ icons.icon('copy') }} 복사</button>
-      <p class="muted small">전환·해제: <code>jv jcode list</code> · <code>jv jcode switch &lt;이름&gt;</code> · <code>jv jcode disconnect</code></p>
+      <p class="muted small">전환·해제: <code>scribe jcode list</code> · <code>scribe jcode switch &lt;이름&gt;</code> · <code>scribe jcode disconnect</code></p>
     </div>
 
     <div class="tool-pane" data-pane="tools" data-pane-id="mcp" hidden>
       <p class="muted small">MCP 를 쓰는 에이전트(Cursor·Codex) 설정 파일에 아래를 붙여 넣으세요. 자동 캡처는 없고 도구 호출만 됩니다.</p>
       <pre id="c-mcp">{
   "mcpServers": {
-    "myviking": {
-      "command": "jv",
+    "scribe": {
+      "command": "scribe",
       "args": ["mcp"],
       "env": {
-        "MYVIKING_URL": "{{ base }}",
-        "MYVIKING_KEY": "{{ active.secret if active and active.usable else 'jv_...' }}",
-        "MYVIKING_PROJECT": "{{ project.slug }}"
+        "SCRIBE_URL": "{{ base }}",
+        "SCRIBE_KEY": "{{ active.secret if active and active.usable else 'sc_...' }}",
+        "SCRIBE_PROJECT": "{{ project.slug }}"
       }
     }
   }
 }</pre>
       <button class="btn small" type="button" data-copy-src="#c-mcp">{{ icons.icon('copy') }} JSON 복사</button>
-      <p class="muted small">도구: <code>viking_brief</code> · <code>viking_search</code> · <code>viking_remember</code> · <code>viking_score</code></p>
+      <p class="muted small">도구: <code>scribe_brief</code> · <code>scribe_search</code> · <code>scribe_remember</code> · <code>scribe_score</code></p>
     </div>
 
     <div class="tool-pane" data-pane="tools" data-pane-id="shell" hidden>
       <p class="muted small">어떤 에이전트든 터미널로 쓰는 방법. 자동화는 없지만 가장 확실합니다.</p>
       <pre id="c-pip">{{ install_only }}</pre>
       <button class="btn small" type="button" data-copy-src="#c-pip">{{ icons.icon('copy') }} 복사</button>
-      <pre id="c-shell">jv brief -u {{ base }} -k {{ active.secret if active and active.usable else 'jv_...' }} -p {{ project.slug }}
-jv search "배포 방법" -u {{ base }} -k {{ active.secret if active and active.usable else 'jv_...' }} -p {{ project.slug }}
-jv note "메모" -u {{ base }} -k {{ active.secret if active and active.usable else 'jv_...' }} -p {{ project.slug }}</pre>
+      <pre id="c-shell">scribe brief -u {{ base }} -k {{ active.secret if active and active.usable else 'sc_...' }} -p {{ project.slug }}
+scribe search "배포 방법" -u {{ base }} -k {{ active.secret if active and active.usable else 'sc_...' }} -p {{ project.slug }}
+scribe note "메모" -u {{ base }} -k {{ active.secret if active and active.usable else 'sc_...' }} -p {{ project.slug }}</pre>
       <button class="btn small" type="button" data-copy-src="#c-shell">{{ icons.icon('copy') }} 복사</button>
-      <p class="muted small">연결을 저장해 두면 이후부터는 주소·키 없이 <code>jv brief</code> 만으로 충분합니다.</p>
+      <p class="muted small">연결을 저장해 두면 이후부터는 주소·키 없이 <code>scribe brief</code> 만으로 충분합니다.</p>
     </div>
   </div>
 </details>
@@ -157,12 +157,12 @@ jv note "메모" -u {{ base }} -k {{ active.secret if active and active.usable e
 <details class="more">
   <summary>{{ icons.icon('book') }} 에이전트 지침 — AGENTS.md 에 붙여넣기</summary>
   <div class="more-body">
-    <pre class="copy-block" id="c-agents">이 프로젝트는 myviking 지식 도서관에 연결되어 있습니다.
+    <pre class="copy-block" id="c-agents">이 프로젝트는 scribe 지식 도서관에 연결되어 있습니다.
 - 세션 시작 시 주입되는 브리핑과 질문마다 주입되는 '관련 지식'은 서기 agent 가 이전 세션에서 골라낸 축적입니다.
 - ⟨검증 전⟩(fresh) 지식은 사실로 단정하지 말고 코드/문서로 확인하세요.
 - 확립(established) 지식이라도 최근 결과와 어긋나면 "검증 필요" 경고로 표시됩니다.
-- 작업 내용은 자동으로 '관찰'로 쌓입니다 — 지식을 직접 만들지 말고 서기(`jv secretary once`)에 맡기세요.
-- 지금 당장 남길 것이 있으면 `jv note "메모"`(서기에게 전달) 또는 `jv remember "제목" --content "내용"`(즉시 등재)를 쓰세요.</pre>
+- 작업 내용은 자동으로 '관찰'로 쌓입니다 — 지식을 직접 만들지 말고 서기(`scribe secretary once`)에 맡기세요.
+- 지금 당장 남길 것이 있으면 `scribe note "메모"`(서기에게 전달) 또는 `scribe remember "제목" --content "내용"`(즉시 등재)를 쓰세요.</pre>
     <button class="btn small" type="button" data-copy-src="#c-agents">{{ icons.icon('copy') }} 복사</button>
   </div>
 </details>

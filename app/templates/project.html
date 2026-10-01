@@ -106,7 +106,7 @@
         등재 {{ secretary.last_run.filed or 0 }} · 갱신 {{ secretary.last_run.merged or 0 }} · 버림 {{ secretary.last_run.skipped or 0 }}</p>
       {% if secretary.last_run.report %}<p class="muted small">{{ secretary.last_run.report }}</p>{% endif %}
       {% else %}
-      <p class="muted small">아직 서기가 업무를 하지 않았습니다. 연결된 폴더에서 <code>jv secretary once</code> (pi 안에서 <code>/myviking secretary once</code>).</p>
+      <p class="muted small">아직 서기가 업무를 하지 않았습니다. 연결된 폴더에서 <code>scribe secretary once</code> (pi 안에서 <code>/scribe secretary once</code>).</p>
       {% endif %}
       {% if repeats %}
       <h3 class="side-sub">여러 번 요청한 것</h3>

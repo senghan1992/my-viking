@@ -1,4 +1,4 @@
-"""myviking — 사람별 프로젝트 지식 도서관 서버 (FastAPI)."""
+"""scribe — 사람별 프로젝트 지식 도서관 서버 (FastAPI)."""
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
@@ -12,13 +12,13 @@ from . import model_settings
 from .config import config
 from .routes import admin_models, agent, projects, web
 
-app = FastAPI(title="myviking", version="2.0.0", docs_url="/api/docs")
+app = FastAPI(title="scribe", version="2.0.0", docs_url="/api/docs")
 
 # 데이터베이스 준비 (스키마 + 마이그레이션)
 db.db.init()
 
 # 첫 실행 시드 — 관리자가 아직 모델 설정/등록을 안 했으면 models_seed.json 과
-# 사전 카탈로그를 기본으로 채운다 (VIKING_SEED_MODELS=false 로 끔).
+# 사전 카탈로그를 기본으로 채운다 (SCRIBE_SEED_MODELS=false 로 끔).
 model_settings.seed_if_empty()
 model_settings.apply_to(config)  # 시드 후 config 에 반영
 
@@ -48,7 +48,7 @@ async def _unhandled(request: Request, exc: Exception):
     import logging
     import traceback
 
-    logging.getLogger("myviking").error("unhandled: %s", traceback.format_exc())
+    logging.getLogger("scribe").error("unhandled: %s", traceback.format_exc())
     if request.url.path.startswith("/api/"):
         return JSONResponse({"error": "서버 오류"}, status_code=500)
     return RedirectResponse("/?msg=서버 오류가 발생했습니다.", status_code=303)

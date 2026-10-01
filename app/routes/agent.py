@@ -59,7 +59,7 @@ def _ensure_session(project_id: int, session_id: str, agent: str = "unknown",
 def health():
     return {
         "ok": True,
-        "name": "myviking",
+        "name": "scribe",
         "version": "2.0.0",
         "model": "secretary",           # 지식 추출은 서기 agent 가 한다 (서버는 저장고)
         "server_time": db.now(),
@@ -92,7 +92,7 @@ def brief(slug: str, session_id: str = Query(default=""), agent: str = Query(def
     ]
     if role == "secretary":
         lines.append("> 당신은 지금 **서기 세션**으로 열렸습니다. 코드를 고치지 말고,"
-                     " `/inbox` 를 읽어 지식화할 것만 골라 등재하세요. (jv secretary status)")
+                     " `/inbox` 를 읽어 지식화할 것만 골라 등재하세요. (scribe secretary status)")
         lines.append("")
     if section["established"]:
         lines.append("## ✅ 확립된 지식")
@@ -119,7 +119,7 @@ def brief(slug: str, session_id: str = Query(default=""), agent: str = Query(def
     lines.append(f"- 정리 대기 관찰 **{pending}건**"
                  + (f" · 마지막 정리 {rep['started_at']}" if rep else " · 아직 정리 실행 없음"))
     if pending:
-        lines.append("- 정리 실행: `jv secretary once` (pi 세션 안에서: `/myviking secretary once`)")
+        lines.append("- 정리 실행: `scribe secretary once` (pi 세션 안에서: `/scribe secretary once`)")
     else:
         lines.append("- 대기 중 없음 — 작업 세션의 관찰은 계속 쌓입니다.")
 

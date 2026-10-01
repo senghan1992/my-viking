@@ -1,5 +1,5 @@
 {
- "seed_comment": "~/.pi/agent/models.json (databricks) \uae30\ubc18 \uae30\ubcf8 \uc2dc\ub4dc. \uccab \uc2e4\ud589 \ub54c \uc790\ub3d9 \uc801\uc6a9. \ube44\ubc00(API \ud0a4)\uc740 \uc800\uc7a5\uc18c\uc5d0 \ub123\uc9c0 \uc54a\ub294\ub2e4 \u2014 VIKING_LLM_API_KEY \ub610\ub294 \uad00\ub9ac\uc790 \ud654\uba74\uc5d0\uc11c \ub123\ub294\ub2e4. VIKING_SEED_MODELS=false \ub85c \uc2dc\ub4dc\ub97c \ub04c \uc218 \uc788\ub2e4.",
+ "seed_comment": "~/.pi/agent/models.json (databricks) \uae30\ubc18 \uae30\ubcf8 \uc2dc\ub4dc. \uccab \uc2e4\ud589 \ub54c \uc790\ub3d9 \uc801\uc6a9. \ube44\ubc00(API \ud0a4)\uc740 \uc800\uc7a5\uc18c\uc5d0 \ub123\uc9c0 \uc54a\ub294\ub2e4 \u2014 SCRIBE_LLM_API_KEY \ub610\ub294 \uad00\ub9ac\uc790 \ud654\uba74\uc5d0\uc11c \ub123\ub294\ub2e4. SCRIBE_SEED_MODELS=false \ub85c \uc2dc\ub4dc\ub97c \ub04c \uc218 \uc788\ub2e4.",
  "llm": {
   "base_url": "https://lge-esdatapf.cloud.databricks.com/serving-endpoints/databricks-deepseek-v4-flash-0731/invocations",
   "model": "databricks-deepseek-v4-flash-0731"

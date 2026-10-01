@@ -57,7 +57,7 @@ SCHEMA = [
         user_id INTEGER NOT NULL REFERENCES users(id),
         name TEXT NOT NULL DEFAULT '',
         key_hash TEXT UNIQUE NOT NULL,          -- SHA-256, 인증은 해시로만
-        key_prefix TEXT NOT NULL,               -- 표시용 앞 8자 (jv_4f2a…)
+        key_prefix TEXT NOT NULL,               -- 표시용 앞 8자 (sc_4f2a…)
         key_secret TEXT,                        -- 봉인된 평문(seal_api_key) — 주인이 다시 복사할 수 있게
         created_at TEXT NOT NULL,
         revoked_at TEXT

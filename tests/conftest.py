@@ -9,13 +9,13 @@ from pathlib import Path
 import pytest
 
 # 앱 import 전에 환경 설정 (config 는 모듈 로드 시점에 읽음)
-TMP = tempfile.mkdtemp(prefix="myviking-test-")
-os.environ["VIKING_DATA"] = TMP
-os.environ["VIKING_SECRET"] = "test-secret"
-os.environ["VIKING_ALLOW_SIGNUP"] = "true"
-os.environ["VIKING_FIRST_USER_ADMIN"] = "true"
-os.environ["VIKING_SEED_MODELS"] = "false"  # 테스트는 시드 없이 기본값만
-os.environ.pop("VIKING_LLM_API_KEY", None)
+TMP = tempfile.mkdtemp(prefix="scribe-test-")
+os.environ["SCRIBE_DATA"] = TMP
+os.environ["SCRIBE_SECRET"] = "test-secret"
+os.environ["SCRIBE_ALLOW_SIGNUP"] = "true"
+os.environ["SCRIBE_FIRST_USER_ADMIN"] = "true"
+os.environ["SCRIBE_SEED_MODELS"] = "false"  # 테스트는 시드 없이 기본값만
+os.environ.pop("SCRIBE_LLM_API_KEY", None)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
@@ -72,6 +72,6 @@ def create_key(c, slug: str, name: str = "tester") -> str:
 
     r = c.post(f"/projects/{slug}/keys", data={"name": name})
     assert r.status_code == 200  # 발급 화면이 아니라 연결 탭로 돌아온다
-    m = re.search(r'id="connect-key">(jv_[0-9a-f]{20,})</span>', r.text)
+    m = re.search(r'id="connect-key">(sc_[0-9a-f]{20,})</span>', r.text)
     assert m, "연결 명령에 발급된 키가 박혀 있어야 합니다"
     return m.group(1)

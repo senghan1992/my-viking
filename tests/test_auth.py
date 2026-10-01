@@ -9,7 +9,7 @@ def test_signup_login_logout(client):
     # 가입
     r = c.post("/signup", data={"name": "홍길동", "email": "hong@test.com", "password": "secret12"}, follow_redirects=False)
     assert r.status_code == 303
-    assert "viking_session" in r.headers.get("set-cookie", "")
+    assert "scribe_session" in r.headers.get("set-cookie", "")
 
     # 중복 이메일 거부
     r = c.post("/signup", data={"name": "홍길동2", "email": "hong@test.com", "password": "secret12"})
@@ -65,5 +65,5 @@ def test_invalid_api_key(client, user1):
     r = c.get("/api/v1/projects/" + slug + "/brief")
     assert r.status_code == 401
     r = c.get("/api/v1/projects/" + slug + "/brief",
-              headers={"Authorization": "Bearer jv_wrongkey"})
+              headers={"Authorization": "Bearer sc_wrongkey"})
     assert r.status_code == 401

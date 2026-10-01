@@ -1,10 +1,10 @@
-"""jv 명령줄 — 에이전트 머신에서 도서관 서버에 붙는 얇은 클라이언트.
+"""scribe 명령줄 — 에이전트 머신에서 도서관 서버에 붙는 얇은 클라이언트.
 
 역할이 둘로 나뉩니다.
   · 작업 세션 쪽: 훅/MCP/셸 + pi 허브 확장 — 일한 기록을 **관찰(/observe)** 로 올리고
     브리핑·관련 지식을 받아온다. 지식을 만들지 않는다.
-  · 서기 쪽: `jv secretary` — **별도 pi 세션**을 열어 관찰함(/inbox)을 읽고, 남길 것만
-    지식으로 등재하고 처리 통보한다. (`jv inbox`/`jv ack`/`jv note` 로 사람도 쓸 수 있다.)
+  · 서기 쪽: `scribe secretary` — **별도 pi 세션**을 열어 관찰함(/inbox)을 읽고, 남길 것만
+    지식으로 등재하고 처리 통보한다. (`scribe inbox`/`scribe ack`/`scribe note` 로 사람도 쓸 수 있다.)
 
 모든 호출은 fail-open: 서버가 죽거나 연결이 틀어져도 코딩 세션을 막지 않고 흔적만 남깁니다.
 훅은 Claude Code hook format v2 JSON 을 stdout 으로 출력합니다.
@@ -46,7 +46,46 @@ def mask(text: str) -> str:
 
 
 # ── 공용 ──
-STATE_DIR = Path(os.environ.get("MYVIKING_STATE_DIR", Path.home() / ".myviking" / "hook-state"))
+def _data_home() -> Path:
+    """데이터 홈 — ~/.scribe, 없으면 구 ~/.scribe 폴백 (읽기 전용 이주 경로).
+
+    구 이름 시절에 만든 연결·설정이 깨지지 않게 읽기는 양쪽을 본다.
+    새 홈이 없는데 구 홈만 있으면 구 홈을 그대로 써서 기존 연결이 유지된다.
+    """
+    home = Path(os.environ.get("HOME") or str(Path.home()))
+    _legacy = ".my" + "viking"
+    new = home / ".scribe"
+    if new.exists() or not (home / _legacy).exists():
+        return new
+    return home / _legacy
+
+
+def _first_env(new_key: str, old_key: str = "", default: str = "") -> str:
+    """새 env 이름 우선, 구 이름 폴백."""
+    v = os.environ.get(new_key, "")
+    if v == "" and old_key:
+        v = os.environ.get(old_key, "")
+    if v == "":
+        v = default
+    return v.strip()
+
+
+STATE_DIR = Path(_first_env("SCRIBE_STATE_DIR", "MYVIKING_STATE_DIR", "")
+                 or str(_data_home() / "hook-state"))
+
+
+_LEGACY_LINK_FILE = ".myviking-connection.json"
+_LEGACY_SECRETARY_FILE = ".myviking-secretary.json"
+
+
+def _link_candidates(dir_: Path) -> list[Path]:
+    """읽기용 폴더 링크 후보 — 새 이름 우선, 구 이름 폴백 (쓰기는 항상 새 이름)."""
+    return [dir_ / _PI_LINK_FILE, dir_ / _LEGACY_LINK_FILE]
+
+
+def _secretary_file_candidates(dir_: Path) -> list[Path]:
+    """읽기용 폴더 서기 설정 후보 — 새 이름 우선, 구 이름 폴백."""
+    return [dir_ / _SECRETARY_FOLDER_FILE, dir_ / _LEGACY_SECRETARY_FILE]
 
 
 def _log_error(msg: str) -> None:
@@ -63,8 +102,7 @@ class _NoConn(Exception):
 
 
 def _config_path() -> Path:
-    home = os.environ.get("HOME") or str(Path.home())
-    return Path(home) / ".myviking" / "config.json"
+    return _data_home() / "config.json"
 
 
 def _load_config() -> dict:
@@ -98,8 +136,8 @@ def _set_enabled(flag: bool) -> None:
 def _env_args(args: argparse.Namespace) -> tuple[str, str, str]:
     """명시 인자(--url/--key/--project)와 폴더 연결만 쓴다 — 전역 env 는 안 씀.
 
-    쉘/프로필에 MYVIKING_* 를 걸면 연결 안 한 모든 폴더가 그 프로젝트로 새는 길이 되므로
-    자동 캡처 경로는 .myviking-connection.json(프로젝트 루트)이 유일하게 연결을 정한다.
+    쉘/프로필에 SCRIBE_* 를 걸면 연결 안 한 모든 폴더가 그 프로젝트로 새는 길이 되므로
+    자동 캡처 경로는 .scribe-connection.json(프로젝트 루트)이 유일하게 연결을 정한다.
     """
     url = (args.url or "").rstrip("/")
     key = args.key or ""
@@ -107,25 +145,25 @@ def _env_args(args: argparse.Namespace) -> tuple[str, str, str]:
     if url and key and project:
         return url, key, project
     if url or key:
-        raise _NoConn("jv: --url 과 --key(· --project)를 함께 주세요. "
-                      "전역 환경 변수(MYVIKING_*)로 연결하는 방식은 더 이상 없습니다.")
+        raise _NoConn("scribe: --url 과 --key(· --project)를 함께 주세요. "
+                      "전역 환경 변수(SCRIBE_*)로 연결하는 방식은 더 이상 없습니다.")
     conn = _folder_conn(Path(getattr(args, "cwd", "") or os.getcwd()))
     if conn:
         return conn["url"], conn["key"], conn["project"]
-    raise _NoConn("jv: 연결을 찾을 수 없습니다 — 연결된 프로젝트 폴더에서 실행하거나 "
-                  "jv connect 로 이 폴더를 연결하세요.")
+    raise _NoConn("scribe: 연결을 찾을 수 없습니다 — 연결된 프로젝트 폴더에서 실행하거나 "
+                  "scribe connect 로 이 폴더를 연결하세요.")
 
 
 def _req_conn(args: argparse.Namespace, allow_env: bool = False) -> tuple[str, str, str]:
-    """url/key/project 결정 — 명시 인자(--url/--key/--project) → 폴더 연결(.myviking-connection.json).
+    """url/key/project 결정 — 명시 인자(--url/--key/--project) → 폴더 연결(.scribe-connection.json).
 
     전역 환경 변수는 연결을 정하지 못한다 — 쉘/프로필에 걸면 모든 폴더가 한 프로젝트로
     새는 길이 되기 때문이다. 유일한 예외는 allow_env (MCP 서버) — 에이전트 설정에 per-launch
-    환경으로 MYVIKING_* 를 박은 경우(어떤 프로젝트의 에이전트인지 '그 에이전트의 설정' 이
+    환경으로 SCRIBE_* 를 박은 경우(어떤 프로젝트의 에이전트인지 '그 에이전트의 설정' 이
     정하는 것이라 전역 새임이 아님). 이 경우에도 폴더 연결이 있으면 폴더 연결이 우선한다.
     """
     if not _is_enabled():
-        raise _NoConn("jv: 이 컴퓨터의 도서관이 꺼져 있습니다 (jv enable 로 켜기).")
+        raise _NoConn("scribe: 이 컴퓨터의 도서관이 꺼져 있습니다 (scribe enable 로 켜기).")
     url = (getattr(args, "url", "") or "").rstrip("/")
     key = getattr(args, "key", "") or ""
     project = (getattr(args, "project", "") or "").strip()
@@ -135,21 +173,21 @@ def _req_conn(args: argparse.Namespace, allow_env: bool = False) -> tuple[str, s
     if conn:
         return conn["url"], conn["key"], conn["project"]
     if allow_env:
-        eurl = os.environ.get("MYVIKING_URL", "").rstrip("/")
-        ekey = os.environ.get("MYVIKING_KEY", "")
-        eproj = os.environ.get("MYVIKING_PROJECT", "").strip()
+        eurl = _first_env("SCRIBE_URL", "MYVIKING_URL").rstrip("/")
+        ekey = _first_env("SCRIBE_KEY", "MYVIKING_KEY")
+        eproj = _first_env("SCRIBE_PROJECT", "MYVIKING_PROJECT")
         if eurl and ekey and eproj:
             return eurl, ekey, eproj
-    hint = ("이 컴퓨터의 도서관이 꺼져 있습니다 (jv enable 로 켜기)." if not _is_enabled()
-            else "연결된 프로젝트 폴더에서 실행하거나: jv connect --url <서버> --key jv_...")
-    raise _NoConn("jv: 이 폴더에 myviking 연결이 없습니다 — 그래서 아무 지식도 주입·기록되지 않습니다. "
+    hint = ("이 컴퓨터의 도서관이 꺼져 있습니다 (scribe enable 로 켜기)." if not _is_enabled()
+            else "연결된 프로젝트 폴더에서 실행하거나: scribe connect --url <서버> --key sc_...")
+    raise _NoConn("scribe: 이 폴더에 scribe 연결이 없습니다 — 그래서 아무 지식도 주입·기록되지 않습니다. "
                   f"{hint}")
 
 
 def _folder_conn(cwd: Path) -> dict | None:
-    """폴더에서 위로 올라가며 .myviking-connection.json 을 찾아 저장된 연결을 돌려준다.
+    """폴더에서 위로 올라가며 .scribe-connection.json 을 찾아 저장된 연결을 돌려준다.
 
-    전역 스위치(jv disable)가 꺼져 있으면 항상 None — 전 폴더가 자유 사용이 된다.
+    전역 스위치(scribe disable)가 꺼져 있으면 항상 None — 전 폴더가 자유 사용이 된다.
     """
     if not _is_enabled():
         return None
@@ -159,14 +197,14 @@ def _folder_conn(cwd: Path) -> dict | None:
         return None
     dir_ = cwd.resolve()
     for _ in range(12):
-        link = dir_ / _PI_LINK_FILE
-        if link.exists():
-            try:
-                cid = json.loads(link.read_text()).get("connection")
-            except (OSError, ValueError):
-                cid = None
-            if cid:
-                return _conn_by_id(conns, cid)
+        for link in _link_candidates(dir_):
+            if link.exists():
+                try:
+                    cid = json.loads(link.read_text()).get("connection")
+                except (OSError, ValueError):
+                    cid = None
+                if cid:
+                    return _conn_by_id(conns, cid)
         if (dir_ / ".git").exists() or dir_ == home or dir_.parent == dir_:
             return None   # 프로젝트 루트 이상은 올라가지 않는다 — 다른 폴더로 새는 것 방지
         dir_ = dir_.parent
@@ -190,10 +228,10 @@ def _api(url: str, key: str, method: str, path: str, **kw) -> dict:
         return r.json()
     except httpx.HTTPStatusError as e:
         _log_error(f"HTTP {e.response.status_code} {path}: {e.response.text[:200]}")
-        raise SystemExit(f"jv: 서버 응답 오류 ({e.response.status_code}) — 키/주소를 확인하세요.")
+        raise SystemExit(f"scribe: 서버 응답 오류 ({e.response.status_code}) — 키/주소를 확인하세요.")
     except httpx.HTTPError as e:
         _log_error(f"HTTP {path}: {e}")
-        raise SystemExit(f"jv: 서버에 연결할 수 없습니다 ({url}).")
+        raise SystemExit(f"scribe: 서버에 연결할 수 없습니다 ({url}).")
 
 
 def _resolve_project_by_key(url: str, key: str) -> dict:
@@ -204,7 +242,7 @@ def _resolve_project_by_key(url: str, key: str) -> dict:
         msg = str(e)
         if "404" in msg:
             # 서버가 최신 버전이면 이 경로가 있다 — 404 는 구버전 서버
-            raise SystemExit(f"jv: 서버({url})가 키-프로젝트 자동 식별(/api/v1/me)을 지원하지 않습니다 — "
+            raise SystemExit(f"scribe: 서버({url})가 키-프로젝트 자동 식별(/api/v1/me)을 지원하지 않습니다 — "
                              f"서버를 최신으로 배포하거나 --project <슬러그> 를 함께 주세요.")
         raise
 
@@ -255,7 +293,7 @@ def hook_install(args: argparse.Namespace) -> None:
               + (f" · {name}" if name else ""))
     except SystemExit as e:
         print(f"⚠ 서버 확인 실패: {e}")
-        print("  연결 탭의 주소(URL)와 방금 발급받은 키(jv_...)를 다시 확인하고 명령을 다시 실행하세요.")
+        print("  연결 탭의 주소(URL)와 방금 발급받은 키(sc_...)를 다시 확인하고 명령을 다시 실행하세요.")
         raise
     # 폴더 연결을 확보한다 — 훅은 '폴더 연결' 만 보고 동작하므로 이것 없으면 무동작.
     _link_folder(_conn_id(url, project), cwd, url, key, project,
@@ -264,17 +302,21 @@ def hook_install(args: argparse.Namespace) -> None:
     print("이제 이 폴더에서 Claude Code 를 열면 기록이 쌓이기 시작합니다.")
 
 
-def _is_jv_hook_cmd(cmd: str) -> bool:
-    """명령어가 jv 훅 실행인지 — 남의 훅은 건드리지 않기 위한 판별."""
+def _is_scribe_hook_cmd(cmd: str) -> bool:
+    """명령어가 scribe 훅 실행인지 — 남의 훅은 건드리지 않기 위한 판별.
+
+    구 이름(jv) 시절에 설치된 훅도 인식한다 — 갱신·제거가 옛 설치본까지 닿아야 하므로.
+    """
     cmd = (cmd or "").strip()
     if not cmd:
         return False
     head = cmd.split()[0].strip("'\"")
-    return head.split("/")[-1].startswith("jv") and " hook" in cmd
+    base = head.split("/")[-1]
+    return (base.startswith("scribe") or base.startswith("jv")) and " hook" in cmd
 
 
-def _strip_jv_hooks(data: dict) -> tuple[dict, int]:
-    """.claude/settings.local.json 에서 jv 훅만 걷어낸다 (다른 훅은 보존)."""
+def _strip_scribe_hooks(data: dict) -> tuple[dict, int]:
+    """.claude/settings.local.json 에서 scribe 훅만 걷어낸다 (다른 훅은 보존)."""
     hooks = data.get("hooks")
     if not isinstance(hooks, dict):
         return data, 0
@@ -288,7 +330,7 @@ def _strip_jv_hooks(data: dict) -> tuple[dict, int]:
         for g in groups:
             entries = g.get("hooks") if isinstance(g, dict) else None
             if isinstance(entries, list) and entries and all(
-                    _is_jv_hook_cmd(e.get("command", "")) for e in entries if isinstance(e, dict)):
+                    _is_scribe_hook_cmd(e.get("command", "")) for e in entries if isinstance(e, dict)):
                 removed += len(entries)
                 continue
             keep.append(g)
@@ -299,7 +341,7 @@ def _strip_jv_hooks(data: dict) -> tuple[dict, int]:
     return out, removed
 
 
-def _git_exclude_add(cwd: Path, pattern: str = ".myviking-connection.json") -> None:
+def _git_exclude_add(cwd: Path, pattern: str = ".scribe-connection.json") -> None:
     """git 저장소 안이면 .git/info/exclude 에 연결 파일을 넣는다 (git 과 같은 배려)."""
     root = _project_root(cwd)
     git = root / ".git"
@@ -311,7 +353,7 @@ def _git_exclude_add(cwd: Path, pattern: str = ".myviking-connection.json") -> N
         exc = info / "exclude"
         text = exc.read_text() if exc.exists() else ""
         if pattern not in text:
-            exc.write_text(text.rstrip("\n") + f"\n# myviking\n{pattern}\n")
+            exc.write_text(text.rstrip("\n") + f"\n# scribe\n{pattern}\n")
     except OSError:
         pass
 
@@ -319,13 +361,13 @@ def _git_exclude_add(cwd: Path, pattern: str = ".myviking-connection.json") -> N
 def _hook_write(url: str, key: str, project: str, cwd: Path, timeout: int = 15) -> Path:
     """Claude Code 훅을 이 폴더의 .claude/settings.local.json 에 설치 (hook_install/connect 공용).
 
-    명령에 주소를 박지 않는다 — 폴더 연결 파일(.myviking-connection.json)이 유일한 기준이라
-    jv switch 로 프로젝트가 바뀌면 곧바로 따라가고, jv disconnect 하면 조용히 멈춘다.
+    명령에 주소를 박지 않는다 — 폴더 연결 파일(.scribe-connection.json)이 유일한 기준이라
+    scribe switch 로 프로젝트가 바뀌면 곧바로 따라가고, scribe disconnect 하면 조용히 멈춘다.
     """
-    jv = _self_command()
+    scribe = _self_command()
 
     def command(event: str) -> str:
-        return f"{jv} hook {event} --timeout {timeout}"
+        return f"{scribe} hook {event} --timeout {timeout}"
 
     hooks_block = {
         "hooks": {
@@ -345,26 +387,26 @@ def _hook_write(url: str, key: str, project: str, cwd: Path, timeout: int = 15) 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(merged, ensure_ascii=False, indent=2))
     print(f"✓ 훅 설치: {path}")
-    print(f"  폴더 연결 기준( .myviking-connection.json ) · 이벤트: {', '.join(e for e, _ in HOOK_EVENTS)}")
+    print(f"  폴더 연결 기준( .scribe-connection.json ) · 이벤트: {', '.join(e for e, _ in HOOK_EVENTS)}")
     return path
 
 
 def _self_command() -> str:
-    """훅에 박을 jv 호출 — pipx/--user 설치 경로 문제 회피."""
+    """훅에 박을 scribe 호출 — pipx/--user 설치 경로 문제 회피."""
     if _in_container():
-        return "jv"
-    exe = os.environ.get("_JV_SELF", "")
+        return "scribe"
+    exe = os.environ.get("_SCRIBE_SELF", "") or os.environ.get("_JV_SELF", "")
     if exe and Path(exe).exists():
         return exe
-    return "jv"
+    return "scribe"
 
 
 def _in_container() -> bool:
-    return os.environ.get("MYVIKING_IN_CONTAINER") == "1" or Path("/.dockerenv").exists()
+    return _first_env("SCRIBE_IN_CONTAINER", "MYVIKING_IN_CONTAINER") == "1" or Path("/.dockerenv").exists()
 
 
 def hook_uninstall(args: argparse.Namespace) -> None:
-    """이 폴더의 jv 훅만 제거 (다른 훅은 그대로 둔다)."""
+    """이 폴더의 scribe 훅만 제거 (다른 훅은 그대로 둔다)."""
     path = _settings_path(Path(args.cwd or os.getcwd()))
     if not path.exists():
         print("이 폴더에 훅이 설치되어 있지 않습니다.")
@@ -374,51 +416,54 @@ def hook_uninstall(args: argparse.Namespace) -> None:
     except json.JSONDecodeError:
         print(f"⚠ 훅 파일을 읽을 수 없습니다: {path}")
         return
-    data, removed = _strip_jv_hooks(data)
+    data, removed = _strip_scribe_hooks(data)
     if not removed:
-        print("이 폴더에 jv 훅이 없습니다.")
+        print("이 폴더에 scribe 훅이 없습니다.")
         return
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-    print(f"✓ 이 폴더의 jv 훅 제거: {removed}개 ({path}) — 다른 훅은 그대로입니다")
+    print(f"✓ 이 폴더의 scribe 훅 제거: {removed}개 ({path}) — 다른 훅은 그대로입니다")
 
 
 def hook_check(args: argparse.Namespace) -> None:
     path = _settings_path(Path(args.cwd or os.getcwd()))
     if not path.exists():
-        print("훅이 설치되어 있지 않습니다. jv hook install --url ... --key ...")
+        print("훅이 설치되어 있지 않습니다. scribe hook install --url ... --key ...")
         return
     data = json.loads(path.read_text())
     hooks = data.get("hooks", {})
     print(f"✓ 훅 파일: {path}")
     missing = [e for e, _ in HOOK_EVENTS if e not in hooks]
     if missing:
-        print(f"⚠ 빠진 이벤트: {', '.join(missing)} — jv hook install 로 다시 설치하세요.")
+        print(f"⚠ 빠진 이벤트: {', '.join(missing)} — scribe hook install 로 다시 설치하세요.")
     else:
         print(f"✓ 이벤트: {', '.join(e for e, _ in HOOK_EVENTS)}")
-    # 폴더 연결이 우선 — 이게 실제로 캡처되는 기준. shell 의 MYVIKING_* 로는 연결이 정해지지 않는다.
+    # 폴더 연결이 우선 — 이게 실제로 캡처되는 기준. shell 의 SCRIBE_* 로는 연결이 정해지지 않는다.
     env = {}
     conn = _folder_conn(Path(args.cwd or os.getcwd()))
     if conn:
-        env = {"MYVIKING_URL": conn["url"], "MYVIKING_KEY": conn["key"], "MYVIKING_PROJECT": conn["project"]}
+        env = {"SCRIBE_URL": conn["url"], "SCRIBE_KEY": conn["key"], "SCRIBE_PROJECT": conn["project"]}
     if not env:
-        # 예전 설치본(주소 박음 훅)은 명령 안에 MYVIKING_* 가 박혀 있다 — 점검 용도로만 파싱.
-        env = {k: os.environ.get(k, "") for k in ("MYVIKING_URL", "MYVIKING_KEY", "MYVIKING_PROJECT")}
+        # 예전 설치본(주소 박음 훅)은 명령 안에 SCRIBE_* 가 박혀 있다 — 점검 용도로만 파싱.
+        # 구 이름 시절 훅의 MYVIKING_* 도 함께 본다.
+        env = {k: _first_env(k, "MYVIKING_" + k.split("_", 1)[1])
+               for k in ("SCRIBE_URL", "SCRIBE_KEY", "SCRIBE_PROJECT")}
         for cfg in hooks.values():
             cmd = cfg[0]["hooks"][0]["command"] if cfg else ""
-            m = re.search(r"MYVIKING_URL=(\S+)", cmd)
-            if m:
-                env["MYVIKING_URL"] = m.group(1)
-            m = re.search(r"MYVIKING_KEY=(\S+)", cmd)
-            if m:
-                env["MYVIKING_KEY"] = m.group(1)
-    if env.get("MYVIKING_URL") and env.get("MYVIKING_KEY"):
+            for prefix in ("SCRIBE", "MYVIKING"):
+                m = re.search(rf"{prefix}_URL=(\S+)", cmd)
+                if m and not env["SCRIBE_URL"]:
+                    env["SCRIBE_URL"] = m.group(1)
+                m = re.search(rf"{prefix}_KEY=(\S+)", cmd)
+                if m and not env["SCRIBE_KEY"]:
+                    env["SCRIBE_KEY"] = m.group(1)
+    if env.get("SCRIBE_URL") and env.get("SCRIBE_KEY"):
         try:
-            data = _verify_server(env.get("MYVIKING_URL", ""), env.get("MYVIKING_KEY", ""),
-                                  env.get("MYVIKING_PROJECT", ""))
-            print(f"✓ 서버 연결·인증: {env.get('MYVIKING_URL')}"
-                  + (f" · 프로젝트 {env.get('MYVIKING_PROJECT')}" if env.get("MYVIKING_PROJECT") else ""))
+            data = _verify_server(env.get("SCRIBE_URL", ""), env.get("SCRIBE_KEY", ""),
+                                  env.get("SCRIBE_PROJECT", ""))
+            print(f"✓ 서버 연결·인증: {env.get('SCRIBE_URL')}"
+                  + (f" · 프로젝트 {env.get('SCRIBE_PROJECT')}" if env.get("SCRIBE_PROJECT") else ""))
         except (SystemExit, Exception) as e:
-            print(f"⚠ 서버 연결/키 확인 실패: {env.get('MYVIKING_URL')} — 주소/키를 확인하세요.")
+            print(f"⚠ 서버 연결/키 확인 실패: {env.get('SCRIBE_URL')} — 주소/키를 확인하세요.")
     log = STATE_DIR / "errors.log"
     if log.exists() and log.stat().st_size:
         print(f"⚠ 기록된 오류: {log} (최근 몇 줄)")
@@ -461,7 +506,7 @@ def _hook_session_start(url: str, key: str, project: str, session_id: str) -> di
             "additionalContext": data.get("orientation", "") + "\n\n" + (
                 "위 브리핑의 '확립된 지식'은 이전 작업이 뒷받침한 내용입니다. "
                 "'검증 필요'는 단정하지 말고 확인하세요. 작업 중 새 규칙·함정·결정을 "
-                "알게 되면 jv remember (또는 도구)로 남기세요."),
+                "알게 되면 scribe remember (또는 도구)로 남기세요."),
         }
     }
 
@@ -554,7 +599,7 @@ def _touched_files(transcript: Path) -> list[str]:
 
 
 def _agent_name() -> str:
-    return os.environ.get("MYVIKING_AGENT", "cli")
+    return os.environ.get("SCRIBE_AGENT", "cli")
 
 
 # ══════════════════ 원격 명령 ══════════════════ #
@@ -629,7 +674,7 @@ def remote(args: argparse.Namespace) -> None:
         if data.get("mode") == "distill":
             print("✓ [레거시] 서버가 바로 증류했습니다")
         else:
-            print(f"✓ 관찰로 저장 — 정리 대기 {data.get('pending', 0)}건 (서기가 판단: jv secretary once)")
+            print(f"✓ 관찰로 저장 — 정리 대기 {data.get('pending', 0)}건 (서기가 판단: scribe secretary once)")
     elif args.cmd == "score":
         data = _api(url, key, "POST", f"/projects/{project}/score",
                     json={"memory_id": int(args.q or 0), "outcome": args.outcome})
@@ -639,34 +684,34 @@ def remote(args: argparse.Namespace) -> None:
 # ══════════════════ MCP stdio 서버 ══════════════════ #
 MCP_TOOLS = [
     {
-        "name": "viking_brief",
+        "name": "scribe_brief",
         "description": "프로젝트 도서관의 작업 브리핑(확립 지식·검증 필요·서기 대기)을 가져온다. 세션 시작 시 호출.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "viking_search",
+        "name": "scribe_search",
         "description": "프로젝트 지식 도서관에서 관련 지식을 검색한다. 작업 중 막힐 때나 규칙·함정이 궁금할 때 호출.",
         "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
     },
     {
-        "name": "viking_note",
+        "name": "scribe_note",
         "description": "서기(agent)에게 놓치면 안 되는 일을 한 줄 남긴다. 지식 승격은 서기가 판단해서 한다.",
         "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
     },
     {
-        "name": "viking_inbox",
+        "name": "scribe_inbox",
         "description": "[서기용] 정리 대기 중인 관찰 · 반복 요청 · 재발 오류를 읽는다.",
         "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}},
     },
     {
-        "name": "viking_ack",
+        "name": "scribe_ack",
         "description": "[서기용] 등재하지 않기로 한 관찰을 skipped 로 처리 통보한다.",
         "inputSchema": {"type": "object", "properties": {
             "ids": {"type": "array", "items": {"type": "integer"}}, "reason": {"type": "string"}},
             "required": ["ids", "reason"]},
     },
     {
-        "name": "viking_remember",
+        "name": "scribe_remember",
         "description": "사람이 직접 지식을 등재할 때 쓴다(보통은 서기가 정리한다). confirmed=true 면 확립으로 기록.",
         "inputSchema": {"type": "object", "properties": {
             "title": {"type": "string"}, "content": {"type": "string"},
@@ -674,7 +719,7 @@ MCP_TOOLS = [
             "confirmed": {"type": "boolean"}}, "required": ["title", "content"]},
     },
     {
-        "name": "viking_score",
+        "name": "scribe_score",
         "description": "이전에 주입된 지식이 틀렸으면 memory_id 와 outcome=bad 로 알려 교정하게 한다.",
         "inputSchema": {"type": "object", "properties": {
             "memory_id": {"type": "integer"}, "outcome": {"type": "string", "enum": ["good", "bad", "settled"]}},
@@ -684,7 +729,7 @@ MCP_TOOLS = [
 
 
 def mcp(args: argparse.Namespace) -> None:
-    # allow_env: MCP 서버는 에이전트 설정이 주는 MYVIKING_* 도 존중한다 (그 에이전트 프로젝트의
+    # allow_env: MCP 서버는 에이전트 설정이 주는 SCRIBE_* 도 존중한다 (그 에이전트 프로젝트의
     # 연결을 설정이 정하는 것). 그래도 폴더 연결이 있으면 폴더가 우선 — 새는 것 방지.
     try:
         url, key, project = _req_conn(args, allow_env=True)
@@ -713,7 +758,7 @@ def mcp(args: argparse.Namespace) -> None:
         if method == "initialize":
             reply(req_id, {"protocolVersion": "2024-11-05",
                            "capabilities": {"tools": {}},
-                           "serverInfo": {"name": "myviking", "version": "1.0.0"}})
+                           "serverInfo": {"name": "scribe", "version": "1.0.0"}})
         elif method == "notifications/initialized":
             continue
         elif method == "tools/list":
@@ -724,20 +769,20 @@ def mcp(args: argparse.Namespace) -> None:
             try:
                 if offline:
                     text = ("이 폴더는 지식 도서관에 연결되어 있지 않습니다 — 그래서 지식이 주입되지 않습니다. "
-                            "연결이 필요하면 `jv connect`(또는 `jv status`)를 쓰고, 아니면 일반적인 방식으로 진행하세요. "
+                            "연결이 필요하면 `scribe connect`(또는 `scribe status`)를 쓰고, 아니면 일반적인 방식으로 진행하세요. "
                             f"({offline_note})")
-                elif name == "viking_brief":
+                elif name == "scribe_brief":
                     text = _api(url, key, "GET", f"/projects/{project}/brief").get("orientation", "")
-                elif name == "viking_search":
+                elif name == "scribe_search":
                     r = _api(url, key, "GET", f"/projects/{project}/search?q=" + urllib.parse.quote(str(inp.get("query", ""))))
                     text = "\n\n".join(f"[{it['category']}] {it['title']}\n{it['text'][:500]}" for it in r.get("items", [])) or "관련 지식 없음"
-                elif name == "viking_note":
+                elif name == "scribe_note":
                     r = _api(url, key, "POST", f"/projects/{project}/observe",
                              json={"kind": "note", "text": mask(str(inp.get("text", ""))), "agent": _agent_name()})
                     text = f"서기에게 전달했습니다 (정리 대기 {r.get('pending', 0)}건)"
-                elif name == "viking_inbox":
+                elif name == "scribe_inbox":
                     # 읽기 전용 — 선점하지 않는다 (서기의 일감을 가로채면 안 되므로 claim=false).
-                    # jv inbox CLI 와 같은 규칙: --claim 을 명시할 때만 잡는다.
+                    # scribe inbox CLI 와 같은 규칙: --claim 을 명시할 때만 잡는다.
                     r = _api(url, key, "GET",
                              f"/projects/{project}/inbox?limit={int(inp.get('limit') or 60)}&claim=false&worker=mcp")
                     lines = [f"정리 대기 {r.get('pending', 0)}건"]
@@ -751,20 +796,20 @@ def mcp(args: argparse.Namespace) -> None:
                     for x in r.get("recurrences", []):
                         lines.append(f"✗ 재발 ×{x['hits']}: {x['text'][:200]}")
                     text = "\n".join(lines)
-                elif name == "viking_ack":
+                elif name == "scribe_ack":
                     r = _api(url, key, "POST", f"/projects/{project}/inbox/ack",
                              json={"worker": "mcp",
                                    "results": [{"ids": [int(i) for i in inp.get("ids", [])],
                                                  "action": "skipped", "reason": str(inp.get("reason", ""))}]})
                     text = f"{r.get('skipped', 0)}건 버림 · 남은 대기 {r.get('pending', 0)}건"
-                elif name == "viking_remember":
+                elif name == "scribe_remember":
                     r = _api(url, key, "POST", f"/projects/{project}/remember",
                              json={"title": inp["title"], "content": mask(str(inp["content"])),
                                    "category": inp.get("category", "knowledge"),
                                    "confirmed": bool(inp.get("confirmed")),
                                    "source": inp.get("source") or "manual"})
                     text = f"{'갱신' if r.get('merged') else '기록'}됨 → {r.get('uri')}"
-                elif name == "viking_score":
+                elif name == "scribe_score":
                     r = _api(url, key, "POST", f"/projects/{project}/score",
                              json={"memory_id": int(inp["memory_id"]), "outcome": inp.get("outcome", "settled")})
                     text = f"상태 {r.get('status')}"
@@ -781,45 +826,45 @@ def mcp(args: argparse.Namespace) -> None:
 
 # ══════════════════ pi/omp 확장 (허브) — 프로젝트별 연결 관리 ══════════════════ #
 # 개념 (git checkout 과 비슷):
-#   · 허브 확장 1개만 전역(~/.pi/agent/extensions/myviking.ts)에 설치 — 프로젝트 고정 없음
-#   · 연결(키 포함)은 ~/.myviking/connections.json (0600) 에 이름·주소·키·프로젝트로 저장
-#   · 각 프로젝트 폴더의 .myviking-connection.json 이 '현재 그 폴더의 연결'을 정한다 (비밀 없음)
+#   · 허브 확장 1개만 전역(~/.pi/agent/extensions/scribe.ts)에 설치 — 프로젝트 고정 없음
+#   · 연결(키 포함)은 ~/.scribe/connections.json (0600) 에 이름·주소·키·프로젝트로 저장
+#   · 각 프로젝트 폴더의 .scribe-connection.json 이 '현재 그 폴더의 연결'을 정한다 (비밀 없음)
 #   · pi 를 어떤 폴더에서 열든 그 폴더의 연결만 따라가고, 연결이 없으면 그냥 자유 사용
 #
 # omp(Oh My Pi) 호환: omp 는 pi 와 같은 확장 API(ExtensionAPI: pi.on/registerTool/
 # registerCommand)를 쓰는 동일 계열 런타임 — 캐시 파일명이 실제로
 # legacy-pi-extension-cache.db 이고, config.yml 에 skills.enablePiUser/Project 가
-# 있는 것도 그 증거. 같은 myviking.ts 를 ~/.omp/agent/extensions/ 에 두면
+# 있는 것도 그 증거. 같은 scribe.ts 를 ~/.omp/agent/extensions/ 에 두면
 # 별도 플래그 없이 자동 로드되고 도구도 그대로 동작함(검증됨) — 그래서 pi 용
 # 설치 로직을 flavor 로만 나눠 그대로 재사용한다 (연결 저장소는 완전히 공유).
 _HUB_HOME_DIRS = {"pi": ".pi", "omp": ".omp"}
-_PI_EXT_FILE = "myviking.ts"
-_PI_LINK_FILE = ".myviking-connection.json"
+_PI_EXT_FILE = "scribe.ts"
+_PI_LINK_FILE = ".scribe-connection.json"
 # 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
 # 마커가 없는 설치본은 오래된 버전으로 보고 pi install 이 최신으로 갱신한다.
 # ══════════════════ pi/omp 확장 (허브) — 세션 관찰 + 서기 agent ══════════════════ #
 # 개념 (v11 ,git + 사서 비유):
 #   · 작업 세션은 지식을 만들지 않는다 — 매 턴의 일을 **관찰(/observe)** 로만 올린다.
-#   · 판단·요약·등재는 **서기 agent**가 한다. 서기는 MYVIKING_ROLE=secretary 로 열린
-#     '별도의 pi 세션' 이고, 관찰함(/inbox)을 읽고 viking_file 로 등재한 뒤 ack 한다.
+#   · 판단·요약·등재는 **서기 agent**가 한다. 서기는 SCRIBE_ROLE=secretary 로 열린
+#     '별도의 pi 세션' 이고, 관찰함(/inbox)을 읽고 scribe_file 로 등재한 뒤 ack 한다.
 #   · 세션 공유: 관찰에 이 세션의 pi 트랜스크립트 경로를 담는다(같은 머신의 서기가 직접 읽는다).
 #   · 연결 문법은 v10 과 동일 — 허브 1개 전역, 연결의 주인은 폴더, 도구 등록은 연결된 세션에서만.
 _HUB_HOME_DIRS = {"pi": ".pi", "omp": ".omp"}
-_PI_EXT_FILE = "myviking.ts"
-_PI_LINK_FILE = ".myviking-connection.json"
+_PI_EXT_FILE = "scribe.ts"
+_PI_LINK_FILE = ".scribe-connection.json"
 # 템플릿에 마커로 박혀 있어야 한다 — 확장 내용이 바뀌면 번호를 올린다.
 # v9: 도구 4종을 factory 가 아니라 '연결된 세션의 session_start' 에서만 등록한다 —
-#     연결 안 한 폴더에서는 viking 도구가 아예 존재하지 않는다 (전역 연결 현상 제거).
-# v10: 머신 전체 스위치(jv disable / ~/.myviking/config.json)를 확장도 존중한다 —
+#     연결 안 한 폴더에서는 scribe 도구가 아예 존재하지 않는다 (전역 연결 현상 제거).
+# v10: 머신 전체 스위치(scribe disable / ~/.scribe/config.json)를 확장도 존중한다 —
 #      꺼져 있으면 연결된 폴더라도 도구를 등록하지 않는다.
 # v11: 자동 증류(/commit) 폐기 — 관찰(/observe)만 올리고, 서기 세션용 도구를 따로 등록한다.
-_PI_HUB_VERSION = "myviking-hub-v11"
+_PI_HUB_VERSION = "scribe-hub-v11"
 
 
 def _pi_path(flavor: str = "pi") -> Path:
     """pi/omp 전역 확장(허브) 경로 — 호출 시점에 HOME 을 읽어 테스트 격리 가능.
 
-    flavor: "pi" | "omp" — 둘 다 같은 파일(myviking.ts)을 각자의 확장 폴더에 둔다.
+    flavor: "pi" | "omp" — 둘 다 같은 파일(scribe.ts)을 각자의 확장 폴더에 둔다.
     """
     home = os.environ.get("HOME") or str(Path.home())
     sub = _HUB_HOME_DIRS.get(flavor, ".pi")
@@ -827,8 +872,7 @@ def _pi_path(flavor: str = "pi") -> Path:
 
 
 def _pi_conns_path() -> Path:
-    home = os.environ.get("HOME") or str(Path.home())
-    return Path(home) / ".myviking" / "connections.json"
+    return _data_home() / "connections.json"
 
 
 def _pi_link_path(cwd: Path) -> Path:
@@ -908,7 +952,7 @@ def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
         except (OSError, ValueError):
             pass
     if not conns:
-        print("저장된 연결이 없습니다. → jv connect --url <서버> --key jv_... --project <슬러그>")
+        print("저장된 연결이 없습니다. → scribe connect --url <서버> --key sc_... --project <슬러그>")
         return
     print(f"저장된 연결 {len(conns)}개:")
     for i, c in enumerate(conns, 1):
@@ -917,22 +961,22 @@ def _print_conns(conns: list[dict], cwd: Path | None = None) -> None:
 
 
 _PI_EXT_TEMPLATE = r"""
-// myviking — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
-// myviking-hub-v11 — 이 마커가 없으면 jv connect/jv pi install 이 최신 템플릿으로 덮어씁니다
+// scribe — 프로젝트 지식 도서관 pi 확장 (허브) (@CREATED@)
+// scribe-hub-v11 — 이 마커가 없으면 scribe connect/scribe pi install 이 최신 템플릿으로 덮어씁니다
 // 이 파일 자체에는 비밀이 없다 — 프로젝트 고정도 없다.
 //
 // 컨셉 (v11 부터): 서버는 지식을 '추출'하지 않는다.
 //   · 작업 세션(여기)은 매 턴의 일을 **관찰(observation)** 로만 올린다 — /observe
-//   · 판단·요약·등재는 **서기 agent**가 별도 pi 세션으로 열어 한다 — MYVIKING_ROLE=secretary
+//   · 판단·요약·등재는 **서기 agent**가 별도 pi 세션으로 열어 한다 — SCRIBE_ROLE=secretary
 //   · 세션 공유: 관찰에 이 세션의 트랜스크립트 경로(PI_SESSION_FILE)를 담는다.
 //     같은 머신의 서기가 그 파일을 직접 열어 '무슨 일이 있었나'를 확인한다.
 //
 // 연결 문법 (v10 과 동일 — git checkout 처럼):
-//   · 연결의 주인은 '폴더'다: 프로젝트 폴더의 .myviking-connection.json
-//     ~/.myviking/connections.json (0600) 은 주소+키 대장일 뿐 — 전역 '현재 연결' 은 없다.
-//   · 도구는 '이 폴더가 연결된 세션' 에서만 등록된다 (연결 안 한 폴더에는 viking_* 가 없다).
-//   · /myviking connect·switch 는 항상 이 폴더에 묶는다.
-//   · jv disable = 머신 전체 스위치 — 꺼져 있으면 도구·주입·관찰 모두 0.
+//   · 연결의 주인은 '폴더'다: 프로젝트 폴더의 .scribe-connection.json
+//     ~/.scribe/connections.json (0600) 은 주소+키 대장일 뿐 — 전역 '현재 연결' 은 없다.
+//   · 도구는 '이 폴더가 연결된 세션' 에서만 등록된다 (연결 안 한 폴더에는 scribe_* 가 없다).
+//   · /scribe connect·switch 는 항상 이 폴더에 묶는다.
+//   · scribe disable = 머신 전체 스위치 — 꺼져 있으면 도구·주입·관찰 모두 0.
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -940,12 +984,17 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 const HOME = homedir();
-const LINK_NAME = ".myviking-connection.json";
-const CONNS_FILE = join(HOME, ".myviking", "connections.json");
-const CONFIG_FILE = join(HOME, ".myviking", "config.json");
+const LINK_NAME = ".scribe-connection.json";
+const LEGACY_LINK_NAME = ".myviking-connection.json";
+const LEGACY_SECRETARY_NAME = ".myviking-secretary.json";
+// 구 이름 시절 홈(~/.scribe)이 있으면 읽기에 쓴다 — 새 홈이 생기면 새 홈이 이긴다.
+const _LEGACY_HOME = ".my" + "viking";
+const DATA_HOME = existsSync(join(HOME, ".scribe")) ? join(HOME, ".scribe") : join(HOME, _LEGACY_HOME);
+const CONNS_FILE = join(DATA_HOME, "connections.json");
+const CONFIG_FILE = join(DATA_HOME, "config.json");
 
 function machineEnabled(): boolean {
-  // 머신 전체 스위치 (jv disable). 꺼져 있으면 어느 폴더든 도구를 등록하지 않는다.
+  // 머신 전체 스위치 (scribe disable). 꺼져 있으면 어느 폴더든 도구를 등록하지 않는다.
   try {
     if (!existsSync(CONFIG_FILE)) return true;
     return JSON.parse(readFileSync(CONFIG_FILE, "utf8"))?.enabled !== false;
@@ -962,8 +1011,9 @@ function secretarySetting(cwd: string): { auto: boolean; every: number } {
   try {
     let dir = resolve(cwd || process.cwd());
     for (let i = 0; i < 12; i++) {
-      const f = join(dir, ".myviking-secretary.json");
-      if (existsSync(f)) {
+      for (const name of [".scribe-secretary.json", LEGACY_SECRETARY_NAME]) {
+        const f = join(dir, name);
+        if (!existsSync(f)) continue;
         const j = JSON.parse(readFileSync(f, "utf8"));
         if (j && (typeof j.auto !== "undefined" || typeof j.every !== "undefined"))
           return { auto: typeof j.auto === "undefined" ? fallback.auto : !!j.auto,
@@ -983,7 +1033,7 @@ interface Conn { id: string; name: string; url: string; key: string; project: st
 interface Active { name: string; url: string; key: string; project: string }
 interface AnyCtx { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string }; cwd?: string }
 
-const SECRETARY = (process.env.MYVIKING_ROLE || "").toLowerCase() === "secretary";
+const SECRETARY = (process.env.SCRIBE_ROLE || process.env.MYVIKING_ROLE || "").toLowerCase() === "secretary";
 
 const activeByThread = new Map<string, Active>();     // 세션(스레드)별 연결 — 기본: 없음(자유)
 const pendingByThread = new Map<string, string>();    // 서기에게 넘길 이번 턴의 질문
@@ -1021,10 +1071,13 @@ const normCid = (s: string): string => {
 
 function findLink(start: string): string | null {
   // 현재 폴더에서 프로젝트 루트(.git)까지만 올라가며 연결 파일을 찾는다.
+  // 구 이름 파일도 폴백으로 읽는다 (쓰기는 항상 새 이름).
   let dir = resolve(start);
   for (let i = 0; i < 12; i++) {
     const f = join(dir, LINK_NAME);
     if (existsSync(f)) return f;
+    const legacy = join(dir, LEGACY_LINK_NAME);
+    if (existsSync(legacy)) return legacy;
     if (existsSync(join(dir, ".git")) || dir === HOME) return null;   // 이 프로젝트의 끝
     const parent = resolve(dir, "..");
     if (parent === dir) return null;
@@ -1077,14 +1130,14 @@ async function call<T>(c: Active, path: string, method = "GET", body?: unknown):
     headers: { Authorization: "Bearer " + c.key, ...(body ? { "Content-Type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!r.ok) throw new Error(`myviking ${path}: HTTP ${r.status}`);
+  if (!r.ok) throw new Error(`scribe ${path}: HTTP ${r.status}`);
   return r.json() as Promise<T>;
 }
 
 function noConn(): string {
-  return "이 프로젝트는 myviking 도서관에 연결되어 있지 않습니다 (자유 사용 — 전역 연결이라는 것은 없습니다).\n"
-    + "  · 이 폴더만 연결: /myviking connect (서버 주소 + API 키 — 키는 서버 → 프로젝트 → 🔗 에이전트 연결 탭)\n"
-    + "  · 저장된 다른 키로: /myviking switch  ·  목록: /myviking";
+  return "이 프로젝트는 scribe 도서관에 연결되어 있지 않습니다 (자유 사용 — 전역 연결이라는 것은 없습니다).\n"
+    + "  · 이 폴더만 연결: /scribe connect (서버 주소 + API 키 — 키는 서버 → 프로젝트 → 🔗 에이전트 연결 탭)\n"
+    + "  · 저장된 다른 키로: /scribe switch  ·  목록: /scribe";
 }
 
 function briefUrl(c: Active, sid: string, role: string): string {
@@ -1098,13 +1151,22 @@ async function injectBrief(c: Active, sid: string, pi: ExtensionAPI): Promise<vo
     const b = await call<{ orientation: string }>(c, briefUrl(c, sid, "worker"));
     if (b.orientation) {
       await pi.sendMessage(
-        { customType: "myviking-brief", content: b.orientation, display: false },
+        { customType: "scribe-brief", content: b.orientation, display: false },
         { deliverAs: "nextTurn" });
     }
   } catch { /* 서버에 닿지 않아도 코딩 세션은 계속된다 */ }
 }
 
 // ── 관찰 올리기 (서기가 읽을 재료) ────────────────────── #
+async function execScribe(pi: ExtensionAPI, args: string[], opts?: any): Promise<any> {
+  // 구 이름(jv) 시절 바이너리도 폴백으로 시도한다 (패키지 미갱신 머신).
+  try {
+    return await pi.exec("scribe", args, opts);
+  } catch (e) {
+    return await pi.exec("jv", args, opts);
+  }
+}
+
 async function observe(c: Active, pi: ExtensionAPI, ctx: AnyCtx, items: any[]): Promise<void> {
   const sid = threadIdOf(ctx);
   try {
@@ -1113,13 +1175,13 @@ async function observe(c: Active, pi: ExtensionAPI, ctx: AnyCtx, items: any[]): 
       { session_id: sid, agent: "pi", transcript: transcriptOf(ctx), items });
     if (r && r.repeat_hits >= 2 && !toldByThread.has(sid)) {
       toldByThread.add(sid);
-      if (ctx.hasUI) ctx.ui.notify(`myviking 서기: 같은 요청이 ${r.repeat_hits}번 있었습니다 — 이번 관찰에 기록했습니다`, "info");
+      if (ctx.hasUI) ctx.ui.notify(`scribe 서기: 같은 요청이 ${r.repeat_hits}번 있었습니다 — 이번 관찰에 기록했습니다`, "info");
     }
     const s = secretarySetting(ctx.cwd || process.cwd());
     if (s.auto && r && r.pending >= s.every) {
-      // 서기를 스스로 깨운다 — 백그라운드 pi 세션 (jv secretary auto on)
+      // 서기를 스스로 깨운다 — 백그라운드 pi 세션 (scribe secretary auto on)
       toldByThread.add(sid);
-      pi.exec("jv", ["secretary", "once", "--detach"], { timeout: 15000 }).catch(() => {});
+      execScribe(pi, ["secretary", "once", "--detach"], { timeout: 15000 }).catch(() => {});
     }
   } catch { /* 실패해도 코딩 세션은 계속된다 */ }
 }
@@ -1198,15 +1260,15 @@ export default function (pi: ExtensionAPI) {
   // ── 도구 정의 — 실제 등록은 '연결된 세션' 의 session_start 에서만 (ensureTools) ──
   const workerJobs: Array<{ name: string; label: string; description: string; params: any; run: (c: Active, p?: any, ctx?: AnyCtx) => Promise<string> }> = [
     {
-      name: "viking_brief",
-      label: "Viking 브리핑",
+      name: "scribe_brief",
+      label: "Scribe 브리핑",
       description: "프로젝트 도서관의 작업 브리핑(확립 지식·검증 필요·서기 대기)을 가져온다. 세션 시작 시 자동 주입되며, 다시 보려면 호출한다.",
       params: Type.Object({}),
       run: (c, _p, ctx) => call<{ orientation: string }>(c, briefUrl(c, threadIdOf(ctx || {}), "worker")).then((b) => b.orientation),
     },
     {
-      name: "viking_search",
-      label: "Viking 검색",
+      name: "scribe_search",
+      label: "Scribe 검색",
       description: "프로젝트 지식 도서관에서 관련 지식을 검색한다. 막혔거나 규칙·함정이 궁금할 때 호출한다.",
       params: Type.Object({ query: Type.String({ description: "검색어" }) }),
       async run(c, p) {
@@ -1218,8 +1280,8 @@ export default function (pi: ExtensionAPI) {
       },
     },
     {
-      name: "viking_note",
-      label: "Viking 메모",
+      name: "scribe_note",
+      label: "Scribe 메모",
       description: "서기(agent)에게 지금 놓치면 안 되는 일을 한 줄 남긴다. 지식 승격은 서기가 판단해서 한다.",
       params: Type.Object({ text: Type.String({ description: "메모" }) }),
       async run(c, p, ctx) {
@@ -1230,8 +1292,8 @@ export default function (pi: ExtensionAPI) {
       },
     },
     {
-      name: "viking_remember",
-      label: "Viking 기록",
+      name: "scribe_remember",
+      label: "Scribe 기록",
       description: "사람이 직접 지식을 등재할 때 쓴다(급할 때만 — 보통은 서기가 정리한다). confirmed=true 면 확립으로 기록.",
       params: Type.Object({
         title: Type.String({ description: "제목" }),
@@ -1244,12 +1306,12 @@ export default function (pi: ExtensionAPI) {
           title: p.title, content: p.content, source: "manual",
           category: p.category ?? "knowledge", confirmed: !!p.confirmed,
         });
-        return `저장됨: ${r.uri}${p.confirmed ? " (확립)" : " (검증 전 — 대시보드에서 확인하거나 viking_score good)"}`;
+        return `저장됨: ${r.uri}${p.confirmed ? " (확립)" : " (검증 전 — 대시보드에서 확인하거나 scribe_score good)"}`;
       },
     },
     {
-      name: "viking_score",
-      label: "Viking 채점",
+      name: "scribe_score",
+      label: "Scribe 채점",
       description: "주입된 지식이 틀렸으면 memory_id 와 outcome=bad 로 알려 교정하게 한다.",
       params: Type.Object({
         memory_id: Type.Number({ description: "지식 id" }),
@@ -1264,10 +1326,10 @@ export default function (pi: ExtensionAPI) {
     },
   ];
 
-  // ── 서기 세션용 도구 (MYVIKING_ROLE=secretary 로 열린 세션에서만 등록) ──
+  // ── 서기 세션용 도구 (SCRIBE_ROLE=secretary 로 열린 세션에서만 등록) ──
   const secretaryJobs: Array<{ name: string; label: string; description: string; params: any; run: (c: Active, p?: any, ctx?: AnyCtx) => Promise<string> }> = [
     {
-      name: "viking_inbox",
+      name: "scribe_inbox",
       label: "서기: 관찰함",
       description: "아직 정리되지 않은 관찰(대기 중)과 반복 요청·재발 오류를 읽는다. 서기 업무의 첫 단계.",
       params: Type.Object({ limit: Type.Optional(Type.Number({ description: "관찰 최대 수" })) }),
@@ -1300,7 +1362,7 @@ export default function (pi: ExtensionAPI) {
       },
     },
     {
-      name: "viking_session",
+      name: "scribe_session",
       label: "서기: 세션 공유",
       description: "작업 세션의 pi 트랜스크립트(JSONL)를 사람이 읽는 로그로 압축해 보여준다. 관찰만으로는 판단이 부족할 때 쓴다.",
       params: Type.Object({
@@ -1313,7 +1375,7 @@ export default function (pi: ExtensionAPI) {
       },
     },
     {
-      name: "viking_file",
+      name: "scribe_file",
       label: "서기: 지식 등재",
       description: "판단한 것을 지식 한 권으로 등재한다. 관찰 id 를 넘기면 그 관찰이 filed 로 처리된다. 같은 제목이면 갱신+반복누적.",
       params: Type.Object({
@@ -1338,7 +1400,7 @@ export default function (pi: ExtensionAPI) {
       },
     },
     {
-      name: "viking_ack",
+      name: "scribe_ack",
       label: "서기: 처리 통보",
       description: "버린 관찰을 skipped 로 처리한다. 등재하지 않기로 했으면 반드시 알려야 다음 업무에서 안 섞인다.",
       params: Type.Object({
@@ -1355,7 +1417,7 @@ export default function (pi: ExtensionAPI) {
       },
     },
     {
-      name: "viking_report",
+      name: "scribe_report",
       label: "서기: 업무 보고",
       description: "이번 서기 업무의 한 줄 보고를 남긴다 (마지막에 반드시 호출).",
       params: Type.Object({
@@ -1374,7 +1436,7 @@ export default function (pi: ExtensionAPI) {
       },
     },
     {
-      name: "viking_search",
+      name: "scribe_search",
       label: "서기: 기존 지식 검색",
       description: "등재 전에 중복·근접 지식이 있는지 확인한다.",
       params: Type.Object({ query: Type.String({ description: "검색어" }) }),
@@ -1386,7 +1448,7 @@ export default function (pi: ExtensionAPI) {
       },
     },
     {
-      name: "viking_score",
+      name: "scribe_score",
       label: "서기: 채점",
       description: "이번 세션 증거로 검증 필요 지식을 확립(good)하거나 다시 부정(bad)한다.",
       params: Type.Object({
@@ -1421,7 +1483,7 @@ export default function (pi: ExtensionAPI) {
             if (!c) return { content: [{ type: "text", text: noConn() }] };
             return { content: [{ type: "text", text: await job.run(c, params, ctx) }] };
           } catch (e) {
-            return { content: [{ type: "text", text: `myviking 오류: ${(e as Error).message}` }] };
+            return { content: [{ type: "text", text: `scribe 오류: ${(e as Error).message}` }] };
           }
         },
       });
@@ -1430,20 +1492,20 @@ export default function (pi: ExtensionAPI) {
 
   // ── 세션 시작: '이 프로젝트'의 설정이 있으면 그 도서관으로 자동 연결 ──
   pi.on("session_start", async (_event, ctx) => {
-    if (!machineEnabled()) return;           // jv disable — 전 폴더 자유 사용 (도구 등록 안 함)
+    if (!machineEnabled()) return;           // scribe disable — 전 폴더 자유 사용 (도구 등록 안 함)
     const info = linkInfo(ctx.cwd);
     if (!info) return;                       // 설정 없는 폴더는 자유 사용 — 도구도 등록하지 않는다
     if (!info.conn) {
-      if (ctx.hasUI) ctx.ui.notify("myviking: 이 폴더의 설정에 저장된 키 없습니다 — /myviking connect (자유 사용 중)", "info");
+      if (ctx.hasUI) ctx.ui.notify("scribe: 이 폴더의 설정에 저장된 키 없습니다 — /scribe connect (자유 사용 중)", "info");
       return;
     }
     ensureTools();
     setActive(ctx, info.conn);
     if (SECRETARY) {
-      if (ctx.hasUI) ctx.ui.notify(`myviking 서기 세션: '${info.conn.name}' 도서관을 정리합니다 (관찰만 읽고, 코드를 고치지 않습니다)`, "info");
+      if (ctx.hasUI) ctx.ui.notify(`scribe 서기 세션: '${info.conn.name}' 도서관을 정리합니다 (관찰만 읽고, 코드를 고치지 않습니다)`, "info");
       return;                                // 서기는 관찰을 올리지 않는다 (되먹임 방지)
     }
-    if (ctx.hasUI) ctx.ui.notify(`myviking: 이 프로젝트는 '${info.conn.name}' 도서관에 연결됨 — 작업은 관찰로 쌓이고 서기가 정리합니다`, "info");
+    if (ctx.hasUI) ctx.ui.notify(`scribe: 이 프로젝트는 '${info.conn.name}' 도서관에 연결됨 — 작업은 관찰로 쌓이고 서기가 정리합니다`, "info");
     await injectBrief(info.conn, threadIdOf(ctx), pi);
   });
 
@@ -1453,7 +1515,7 @@ export default function (pi: ExtensionAPI) {
     if (!c || SECRETARY) return;
     const tid = threadIdOf(ctx);
     const q = String(event.prompt || "").trim();
-    if (!q || q.startsWith("/")) return;          // pi 명령어(/myviking 등) 는 관찰하지 않는다
+    if (!q || q.startsWith("/")) return;          // pi 명령어(/scribe 등) 는 관찰하지 않는다
     if (pendingByThread.has(tid)) return;         // 이미 추적 중인 질문 유지 (도구 연속 턴)
     pendingByThread.set(tid, q.slice(0, 2000));
   });
@@ -1522,9 +1584,9 @@ export default function (pi: ExtensionAPI) {
     await observe(c, pi, ctx, items);
   });
 
-  // ── /myviking — 연결 관리 + 서기 호출 ──
-  pi.registerCommand("myviking", {
-    description: "myviking: 도서관 연결·서기 관리 (list | use | connect | switch | disconnect | remove | secretary | inbox | note)",
+  // ── /scribe — 연결 관리 + 서기 호출 ──
+  pi.registerCommand("scribe", {
+    description: "scribe: 도서관 연결·서기 관리 (list | use | connect | switch | disconnect | remove | secretary | inbox | note)",
     getArgumentCompletions: (prefix: string) =>
       ["list", "use", "connect", "switch", "disconnect", "remove", "secretary", "inbox", "note"]
         .filter((v) => v.startsWith(prefix))
@@ -1536,7 +1598,7 @@ export default function (pi: ExtensionAPI) {
       if (word === "note") {
         const c = getActive(ctx);
         const text = (args || "").trim().slice(4).trim();
-        if (!c || !text) { ctx.ui.notify(text ? "이 프로젝트는 연결되어 있지 않습니다" : "쓸 내용을 주세요: /myviking note 내용", "info"); return; }
+        if (!c || !text) { ctx.ui.notify(text ? "이 프로젝트는 연결되어 있지 않습니다" : "쓸 내용을 주세요: /scribe note 내용", "info"); return; }
         const r = await call<{ pending: number }>(c, `/api/v1/projects/${c.project}/observe`, "POST", {
           session_id: threadIdOf(ctx), agent: "pi", transcript: transcriptOf(ctx),
           items: [{ kind: "note", text }],
@@ -1550,7 +1612,7 @@ export default function (pi: ExtensionAPI) {
         if (!c) { ctx.ui.notify(noConn(), "info"); return; }
         const s = await call<{ pending: number; last_run?: any }>(c, `/api/v1/projects/${c.project}/secretary/status`);
         const last = s.last_run ? `마지막 정리: ${s.last_run.started_at} · 등재 ${s.last_run.filed} · 버림 ${s.last_run.skipped}` : "아직 서기 실행 없음";
-        ctx.ui.notify(`정리 대기 관찰 ${s.pending}건\n${last}\n정리: /myviking secretary once`, "info");
+        ctx.ui.notify(`정리 대기 관찰 ${s.pending}건\n${last}\n정리: /scribe secretary once`, "info");
         return;
       }
 
@@ -1560,12 +1622,12 @@ export default function (pi: ExtensionAPI) {
         const act = (rest[1] || "once").toLowerCase();
         if (act === "auto") {
           const flag = (rest[2] || "on").toLowerCase();
-          await pi.exec("jv", ["secretary", "auto", flag], { timeout: 20000 });
-          ctx.ui.notify(flag === "off" ? "서기 자동 실행을 껐습니다" : `관찰이 쌓이면 서기가 스스로 정리합니다 (끄기: /myviking secretary auto off)`, "info");
+          await execScribe(pi, ["secretary", "auto", flag], { timeout: 20000 });
+          ctx.ui.notify(flag === "off" ? "서기 자동 실행을 껐습니다" : `관찰이 쌓이면 서기가 스스로 정리합니다 (끄기: /scribe secretary auto off)`, "info");
           return;
         }
         if (act === "stop") {
-          await pi.exec("jv", ["secretary", "stop"], { timeout: 20000 });
+          await execScribe(pi, ["secretary", "stop"], { timeout: 20000 });
           ctx.ui.notify("서기 백그라운드 실행을 중지했습니다", "info");
           return;
         }
@@ -1578,20 +1640,20 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify(lines.join("\n"), "info");
           return;
         }
-        // once — 백그라운드 서기 세션을 연다 (jv secretary once --detach)
-        ctx.ui.notify("myviking 서기를 열고 있습니다 (별도 pi 세션 — 코드는 건드리지 않습니다)…", "info");
-        const r = await pi.exec("jv", ["secretary", "once", "--detach"], { timeout: 30000 });
+        // once — 백그라운드 서기 세션을 연다 (scribe secretary once --detach)
+        ctx.ui.notify("scribe 서기를 열고 있습니다 (별도 pi 세션 — 코드는 건드리지 않습니다)…", "info");
+        const r = await execScribe(pi, ["secretary", "once", "--detach"], { timeout: 30000 });
         const msg = (r.stdout || r.stderr || "").trim().split("\n").slice(-3).join("\n");
-        ctx.ui.notify(msg || "서기를 백그라운드에 실행했습니다 — 결과: /myviking secretary status", "info");
+        ctx.ui.notify(msg || "서기를 백그라운드에 실행했습니다 — 결과: /scribe secretary status", "info");
         return;
       }
 
       if (word === "connect") {
-        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: jv connect --url ... --key ...", "info"); return; }
+        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: scribe connect --url ... --key ...", "info"); return; }
         const conns0 = loadConns();
         const lastUrl = conns0[0]?.url || "";
         const url = ((await ctx.ui.input("서버 주소", lastUrl || "http://ip:포트 — 프로젝트를 만든 서버")) || "").replace(/\/+$/, "");
-        const key = ((await ctx.ui.input("API 키 (jv_...) — 서버 → 프로젝트 → 🔗 에이전트 연결에서 발급")) || "").trim();
+        const key = ((await ctx.ui.input("API 키 (sc_...) — 서버 → 프로젝트 → 🔗 에이전트 연결에서 발급")) || "").trim();
         if (!url || !key) { ctx.ui.notify("연결하지 않았습니다 (입력 취소).", "info"); return; }
         try {
           const me = await call<{ project: string; project_name: string }>({ name: "", url, key, project: "" }, "/api/v1/me");
@@ -1602,7 +1664,7 @@ export default function (pi: ExtensionAPI) {
           const rest2 = conns.filter((x) => x.id !== id);
           rest2.unshift({ id, name: me.project_name || project, url, key, project });
           try {
-            mkdirSync(join(HOME, ".myviking"), { recursive: true });
+            mkdirSync(DATA_HOME, { recursive: true });
             writeFileSync(CONNS_FILE, JSON.stringify({ connections: rest2 }, null, 2));
             chmodSync(CONNS_FILE, 0o600);
           } catch {}
@@ -1610,7 +1672,7 @@ export default function (pi: ExtensionAPI) {
           try { setFolderLink(ctx.cwd, id); } catch {}
           ensureTools();
           setActive(ctx, c);
-          ctx.ui.notify(`✓ 이 프로젝트 폴더를 '${c.name}' 도서관에 연결했습니다\n  · 이 폴더에서 여는 pi 세션은 자동으로 관찰을 남깁니다\n  · 정리는 서기가 합니다: /myviking secretary once`, "info");
+          ctx.ui.notify(`✓ 이 프로젝트 폴더를 '${c.name}' 도서관에 연결했습니다\n  · 이 폴더에서 여는 pi 세션은 자동으로 관찰을 남깁니다\n  · 정리는 서기가 합니다: /scribe secretary once`, "info");
           await injectBrief(c, threadIdOf(ctx), pi);
         } catch (e) {
           ctx.ui.notify(`연결 실패: ${(e as Error).message} — 키가 유효한지, 서버가 최신 버전인지 확인하세요.`, "error");
@@ -1622,8 +1684,8 @@ export default function (pi: ExtensionAPI) {
 
       if (word === "use") {
         const info = linkInfo(ctx.cwd);
-        if (!info) { ctx.ui.notify("이 프로젝트에는 연결 설정이 없습니다 — /myviking connect 로 이 폴더만 연결하세요.", "info"); return; }
-        if (!info.conn) { ctx.ui.notify(`이 폴더의 설정 '${info.id}' 에 저장된 키가 없습니다 — /myviking connect`, "error"); return; }
+        if (!info) { ctx.ui.notify("이 프로젝트에는 연결 설정이 없습니다 — /scribe connect 로 이 폴더만 연결하세요.", "info"); return; }
+        if (!info.conn) { ctx.ui.notify(`이 폴더의 설정 '${info.id}' 에 저장된 키가 없습니다 — /scribe connect`, "error"); return; }
         const lc = info.conn;
         ensureTools();
         setActive(ctx, lc);
@@ -1634,7 +1696,7 @@ export default function (pi: ExtensionAPI) {
 
       if (word === "remove") {
         if (!conns.length) { ctx.ui.notify("저장된 연결이 없습니다.", "info"); return; }
-        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: jv remove <이름>", "info"); return; }
+        if (!ctx.hasUI) { ctx.ui.notify("터미널에서: scribe remove <이름>", "info"); return; }
         const items = conns.map((c, i) => fmtConn(c, i + 1));
         const pick = await ctx.ui.select("삭제할 연결 (키도 함께 제거됩니다)", items);
         if (!pick) { ctx.ui.notify("취소했습니다.", "info"); return; }
@@ -1674,14 +1736,14 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (word === "switch") {
-        if (!conns.length) { ctx.ui.notify("저장된 연결이 없습니다. /myviking connect 또는 jv connect ...", "info"); return; }
+        if (!conns.length) { ctx.ui.notify("저장된 연결이 없습니다. /scribe connect 또는 scribe connect ...", "info"); return; }
         const cur = getActive(ctx);
         const items = conns.map((c, i) => fmtConn(c, i + 1) + (cur && cur.url === c.url && cur.project === c.project ? " ★현재" : ""))
-                             .concat([`${conns.length + 1}. ＋ 새로 연결하기 (/myviking connect)`]);
+                             .concat([`${conns.length + 1}. ＋ 새로 연결하기 (/scribe connect)`]);
         const pick = ctx.hasUI ? await ctx.ui.select("연결할 프로젝트 (이 폴더에 적용됩니다)", items) : null;
         if (!pick) { ctx.ui.notify("취소했습니다.", "info"); return; }
         const idx = parseInt(pick.split(".")[0], 10) - 1;
-        if (idx === conns.length) { ctx.ui.notify("터미널에서: jv connect --url ... --key ...", "info"); return; }
+        if (idx === conns.length) { ctx.ui.notify("터미널에서: scribe connect --url ... --key ...", "info"); return; }
         const conn = conns[idx];
         if (!conn) { ctx.ui.notify("찾을 수 없습니다.", "info"); return; }
         const c: Active = { name: conn.name || conn.project, url: conn.url, key: conn.key, project: conn.project };
@@ -1699,11 +1761,11 @@ export default function (pi: ExtensionAPI) {
       const lc = info?.conn || null;
       const lines: string[] = [];
       if (cur) lines.push(`이 프로젝트 연결: ${cur.name} — ${cur.project} (${cur.url})`);
-      else if (lc) lines.push(`이 프로젝트 설정: '${lc.name}' — 이 세션은 연결 없음 → /myviking use`);
-      else if (info) lines.push(`이 프로젝트 설정 '${info.id}': 저장된 키가 없음 → /myviking connect`);
-      else lines.push(`이 프로젝트는 연결 설정 없음 (자유 사용) — /myviking connect 로 이 폴더만 연결`);
+      else if (lc) lines.push(`이 프로젝트 설정: '${lc.name}' — 이 세션은 연결 없음 → /scribe use`);
+      else if (info) lines.push(`이 프로젝트 설정 '${info.id}': 저장된 키가 없음 → /scribe connect`);
+      else lines.push(`이 프로젝트는 연결 설정 없음 (자유 사용) — /scribe connect 로 이 폴더만 연결`);
       const s = secretarySetting(ctx.cwd || process.cwd());
-      lines.push(`서기: 자동 ${s.auto ? `ON (관찰 ${s.every}건마다)` : "OFF"} — 켜기: /myviking secretary auto on`);
+      lines.push(`서기: 자동 ${s.auto ? `ON (관찰 ${s.every}건마다)` : "OFF"} — 켜기: /scribe secretary auto on`);
       if (conns.length) {
         lines.push("");
         lines.push(`이 컴퓨터에 저장된 키 ${conns.length}개:`);
@@ -1725,7 +1787,7 @@ def _pi_hub_installed(flavor: str = "pi") -> bool:
         text = path.read_text()
     except OSError:
         return False
-    if "const URL =" in text and "MYVIKING_URL" not in text:
+    if "const URL =" in text and "SCRIBE_URL" not in text:
         return False  # 옛 방식: URL/KEY/PROJECT 가 박힌 버전 → 허브로 교체 필요
     if _PI_HUB_VERSION not in text:
         return False  # 오래된 허브 버전 → 최신 템플릿으로 갱신
@@ -1739,12 +1801,18 @@ def _install_hub_extension(flavor: str = "pi") -> Path:
     확장 API 로드 — omp 가 자동으로 이 폴더를 스캔하는 것이 검증되었다).
     """
     path = _pi_path(flavor)
+    legacy = path.parent / "myviking.ts"
+    try:
+        if legacy.exists():
+            legacy.unlink()  # 구 이름 확장 제거 — pi 가 폴더 전체를 로드해 중복 등록되므로
+    except OSError:
+        pass
     if not _pi_hub_installed(flavor):
         text = (_PI_EXT_TEMPLATE
                 .replace("@CREATED@", __import__("datetime").date.today().isoformat()))
         leftovers = [t for t in ("@CREATED@", "@URL@", "@KEY@", "@PROJECT@", "{{", "}}") if t in text]
         if leftovers:
-            raise SystemExit(f"jv: pi 확장 템플릿 오류 — 치환이 완전하지 않습니다 ({', '.join(leftovers)}).")
+            raise SystemExit(f"scribe: pi 확장 템플릿 오류 — 치환이 완전하지 않습니다 ({', '.join(leftovers)}).")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
         try:
@@ -1758,8 +1826,8 @@ def _link_folder(conn_id: str, cwd: Path, url: str, key: str, project: str,
                  name: str = "", folder: str = "") -> dict:
     """저장소에 연결을 넣고 이 폴더를 그 연결에 묶는다 (git 의 remote add + checkout).
 
-    폴더 쪽 파일(.myviking-connection.json)에는 비밀을 쓰지 않는다 — git 의 .git/HEAD 처럼
-    이름만 박는다. 그래서 폴더를 복사해도 키가 새지 않고, jv switch 로 즉시 갈아탈 수 있다.
+    폴더 쪽 파일(.scribe-connection.json)에는 비밀을 쓰지 않는다 — git 의 .git/HEAD 처럼
+    이름만 박는다. 그래서 폴더를 복사해도 키가 새지 않고, scribe switch 로 즉시 갈아탈 수 있다.
     """
     conns = [c for c in _load_conns() if c.get("id") != conn_id]
     conn = {"id": conn_id, "name": name or project, "url": url, "key": key,
@@ -1789,7 +1857,7 @@ def _connect_flow(url: str, key: str, project: str, cwd: Path) -> dict:
         hint = conns_hint[0]["url"] if conns_hint else "http://ip:포트 — 프로젝트를 만든 서버"
         url = _prompt(f"서버 주소 (기본: {hint})") or (conns_hint[0]["url"] if conns_hint else "")
     if not key:
-        key = _prompt("API 키 (jv_...) — 서버 → 프로젝트 → 🔗 에이전트 연결에서 발급")
+        key = _prompt("API 키 (sc_...) — 서버 → 프로젝트 → 🔗 에이전트 연결에서 발급")
     if not url or not key:
         print("⚠ --url 과 --key 가 필요합니다 (또는 위 프롬프트에 입력).", file=sys.stderr)
         raise SystemExit(2)
@@ -1813,7 +1881,7 @@ def _connect_flow(url: str, key: str, project: str, cwd: Path) -> dict:
     data = _verify_server(url, key, project)
     name = name or (data.get("project_name") or project)
 
-    # 1) 연결 저장소 (~/.myviking/connections.json, 키 포함 0600) + 2) 이 폴더 연결(비밀 없음)
+    # 1) 연결 저장소 (~/.scribe/connections.json, 키 포함 0600) + 2) 이 폴더 연결(비밀 없음)
     conn = _link_folder(_conn_id(url, project), cwd, url, key, project, name or project)
 
     print(f"✓ 서버 확인: {url} · 프로젝트 {project} · {name}")
@@ -1851,10 +1919,10 @@ def pi_install(args: argparse.Namespace, flavor: str = "pi") -> None:
     print(f"✓ {flavor} 허브 확장: {hub}")
     print(f"✓ 서기 원칙: {charter} (필요하면 직접 고쳐도 됩니다)")
     print(f"이 폴더에서 여는 {flavor} 세션은 자동으로 이 도서관에 붙고, 작업이 '관찰'로 쌓입니다.")
-    print("  · 지식을 정리하는 건 서기입니다 — 지금 하기: jv secretary once · 알아서: jv secretary auto on")
-    print("  (연결 안 한 다른 폴더에서는 viking 도구가 아예 등록되지 않습니다 — 전역 연결 없음)")
-    print("  (열려 있는 세션은 /myviking use 로 지금 적용) · 해제: jv disconnect 또는 /myviking disconnect")
-    print(f"  · 저장된 연결 관리: jv {flavor} list / jv {flavor} switch <이름> / jv {flavor} remove <이름> / jv {flavor} check")
+    print("  · 지식을 정리하는 건 서기입니다 — 지금 하기: scribe secretary once · 알아서: scribe secretary auto on")
+    print("  (연결 안 한 다른 폴더에서는 scribe 도구가 아예 등록되지 않습니다 — 전역 연결 없음)")
+    print("  (열려 있는 세션은 /scribe use 로 지금 적용) · 해제: scribe disconnect 또는 /scribe disconnect")
+    print(f"  · 저장된 연결 관리: scribe {flavor} list / scribe {flavor} switch <이름> / scribe {flavor} remove <이름> / scribe {flavor} check")
 
 
 def omp_install(args: argparse.Namespace) -> None:
@@ -1877,7 +1945,7 @@ def connect(args: argparse.Namespace) -> None:
     cwd = Path(getattr(args, "cwd", "") or os.getcwd())
     want = (getattr(args, "agent", "") or "").strip().lower()
 
-    # `jv connect <이름>` — 저장된 연결을 골랐으면 키를 다시 묻지 않는다 (git remote set-url 처럼)
+    # `scribe connect <이름>` — 저장된 연결을 골랐으면 키를 다시 묻지 않는다 (git remote set-url 처럼)
     named = (getattr(args, "name", "") or "").strip()
     if named and not (key and project):
         conns = _load_conns()
@@ -1913,14 +1981,14 @@ def connect(args: argparse.Namespace) -> None:
         hub = _install_hub_extension("pi")
         charter = install_secretary_charter()
         install_secretary_agent("pi")
-        print(f"✓ pi 허브 확장: {hub} (전역 설치지만 viking 도구는 '연결된 폴더의 세션' 에서만 등록 — 다른 폴더는 0)")
-        print(f"✓ 서기 원칙: {charter} — 관찰함은 서기 agent 가 지식으로 정리합니다 (jv secretary once)")
+        print(f"✓ pi 허브 확장: {hub} (전역 설치지만 scribe 도구는 '연결된 폴더의 세션' 에서만 등록 — 다른 폴더는 0)")
+        print(f"✓ 서기 원칙: {charter} — 관찰함은 서기 agent 가 지식으로 정리합니다 (scribe secretary once)")
         done.append("pi 확장")
     # ── omp (Oh My Pi): ~/.omp 존재 or omp 실행파일 — pi 와 같은 확장 API 공유 ──
     has_omp = (Path.home() / ".omp").exists() or bool(shutil.which("omp"))
     if want in ("", "omp") and has_omp:
         hub_omp = _install_hub_extension("omp")
-        print(f"✓ omp 허브 확장: {hub_omp} (전역 설치지만 viking 도구는 '연결된 폴더의 세션' 에서만 등록 — 다른 폴더는 0)")
+        print(f"✓ omp 허브 확장: {hub_omp} (전역 설치지만 scribe 도구는 '연결된 폴더의 세션' 에서만 등록 — 다른 폴더는 0)")
         done.append("omp 확장")
     # ── jcode: ~/.jcode 존재 ──
     has_jcode = (Path.home() / ".jcode").exists()
@@ -1930,9 +1998,9 @@ def connect(args: argparse.Namespace) -> None:
               + (f" · 보존 {', '.join(skipped)}" if skipped else ""))
         done.append("jcode")
     # ── MCP (모든 에이전트 공용) ──
-    mcp = json.dumps({"mcpServers": {"myviking": {"command": "jv", "args": ["mcp"],
-        "env": {"MYVIKING_URL": conn["url"], "MYVIKING_KEY": conn["key"],
-                "MYVIKING_PROJECT": conn["project"]}}}}, ensure_ascii=False, indent=2)
+    mcp = json.dumps({"mcpServers": {"scribe": {"command": "scribe", "args": ["mcp"],
+        "env": {"SCRIBE_URL": conn["url"], "SCRIBE_KEY": conn["key"],
+                "SCRIBE_PROJECT": conn["project"]}}}}, ensure_ascii=False, indent=2)
     if want in ("", "mcp"):
         print("✓ MCP 설정 (Cursor·Codex 등 — 에이전트의 mcp.json 에 붙여넣기):")
         print(mcp)
@@ -1940,15 +2008,15 @@ def connect(args: argparse.Namespace) -> None:
     if not done and want not in ("", "mcp"):
         print("이 머신에서 감지된 에이전트가 없어 자동 설치는 건너뜁니다 (연결은 저장됨).")
         print("  · Claude Code: ~/.claude 가 필요 · pi/omp: pi 또는 omp 설치 필요 · jcode: ~/.jcode 가 필요")
-        print("  · 원하는 에이전트만: jv connect --agent claude|pi|omp|jcode|mcp")
+        print("  · 원하는 에이전트만: scribe connect --agent claude|pi|omp|jcode|mcp")
     elif done:
         print(f"설치 완료: {', '.join(done)}")
     print("다음 단계:")
     print("  · Claude Code: 이 폴더에서 곧바로 사용")
-    print("  · pi/omp: 이 폴더에서 여는 새 세션은 자동 연결 — 열려 있는 세션은 /myviking use")
-    print("  · jcode: jcode 재시작 (config 재로드) 후 세션 시작 시 jv brief 가 안내됨")
-    print("  · 상태: jv status  ·  이 폴더에서 쓰지 않기: jv disconnect")
-    print("  · 저장된 연결: jv list · 다른 프로젝트로: jv switch <이름>")
+    print("  · pi/omp: 이 폴더에서 여는 새 세션은 자동 연결 — 열려 있는 세션은 /scribe use")
+    print("  · jcode: jcode 재시작 (config 재로드) 후 세션 시작 시 scribe brief 가 안내됨")
+    print("  · 상태: scribe status  ·  이 폴더에서 쓰지 않기: scribe disconnect")
+    print("  · 저장된 연결: scribe list · 다른 프로젝트로: scribe switch <이름>")
 
 
 def pi_list(args: argparse.Namespace) -> None:
@@ -1972,7 +2040,7 @@ def _resolve_conn_name(conns: list[dict], q: str, cwd: Path, verb: str) -> dict:
     if len(conns) == 1:
         return conns[0]
     _print_conns(conns, cwd)
-    print(f"\n{verb}할 연결 이름을 지정하세요 — 예: jv pi switch 데이터자판기")
+    print(f"\n{verb}할 연결 이름을 지정하세요 — 예: scribe pi switch 데이터자판기")
     raise SystemExit(2)
 
 
@@ -2002,11 +2070,11 @@ def pi_switch(args: argparse.Namespace) -> None:
     print(f"✓ 이 폴더의 기본 연결을 '{conn.get('name') or conn['project']}' 프로젝트로 바꿨습니다")
     if link.parent != cwd:
         print(f"  · 링크는 git 저장소 루트 {link.parent} 에 있습니다 (서브폴더에서 실행해도 여기가 반영됩니다)")
-    print("pi/omp 에서: 새 세션은 자동 연결 · 열린 세션은 /myviking switch 로 바로 전환 (해제: /myviking disconnect)")
+    print("pi/omp 에서: 새 세션은 자동 연결 · 열린 세션은 /scribe switch 로 바로 전환 (해제: /scribe disconnect)")
 
 
 def pi_disconnect(args: argparse.Namespace) -> None:
-    """이 폴더 해제 — 연결 파일 + 폴더의 Claude Code 훅까지 걷어낸다 (jv disconnect 와 같음)."""
+    """이 폴더 해제 — 연결 파일 + 폴더의 Claude Code 훅까지 걷어낸다 (scribe disconnect 와 같음)."""
     disconnect(args)
 
 
@@ -2052,8 +2120,8 @@ def pi_uninstall(args: argparse.Namespace, flavor: str = "pi") -> None:
         print(f"참고: 서기 원칙({_secretary_charter()})과 관찰함은 그대로 남습니다 — 작업 기록이라 지우지 않습니다.")
     conns = _load_conns()
     if conns:
-        print(f"참고: 저장된 연결 {len(conns)}개는 ~/.myviking/connections.json 에 남아 있습니다. "
-              f"(지우려면: jv {flavor} remove <이름>)")
+        print(f"참고: 저장된 연결 {len(conns)}개는 ~/.scribe/connections.json 에 남아 있습니다. "
+              f"(지우려면: scribe {flavor} remove <이름>)")
 
 
 def omp_uninstall(args: argparse.Namespace) -> None:
@@ -2064,10 +2132,10 @@ def pi_check(args: argparse.Namespace, flavor: str = "pi") -> None:
     cwd = Path(args.cwd or os.getcwd())
     hub = _pi_path(flavor)
     if not hub.exists():
-        print(f"⚠ {flavor} 허브 확장이 설치되어 있지 않습니다 → jv {flavor} install --url ... --key ... --project ...")
+        print(f"⚠ {flavor} 허브 확장이 설치되어 있지 않습니다 → scribe {flavor} install --url ... --key ... --project ...")
         return
     if not _pi_hub_installed(flavor):
-        print(f"⚠ 설치된 {flavor} 확장이 구버전/옛 방식입니다 → jv {flavor} install 한 번 실행하면 최신 허브로 갱신됩니다.")
+        print(f"⚠ 설치된 {flavor} 확장이 구버전/옛 방식입니다 → scribe {flavor} install 한 번 실행하면 최신 허브로 갱신됩니다.")
         return
     mode = hub.stat().st_mode & 0o777
     print(f"✓ {flavor} 허브 확장: {hub}" + ("" if mode == 0o600 else f"  ⚠ 권한 {oct(mode)} (0600 권장)"))
@@ -2075,17 +2143,17 @@ def pi_check(args: argparse.Namespace, flavor: str = "pi") -> None:
     link = _project_link(cwd)
     if not link.exists():
         print(f"이 폴더({cwd})는 연결되어 있지 않습니다 (자유 사용).")
-        print(f"  연결: jv {flavor} install --url ... --key ... --project ... · 저장된 연결에서: jv {flavor} switch")
+        print(f"  연결: scribe {flavor} install --url ... --key ... --project ... · 저장된 연결에서: scribe {flavor} switch")
         return
     try:
         cid = json.loads(link.read_text()).get("connection")
     except (OSError, ValueError):
-        print(f"⚠ .myviking-connection.json 을 읽을 수 없습니다. jv {flavor} install 을 다시 실행하세요.")
+        print(f"⚠ .scribe-connection.json 을 읽을 수 없습니다. scribe {flavor} install 을 다시 실행하세요.")
         return
     conns = _load_conns()
     conn = _conn_by_id(conns, cid)
     if not conn:
-        print(f"⚠ 이 폴더가 가리키는 연결({cid})이 저장소에 없습니다 → jv {flavor} install 또는 jv {flavor} switch")
+        print(f"⚠ 이 폴더가 가리키는 연결({cid})이 저장소에 없습니다 → scribe {flavor} install 또는 scribe {flavor} switch")
         return
     print(f"✓ 폴더 연결: {cwd} → {conn.get('name') or conn['project']} ({conn['project']})")
     try:
@@ -2104,11 +2172,11 @@ def pi_check(args: argparse.Namespace, flavor: str = "pi") -> None:
             print(f"  관찰함: 정리 대기 {st.get('pending', 0)}건 · 마지막 업무 "
                   + (st["last_run"]["started_at"] if st.get("last_run") else "없음"))
             if st.get("pending"):
-                print("  지금 정리: jv secretary once")
+                print("  지금 정리: scribe secretary once")
         except SystemExit:
             print("  (관찰함 수는 확인하지 못했습니다)")
     else:
-        print("⚠ 서기 원칙이 없습니다 → jv secretary install")
+        print("⚠ 서기 원칙이 없습니다 → scribe secretary install")
 
 
 def omp_check(args: argparse.Namespace) -> None:
@@ -2116,7 +2184,7 @@ def omp_check(args: argparse.Namespace) -> None:
 
 
 # ══════════════════ jcode (J-Code 에이전트) 연동 ══════════════════ #
-_JCODE_VERSION = "myviking-jcode-v1"
+_JCODE_VERSION = "scribe-jcode-v1"
 _JCODE_HOOK_EVENTS = ("session_start", "session_end", "turn_end")
 _JCODE_HOOK_KEYSET = set(_JCODE_HOOK_EVENTS) | {"turn_start", "pre_tool", "post_tool"}
 
@@ -2131,11 +2199,11 @@ def _jcode_config() -> Path:
 
 
 def _jcode_launcher() -> Path:
-    return _jcode_home() / "myviking-hook.sh"
+    return _jcode_home() / "scribe-hook.sh"
 
 
 def _jcode_skill() -> Path:
-    return _jcode_home() / "skills" / "myviking" / "SKILL.md"
+    return _jcode_home() / "skills" / "scribe" / "SKILL.md"
 
 
 def _jcode_mcp_file() -> Path:
@@ -2143,24 +2211,23 @@ def _jcode_mcp_file() -> Path:
 
 
 def _jcode_marker() -> Path:
-    return _jcode_home() / ".myviking.json"
+    return _jcode_home() / ".scribe.json"
 
 
 def _jcode_log_file() -> Path:
-    home = os.environ.get("HOME") or str(Path.home())
-    return Path(home) / ".myviking" / "logs" / "jcode-hook.jsonl"
+    return _data_home() / "logs" / "jcode-hook.jsonl"
 
 
-def _jv_command() -> str:
-    """훅이 쓸 jv 경로 — 재부팅에도 살아있는 안정적 위치를 고른다.
+def _scribe_command() -> str:
+    """훅이 쓸 scribe 경로 — 재부팅에도 살아있는 안정적 위치를 고른다.
 
-    PATH 의 jv 가 /tmp(휘발) 아래면 다른 후보(~/.local/bin, pyenv)를 쓴다.
+    PATH 의 scribe 가 /tmp(휘발) 아래면 다른 후보(~/.local/bin, pyenv)를 쓴다.
     """
     cands = []
-    exe = shutil.which("jv")
+    exe = shutil.which("scribe")
     if exe:
         cands.append(exe)
-    cands.append(str(Path.home() / ".local" / "bin" / "jv"))
+    cands.append(str(Path.home() / ".local" / "bin" / "scribe"))
     for cand in cands:
         if not cand or not os.path.exists(cand):
             continue
@@ -2170,10 +2237,10 @@ def _jv_command() -> str:
             rp = cand
         if not rp.startswith("/tmp/"):
             return rp
-    pyjv = sorted(Path.home().glob(".pyenv/versions/*/bin/jv"))
+    pyjv = sorted(Path.home().glob(".pyenv/versions/*/bin/scribe"))
     if pyjv:
         return str(pyjv[-1].resolve())
-    return "jv"  # 최후 폴백 — PATH 에 있으면 그대로
+    return "scribe"  # 최후 폴백 — PATH 에 있으면 그대로
 
 
 def _jcode_hook_cmd() -> str:
@@ -2257,7 +2324,7 @@ def _toml_unset_hooks(text: str, command: str) -> tuple[str, int]:
 
 
 def _mcp_merge(conn: dict) -> dict:
-    """~/.jcode/mcp.json 병합 — myviking 서버를 갱신하고 다른 서버는 보존."""
+    """~/.jcode/mcp.json 병합 — scribe 서버를 갱신하고 다른 서버는 보존."""
     data: dict = {}
     if _jcode_mcp_file().exists():
         try:
@@ -2269,11 +2336,11 @@ def _mcp_merge(conn: dict) -> dict:
     servers = data.get("servers")
     if not isinstance(servers, dict):
         servers = {}
-    servers["myviking"] = {
-        "command": _jv_command(),
+    servers["scribe"] = {
+        "command": _scribe_command(),
         "args": ["mcp"],
-        "env": {"MYVIKING_URL": conn["url"], "MYVIKING_KEY": conn["key"],
-                "MYVIKING_PROJECT": conn["project"]},
+        "env": {"SCRIBE_URL": conn["url"], "SCRIBE_KEY": conn["key"],
+                "SCRIBE_PROJECT": conn["project"]},
         "shared": True,
     }
     data["servers"] = servers
@@ -2281,7 +2348,7 @@ def _mcp_merge(conn: dict) -> dict:
 
 
 def _mcp_remove() -> bool:
-    """mcp.json 의 myviking 서버 제거 — 변경했으면 True."""
+    """mcp.json 의 scribe 서버 제거 — 변경했으면 True."""
     if not _jcode_mcp_file().exists():
         return False
     try:
@@ -2290,41 +2357,41 @@ def _mcp_remove() -> bool:
         return False
     if not isinstance(data, dict) or not isinstance(data.get("servers"), dict):
         return False
-    if "myviking" not in data["servers"]:
+    if "scribe" not in data["servers"]:
         return False
-    del data["servers"]["myviking"]
+    del data["servers"]["scribe"]
     _jcode_mcp_file().write_text(json.dumps(data, ensure_ascii=False, indent=2))
     return True
 
 
 _JCODE_SKILL_MD = """---
-name: myviking
-description: 프로젝트 지식 도서관(myviking). 세션 시작 시 jv brief 로 이전 작업 브리핑을 확인하고, 막힐 때 jv search, 놓치면 안 되는 일은 jv note 로 서기에게 넘긴다. 질문→답은 관찰로 자동 기록된다.
+name: scribe
+description: 프로젝트 지식 도서관(scribe). 세션 시작 시 scribe brief 로 이전 작업 브리핑을 확인하고, 막힐 때 scribe search, 놓치면 안 되는 일은 scribe note 로 서기에게 넘긴다. 질문→답은 관찰로 자동 기록된다.
 ---
 
-# myviking — 프로젝트 지식 도서관
+# scribe — 프로젝트 지식 도서관
 
-이 폴더가 myviking 프로젝트에 연결되어 있으면 (`jv jcode status` 로 확인) 아래 CLI 를 쓴다.
+이 폴더가 scribe 프로젝트에 연결되어 있으면 (`scribe jcode status` 로 확인) 아래 CLI 를 쓴다.
 **매 턴의 질문→답은 '관찰'로 자동 저장**되고, 그중 무엇을 지식으로 남길지는 **서기 agent**가 판단한다.
-그러니 여기에 일일이 기록하지 말고, 꼭 남길 것만 `jv note` 로 메모하면 된다.
+그러니 여기에 일일이 기록하지 말고, 꼭 남길 것만 `scribe note` 로 메모하면 된다.
 
 ## 세션 시작 (반드시)
-- `jv brief` 실행 → 지난 작업 브리핑(확립된 지식·검증 필요·서기 대기)을 확인하고 시작한다.
+- `scribe brief` 실행 → 지난 작업 브리핑(확립된 지식·검증 필요·서기 대기)을 확인하고 시작한다.
 
 ## 작업 중
-- 막혔거나 규칙·함정이 궁금할 때: `jv search "<개념>"`
-- 지금 당장 놓치면 안 되는 것: `jv note "<메모>"` (서기에게 전달, 지식 승격은 서기가 판단)
-- 급하게 직접 등재: `jv remember "<제목>" --content "<내용>" --category knowledge|commands|pitfalls|decisions`
-- 틀린 지식 발견: `jv score <id> bad` · 확립 확인: `jv score <id> good`
+- 막혔거나 규칙·함정이 궁금할 때: `scribe search "<개념>"`
+- 지금 당장 놓치면 안 되는 것: `scribe note "<메모>"` (서기에게 전달, 지식 승격은 서기가 판단)
+- 급하게 직접 등재: `scribe remember "<제목>" --content "<내용>" --category knowledge|commands|pitfalls|decisions`
+- 틀린 지식 발견: `scribe score <id> bad` · 확립 확인: `scribe score <id> good`
 
 ## 서기 (지식 정리 agent)
-- `jv inbox` — 정리 대기 관찰 · 반복 요청을 본다
-- `jv secretary once` — 서기 세션(pi)을 열어 관찰을 지식으로 정리한다
-- `jv secretary status` — 대기 중·마지막 업무 보고
+- `scribe inbox` — 정리 대기 관찰 · 반복 요청을 본다
+- `scribe secretary once` — 서기 세션(pi)을 열어 관찰을 지식으로 정리한다
+- `scribe secretary status` — 대기 중·마지막 업무 보고
 
-## 연결 관리 (pi 의 /myviking 대신 — jcode 에는 커스텀 대화형 명령이 없다)
-사용자가 "myviking 연결 상태/전환/해제" 를 요청하면 아래 CLI 를 실행해 답한다:
-- 상태: `jv jcode status` · 목록: `jv jcode list` · 전환: `jv jcode switch <이름>` · 해제: `jv jcode disconnect`
+## 연결 관리 (pi 의 /scribe 대신 — jcode 에는 커스텀 대화형 명령이 없다)
+사용자가 "scribe 연결 상태/전환/해제" 를 요청하면 아래 CLI 를 실행해 답한다:
+- 상태: `scribe jcode status` · 목록: `scribe jcode list` · 전환: `scribe jcode switch <이름>` · 해제: `scribe jcode disconnect`
 
 ## 주의
 - 브리핑의 '검증 필요' 지식은 사실로 단정하지 말고 확인 후 사용한다.
@@ -2354,10 +2421,10 @@ def _jcode_write_integration(conn: dict) -> tuple[Path, list[str], list[str]]:
 
     # 1) 런처 (이벤트는 환경변수로 전달 — 모든 이벤트가 같은 명령)
     launcher = _jcode_launcher()
-    cmd = _jv_command()
+    cmd = _scribe_command()
     launcher.write_text(
         "#!/usr/bin/env bash\n"
-        "# myviking — J-Code 훅 (jv jcode install/remove 가 관리 — 직접 편집 금지)\n"
+        "# scribe — J-Code 훅 (scribe jcode install/remove 가 관리 — 직접 편집 금지)\n"
         'export PATH="$PATH"\n'
         f'exec "{cmd}" jcode-hook\n')
     try:
@@ -2373,6 +2440,12 @@ def _jcode_write_integration(conn: dict) -> tuple[Path, list[str], list[str]]:
         cfg.write_text(text, encoding="utf-8")
 
     # 3) 스킬 (지식 도서관 사용법 — 비밀 없음)
+    legacy_skill = home / "skills" / "myviking"
+    try:
+        if legacy_skill.exists() and legacy_skill.resolve() != _jcode_skill().parent.resolve():
+            shutil.rmtree(legacy_skill)  # 구 이름 스킬 제거 — 중복 등록 방지
+    except OSError:
+        pass
     skill = _jcode_skill()
     skill.parent.mkdir(parents=True, exist_ok=True)
     skill.write_text(_JCODE_SKILL_MD, encoding="utf-8")
@@ -2401,14 +2474,14 @@ def jcode_install(args: argparse.Namespace) -> None:
     print(f"✓ jcode 훅 런처: {launcher}")
     if skipped:
         print(f"⚠ 이미 설정된 훅 이벤트는 건드리지 않았습니다: {', '.join(skipped)} "
-              f"(직접 쓴 값 유지 — /myviking 자동 기록은 그 이벤트만 제외)")
-    print("✓ jcode 스킬: ~/.jcode/skills/myviking/SKILL.md (브리핑·검색·기록 사용법)")
-    print("✓ jcode MCP: ~/.jcode/mcp.json (myviking 서버 — brief/search/note/inbox/ack/remember/score 도구)")
+              f"(직접 쓴 값 유지 — /scribe 자동 기록은 그 이벤트만 제외)")
+    print("✓ jcode 스킬: ~/.jcode/skills/scribe/SKILL.md (브리핑·검색·기록 사용법)")
+    print("✓ jcode MCP: ~/.jcode/mcp.json (scribe 서버 — brief/search/note/inbox/ack/remember/score 도구)")
     print("jcode 는 훅 설정을 config 재로드 시 다시 읽습니다 — jcode 를 껐다 켜거나")
-    print("  config 변경 후 실행하세요. 세션 시작 시 스킬이 지시하는 대로 jv brief 를 쓰면")
+    print("  config 변경 후 실행하세요. 세션 시작 시 스킬이 지시하는 대로 scribe brief 를 쓰면")
     print("  지난 작업 브리핑을 받고, 턴이 끝날 때마다 질문→답·파일·오류가 '관찰'로 쌓입니다.")
-    print("  지식으로 승격하는 건 서기 agent 입니다 — jv secretary once · jv secretary auto on")
-    print("  · 연결 관리: jv jcode list / jv jcode switch <이름> / jv jcode remove <이름> / jv jcode check")
+    print("  지식으로 승격하는 건 서기 agent 입니다 — scribe secretary once · scribe secretary auto on")
+    print("  · 연결 관리: scribe jcode list / scribe jcode switch <이름> / scribe jcode remove <이름> / scribe jcode check")
 
 
 def jcode_status(args: argparse.Namespace) -> None:
@@ -2418,47 +2491,47 @@ def jcode_status(args: argparse.Namespace) -> None:
         name = conn.get("name") or conn["project"]
         print(f"이 폴더({cwd})는 '{name}' 프로젝트({conn['project']})에 연결되어 있습니다.")
     else:
-        print(f"이 폴더({cwd})는 연결되어 있지 않습니다 (자유 사용). jv jcode install --url ... --key ...")
+        print(f"이 폴더({cwd})는 연결되어 있지 않습니다 (자유 사용). scribe jcode install --url ... --key ...")
     if _jcode_integration_installed():
         print("✓ jcode 연동: 훅·스킬·MCP 설치됨")
     else:
-        print("⚠ jcode 연동이 없거나 구버전입니다 → jv jcode install")
+        print("⚠ jcode 연동이 없거나 구버전입니다 → scribe jcode install")
 
 
 def jcode_check(args: argparse.Namespace) -> None:
     cwd = Path(args.cwd or os.getcwd())
     if not _jcode_integration_installed():
-        print("⚠ jcode 연동이 설치되어 있지 않습니다 → jv jcode install --url ... --key ...")
+        print("⚠ jcode 연동이 설치되어 있지 않습니다 → scribe jcode install --url ... --key ...")
         return
     print(f"✓ jcode 훅: {_jcode_config()} 에 {_JCODE_VERSION} 훅 등록됨")
     if not _jcode_launcher().exists():
-        print("⚠ 훅 런처가 없습니다 → jv jcode install")
+        print("⚠ 훅 런처가 없습니다 → scribe jcode install")
         return
     print(f"✓ 훅 런처: {_jcode_launcher()}")
     if not _jcode_skill().exists():
-        print("⚠ 스킬이 없습니다 → jv jcode install")
+        print("⚠ 스킬이 없습니다 → scribe jcode install")
         return
     print(f"✓ jcode 스킬: {_jcode_skill()}")
     mcp_ok = False
     try:
         data = json.loads(_jcode_mcp_file().read_text()) if _jcode_mcp_file().exists() else {}
-        mcp_ok = isinstance(data.get("servers"), dict) and "myviking" in data["servers"]
+        mcp_ok = isinstance(data.get("servers"), dict) and "scribe" in data["servers"]
     except (OSError, ValueError):
         pass
-    print("✓ jcode MCP: ~/.jcode/mcp.json (myviking)" if mcp_ok else "⚠ jcode MCP 항목이 없습니다 → jv jcode install")
+    print("✓ jcode MCP: ~/.jcode/mcp.json (scribe)" if mcp_ok else "⚠ jcode MCP 항목이 없습니다 → scribe jcode install")
 
     link = _project_link(cwd)
     if not link.exists():
-        print(f"이 폴더({cwd})는 연결되어 있지 않습니다 (자유 사용) — 다른 프로젝트 폴더에서 실행하거나 jv jcode install/switch")
+        print(f"이 폴더({cwd})는 연결되어 있지 않습니다 (자유 사용) — 다른 프로젝트 폴더에서 실행하거나 scribe jcode install/switch")
         return
     try:
         cid = json.loads(link.read_text()).get("connection")
     except (OSError, ValueError):
-        print("⚠ .myviking-connection.json 을 읽을 수 없습니다.")
+        print("⚠ .scribe-connection.json 을 읽을 수 없습니다.")
         return
     conn = next((c for c in _load_conns() if c.get("id") == cid), None)
     if not conn:
-        print(f"⚠ 이 폴더가 가리키는 연결({cid})이 저장소에 없습니다 → jv jcode install 또는 switch")
+        print(f"⚠ 이 폴더가 가리키는 연결({cid})이 저장소에 없습니다 → scribe jcode install 또는 switch")
         return
     print(f"✓ 폴더 연결: {cwd} → {conn.get('name') or conn['project']} ({conn['project']})")
     try:
@@ -2507,7 +2580,7 @@ def jcode_disconnect(args: argparse.Namespace) -> None:
     if had:
         link.unlink()
     if _mcp_remove():
-        print(f"✓ jcode MCP(~/.jcode/mcp.json) 의 myviking 항목도 제거했습니다")
+        print(f"✓ jcode MCP(~/.jcode/mcp.json) 의 scribe 항목도 제거했습니다")
     if not had:
         print("이 폴더는 연결되어 있지 않습니다.")
     print(f"✓ 이 폴더의 기본 연결을 해제했습니다: {cwd} — jcode 세션은 자유 사용입니다")
@@ -2532,7 +2605,7 @@ def jcode_uninstall(args: argparse.Namespace) -> None:
         removed += 1
     if _jcode_marker().exists():
         _jcode_marker().unlink()
-    print(f"✓ jcode 연동 제거: 훅 {removed}개·런처·스킬·MCP. 저장된 연결은 남아 있습니다 (jv pi list).")
+    print(f"✓ jcode 연동 제거: 훅 {removed}개·런처·스킬·MCP. 저장된 연결은 남아 있습니다 (scribe pi list).")
 
 
 def jcode_remove(args: argparse.Namespace) -> None:
@@ -2573,7 +2646,7 @@ def jcode_hook(args: argparse.Namespace) -> None:
     except ValueError:
         payload = {}
 
-    # 연결은 폴더 링크(.myviking-connection.json)로만 결정한다 — 환경변수는 자동 캡처의
+    # 연결은 폴더 링크(.scribe-connection.json)로만 결정한다 — 환경변수는 자동 캡처의
     # '전역 새는' 경로(모든 폴더 세션이 한 프로젝트로 기록되는 사고)가 되어 허용하지 않는다.
     conn = _folder_conn(Path(cwd))
 
@@ -2656,21 +2729,21 @@ def _jcode_question_from_session(session_id: str) -> str:
 # 열리는 서기 agent 다. 서버는 저장고·검색·반복 카운트만 하고, 모델을 연결하지 않는다.
 
 _SECRETARY_DIRNAME = "secretary"
-_SECRETARY_AGENT_NAME = "myviking-secretary"
+_SECRETARY_AGENT_NAME = "scribe-secretary"
 
-SECRETARY_CHARTER = """# 당신은 myviking 서기(secretary)입니다
+SECRETARY_CHARTER = """# 당신은 scribe 서기(secretary)입니다
 
 당신의 일은 **전사가 아니라 기록**입니다. 코드를 고치거나 명령을 실행하지 말고,
 관찰함(inbox)을 읽고 다음 세션에 필요한 것만 골라 도서관에 등재하세요.
 
 ## 업무 순서
-1. `viking_inbox` — 아직 정리되지 않은 관찰 · 반복 요청 · 재발 오류 · 검증 필요 지식을 읽는다.
-2. 판단이 부족하면 `viking_session` 로 그 세션의 실제 트랜스크립트를 열어 확인한다
+1. `scribe_inbox` — 아직 정리되지 않은 관찰 · 반복 요청 · 재발 오류 · 검증 필요 지식을 읽는다.
+2. 판단이 부족하면 `scribe_session` 로 그 세션의 실제 트랜스크립트를 열어 확인한다
    (세션이 공유되어 있다 — 관찰은 요약이고, 트랜스크립트가 원문이다).
-3. 등재 전에 `viking_search` 로 비슷한 지식인지 본다. 있으면 새 권을 만들지 말고
-   같은 제목으로 `viking_file` (본문 갱신 + 반복 횟수 누적).
-4. 남길 것은 `viking_file`, 버릴 것은 `viking_ack` 로 통보한다. 통보하지 않으면 다음 업무에서 다시 읽힌다.
-5. 마지막으로 `viking_report` — 무엇을 등재하고 무엇을 버렸는지 한 줄.
+3. 등재 전에 `scribe_search` 로 비슷한 지식인지 본다. 있으면 새 권을 만들지 말고
+   같은 제목으로 `scribe_file` (본문 갱신 + 반복 횟수 누적).
+4. 남길 것은 `scribe_file`, 버릴 것은 `scribe_ack` 로 통보한다. 통보하지 않으면 다음 업무에서 다시 읽힌다.
+5. 마지막으로 `scribe_report` — 무엇을 등재하고 무엇을 버렸는지 한 줄.
 
 ## 남길 것 (이 네 종류만)
 - **재발 실수** — 같은 함정에 빠지면 시간이 날아간다 → category=pitfalls
@@ -2697,11 +2770,10 @@ SECRETARY_CHARTER = """# 당신은 myviking 서기(secretary)입니다
 
 
 def _secretary_home() -> Path:
-    home = os.environ.get("HOME") or str(Path.home())
-    return Path(home) / ".myviking" / _SECRETARY_DIRNAME
+    return _data_home() / _SECRETARY_DIRNAME
 
 
-_SECRETARY_FOLDER_FILE = ".myviking-secretary.json"
+_SECRETARY_FOLDER_FILE = ".scribe-secretary.json"
 
 
 def _secretary_folder_file(cwd: Path) -> Path:
@@ -2724,8 +2796,10 @@ def _secretary_effective(cwd: Path | None = None) -> dict:
         except OSError:
             return eff
     try:
-        p = _secretary_folder_file(Path(cwd))
-        if p.exists():
+        root = _project_link(Path(cwd)).parent
+        for p in [root / _SECRETARY_FOLDER_FILE, root / _LEGACY_SECRETARY_FILE]:
+            if not p.exists():
+                continue
             data = json.loads(p.read_text(encoding="utf-8"))
             if isinstance(data, dict) and ("auto" in data or "every" in data):
                 return {"auto": bool(data.get("auto", eff["auto"])),
@@ -2750,7 +2824,7 @@ def _secretary_log() -> Path:
 
 def _pi_binary() -> str:
     """서기를 열 런타임 — pi 우선, omp 도 같은 확장 API 를 쓴다."""
-    for name in (os.environ.get("MYVIKING_PI_BIN", ""), "pi", "omp"):
+    for name in (os.environ.get("SCRIBE_PI_BIN", ""), "pi", "omp"):
         if name:
             found = shutil.which(name)
             if found:
@@ -2773,17 +2847,23 @@ def install_secretary_charter(force: bool = False) -> Path:
 
 
 def install_secretary_agent(flavor: str = "pi") -> Path | None:
-    """pi 에이전트 정의 + 프롬프트 템플릿 — /myviking 대신 pi 안에서 서기를 부를 수 있게."""
+    """pi 에이전트 정의 + 프롬프트 템플릿 — /scribe 대신 pi 안에서 서기를 부를 수 있게."""
     home = os.environ.get("HOME") or str(Path.home())
     base = Path(home) / _HUB_HOME_DIRS.get(flavor, ".pi") / "agent"
     if not base.exists():
         return None
     agents = base / "agents"
     agents.mkdir(parents=True, exist_ok=True)
+    try:
+        legacy_agent = agents / "myviking-secretary.md"
+        if legacy_agent.exists() and legacy_agent.name != f"{_SECRETARY_AGENT_NAME}.md":
+            legacy_agent.unlink()  # 구 이름 에이전트 정의 제거 — 중복 등록 방지
+    except OSError:
+        pass
     body = (
         "---\n"
         f"name: {_SECRETARY_AGENT_NAME}\n"
-        "description: myviking 관찰함을 읽고 재발 실수·반복 요청만 골라 지식으로 등재하는 서기. 코드는 고치지 않는다.\n"
+        "description: scribe 관찰함을 읽고 재발 실수·반복 요청만 골라 지식으로 등재하는 서기. 코드는 고치지 않는다.\n"
         "tools: read, grep, find, ls\n"
         "---\n\n"
         + SECRETARY_CHARTER
@@ -2793,14 +2873,17 @@ def install_secretary_agent(flavor: str = "pi") -> Path | None:
     prompts = base / "prompts"
     try:
         prompts.mkdir(parents=True, exist_ok=True)
-        (prompts / "myviking-secretary.md").write_text(
+        legacy_prompt = prompts / "myviking-secretary.md"
+        if legacy_prompt.exists():
+            legacy_prompt.unlink()  # 구 이름 프롬프트 템플릿 제거 — 중복 등록 방지
+        (prompts / "scribe-secretary.md").write_text(
             "---\n"
-            "description: myviking 서기 업무 — 관찰함을 읽고 재발 실수·반복 요청만 지식으로 정리\n"
+            "description: scribe 서기 업무 — 관찰함을 읽고 재발 실수·반복 요청만 지식으로 정리\n"
             'argument-hint: "[이번에 더 신경 쓸 주제]"\n'
             "---\n\n"
-            "myviking 서기로 일하세요. 순서: `viking_inbox` → (판단이 부족하면) `viking_session` 으로 "
-            "세션 원문 확인 → `viking_search` 로 중복 확인 → `viking_file` 등재 / `viking_ack` 버림 → "
-            "마지막에 `viking_report` 한 줄 보고.\n"
+            "scribe 서기로 일하세요. 순서: `scribe_inbox` → (판단이 부족하면) `scribe_session` 으로 "
+            "세션 원문 확인 → `scribe_search` 로 중복 확인 → `scribe_file` 등재 / `scribe_ack` 버림 → "
+            "마지막에 `scribe_report` 한 줄 보고.\n"
             "지식 판단 기준(재발 실수·반복 요청·결정과 근거·재사용 절차)은 시스템 프롬프트의 서기 원칙을 따릅니다.\n\n"
             "추가 지시: ${@:-없음 — 대기 중인 관찰을 모두 정리하세요}\n", encoding="utf-8")
     except OSError:
@@ -2815,16 +2898,16 @@ def secretary_argv(*, limit: int = 60, task: str = "") -> list[str]:
     그래서 서기는 항상 이 프로젝트 폴더 cwd 로 열려야 한다 (전역 env 로 연결하는 길은 없다).
     """
     charter = install_secretary_charter()
-    tools = "read,grep,find,ls,viking_inbox,viking_session,viking_search,viking_file,viking_ack,viking_report,viking_score"
+    tools = "read,grep,find,ls,scribe_inbox,scribe_session,scribe_search,scribe_file,scribe_ack,scribe_report,scribe_score"
     default_task = (
-        "myviking 서기 업무입니다. 지금 이 프로젝트의 관찰함에서 정리 대기 중인 관찰을 읽고,"
-        f" 남길 것만 지식으로 등재하세요 (최대 {limit}건). 마지막에 viking_report 로 한 줄 보고."
+        "scribe 서기 업무입니다. 지금 이 프로젝트의 관찰함에서 정리 대기 중인 관찰을 읽고,"
+        f" 남길 것만 지식으로 등재하세요 (최대 {limit}건). 마지막에 scribe_report 로 한 줄 보고."
     )
     if task:
         default_task = task
     return [
         "--print",
-        "--name", f"myviking-secretary-{_stamp()}",
+        "--name", f"scribe-secretary-{_stamp()}",
         "--session-dir", str(_secretary_home() / "sessions"),
         "--append-system-prompt", str(charter),
         "--tools", tools,
@@ -2841,8 +2924,8 @@ def _stamp() -> str:
 
 def _secretary_env() -> dict:
     env = dict(os.environ)
-    env["MYVIKING_ROLE"] = "secretary"      # 확장이 서기 도구를 등록하고 관찰 전송은 끄는 스위치
-    env["MYVIKING_AGENT"] = "secretary"
+    env["SCRIBE_ROLE"] = "secretary"      # 확장이 서기 도구를 등록하고 관찰 전송은 끄는 스위치
+    env["SCRIBE_AGENT"] = "secretary"
     return env
 
 
@@ -2872,7 +2955,7 @@ def secretary_once(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
     if not _folder_conn(cwd):
-        print("⚠ 서기는 '이 폴더의 연결'을 따라갑니다 — 이 폴더를 먼저 연결하세요: jv connect --url … --key …",
+        print("⚠ 서기는 '이 폴더의 연결'을 따라갑니다 — 이 폴더를 먼저 연결하세요: scribe connect --url … --key …",
               file=sys.stderr)
         raise SystemExit(2)
 
@@ -2891,19 +2974,19 @@ def secretary_once(args: argparse.Namespace) -> None:
     if int(getattr(args, "dry_run", 0) or 0):
         binary = _pi_binary() or "pi"
         print("dry-run — 아래 명령으로 서기 세션이 열립니다 (대기 관찰 {}건)".format(pending))
-        print("  env MYVIKING_ROLE=secretary \\")
+        print("  env SCRIBE_ROLE=secretary \\")
         print("  " + " ".join(_shell_quote(x) for x in [binary] + argv))
         print(f"  cwd: {cwd} · 관찰함: {url}/api/v1/projects/{project}/inbox")
         return
 
     if _secretary_running() and not int(getattr(args, "force", False) or 0):
-        print("이미 서기가 일하고 있습니다 (jv secretary stop 으로 멈출 수 있습니다).")
+        print("이미 서기가 일하고 있습니다 (scribe secretary stop 으로 멈출 수 있습니다).")
         return
 
     binary = _pi_binary()
     if not binary:
         print("⚠ pi(또는 omp) 실행파일을 찾지 못했습니다 — 서기는 pi 세션으로 열리는 구조입니다.\n"
-              "  관찰은 계속 쌓이니 pi 를 설치한 뒤 실행하거나, 급하면 직접 등재하세요: jv remember \"제목\" --content \"내용\"",
+              "  관찰은 계속 쌓이니 pi 를 설치한 뒤 실행하거나, 급하면 직접 등재하세요: scribe remember \"제목\" --content \"내용\"",
               file=sys.stderr)
         print(f"  (실행하려던 명령: {' '.join([_shell_quote(x) for x in argv])})", file=sys.stderr)
         raise SystemExit(3)
@@ -2912,7 +2995,7 @@ def secretary_once(args: argparse.Namespace) -> None:
     if int(getattr(args, "foreground", False) or 0):
         print(f"► 서기 세션을 엽니다 ({project} · 대기 {pending}건)…")
         rc = subprocess.call(argv, cwd=str(cwd), env=_secretary_env())
-        print(f"✓ 서기 업무 종료 (exit {rc}) — 결과: jv secretary status" if rc == 0
+        print(f"✓ 서기 업무 종료 (exit {rc}) — 결과: scribe secretary status" if rc == 0
               else f"⚠ 서기 업무가 중간에 끝났습니다 (exit {rc}) — logs: {_secretary_log()}")
         return
 
@@ -2923,7 +3006,7 @@ def secretary_once(args: argparse.Namespace) -> None:
                                 stdout=fh, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, start_new_session=True)
     _secretary_pid().write_text(str(proc.pid))
-    print(f"✓ 서기를 백그라운드로 열었습니다 (pid {proc.pid}) · 대기 {pending}건 · 완료 보고: jv secretary status")
+    print(f"✓ 서기를 백그라운드로 열었습니다 (pid {proc.pid}) · 대기 {pending}건 · 완료 보고: scribe secretary status")
 
 
 def _shell_quote(s: str) -> str:
@@ -2953,10 +3036,10 @@ def secretary_status(args: argparse.Namespace) -> None:
         if last.get("report"):
             print(f"    보고: {last['report'][:160]}")
     else:
-        print("  아직 서기 업무 기록이 없습니다 — jv secretary once")
+        print("  아직 서기 업무 기록이 없습니다 — scribe secretary once")
     running = "예 (pid {})".format(_secretary_pid().read_text().strip()) if _secretary_running() else "아니오"
     print(f"  지금 일하는 중: {running}")
-    print(f"  서기 원칙: {_secretary_charter()}" + ("" if _secretary_charter().exists() else " (jv secretary install 로 설치)"))
+    print(f"  서기 원칙: {_secretary_charter()}" + ("" if _secretary_charter().exists() else " (scribe secretary install 로 설치)"))
 
 
 def secretary_install(args: argparse.Namespace) -> None:
@@ -2966,7 +3049,7 @@ def secretary_install(args: argparse.Namespace) -> None:
         agent = install_secretary_agent(flavor)
         if agent:
             print(f"✓ {flavor} 에이전트 정의: {agent}")
-    print("실행: jv secretary once (--foreground 로 지켜보기) · 자동: jv secretary auto on")
+    print("실행: scribe secretary once (--foreground 로 지켜보기) · 자동: scribe secretary auto on")
 
 
 def secretary_auto(args: argparse.Namespace) -> None:
@@ -2991,7 +3074,7 @@ def secretary_auto(args: argparse.Namespace) -> None:
         _git_exclude_add(cwd, _SECRETARY_FOLDER_FILE)
         state = "켜졌습니다" if auto else "꺼졌습니다"
         print(f"✓ 이 폴더 서기 자동 실행 {state} — 관찰 {cur['every']}건이 쌓이면 작업 세션이 스스로 서기를 깨웁니다. ({target.parent})")
-        print("  (끄기/켜기: jv secretary auto off|on --folder · 지금 정리: jv secretary once)")
+        print("  (끄기/켜기: scribe secretary auto off|on --folder · 지금 정리: scribe secretary once)")
         return
     p = _config_path()
     data = _load_config()
@@ -3008,7 +3091,7 @@ def secretary_auto(args: argparse.Namespace) -> None:
         pass
     state = "켜졌습니다" if sec["auto"] else "꺼졌습니다"
     print(f"✓ 서기 자동 실행 {state} — 관찰 {sec.get('every', 12)}건이 쌓이면 작업 세션이 스스로 서기를 깨웁니다.")
-    print("  (끄기/켜기: jv secretary auto off|on · 지금 정리: jv secretary once)")
+    print("  (끄기/켜기: scribe secretary auto off|on · 지금 정리: scribe secretary once)")
 
 
 def secretary_stop(args: argparse.Namespace) -> None:
@@ -3038,9 +3121,9 @@ def secretary_log(args: argparse.Namespace) -> None:
 
 
 # ══════════════════ git 같은 위 Commands (연결/해제) ══════════════════ #
-# jv connect = git remote add + checkout,  jv disconnect = 폴더에서 떼기
-# jv switch = checkout,  jv list = remote -v,  jv status = status
-# jv disable/enable = 이 컴퓨터 전체 스위치,  jv uninstall = 완전 제거
+# scribe connect = git remote add + checkout,  scribe disconnect = 폴더에서 떼기
+# scribe switch = checkout,  scribe list = remote -v,  scribe status = status
+# scribe disable/enable = 이 컴퓨터 전체 스위치,  scribe uninstall = 완전 제거
 
 
 def _agent_states() -> list[tuple[str, str, str]]:
@@ -3059,19 +3142,19 @@ def _agent_states() -> list[tuple[str, str, str]]:
             groups = hooks.get(event)
             cmds = [e.get("command", "") for g in (groups if isinstance(groups, list) else [])
                     if isinstance(g, dict) for e in (g.get("hooks") or []) if isinstance(e, dict)]
-            if cmds and any(_is_jv_hook_cmd(c) for c in cmds):
+            if cmds and any(_is_scribe_hook_cmd(c) for c in cmds):
                 n += 1
     rows.append(("Claude Code", f"✓ 폴더 훅 {n}/{len(HOOK_EVENTS)}" if n else "· 이 폴더에 훅 없음",
-                 "" if n else "jv connect 시 자동 설치"))
+                 "" if n else "scribe connect 시 자동 설치"))
     for flavor, label in (("pi", "pi"), ("omp", "omp")):
         p = _pi_path(flavor)
         if p.exists():
             rows.append((label, "✓ 확장 설치됨" if _pi_hub_installed(flavor) else "⚠ 구버전",
-                         "" if _pi_hub_installed(flavor) else "jv connect 로 갱신"))
+                         "" if _pi_hub_installed(flavor) else "scribe connect 로 갱신"))
         else:
-            rows.append((label, "· 미설치", "jv connect 시 자동 설치"))
+            rows.append((label, "· 미설치", "scribe connect 시 자동 설치"))
     rows.append(("jcode", "✓ 연동 설치됨" if _jcode_integration_installed() else "· 미설치",
-                 "" if _jcode_integration_installed() else "jv connect 시 자동 설치"))
+                 "" if _jcode_integration_installed() else "scribe connect 시 자동 설치"))
     rows.append(("MCP (Cursor 등)", "· 설정은 connect 출력에 있음", "JSON 을 에이전트 mcp.json 에 붙여넣기"))
     # 서기 agent — 지식 판단을 담당하는 별도 pi 세션
     charter = _secretary_charter()
@@ -3080,20 +3163,20 @@ def _agent_states() -> list[tuple[str, str, str]]:
         state = f"✓ 원칙 설치됨 · 자동 {'ON' if cfg.get('auto') else 'OFF'}"
         if _secretary_running():
             state += " · 지금 일하는 중"
-        rows.append(("서기 agent", state, "jv secretary once · jv secretary status"))
+        rows.append(("서기 agent", state, "scribe secretary once · scribe secretary status"))
     else:
-        rows.append(("서기 agent", "· 원칙 미설치", "jv secretary install"))
+        rows.append(("서기 agent", "· 원칙 미설치", "scribe secretary install"))
     return rows
 
 
 def status(args: argparse.Namespace) -> None:
     """한 화면으로 모든 걸 — 이 폴더가 도서관을 쓰는지, 어떤 에이전트가 붙었는지."""
-    from jv import __version__
+    from scribe import __version__
 
     cwd = Path(getattr(args, "cwd", "") or os.getcwd())
-    print(f"myviking {__version__} · {cwd}")
+    print(f"scribe {__version__} · {cwd}")
     if not _is_enabled():
-        print("스위치: 꺼짐 (이 컴퓨터 어디에서도 도서관을 쓰지 않습니다) → jv enable")
+        print("스위치: 꺼짐 (이 컴퓨터 어디에서도 도서관을 쓰지 않습니다) → scribe enable")
     else:
         print("스위치: 켜짐")
 
@@ -3128,9 +3211,9 @@ def status(args: argparse.Namespace) -> None:
             print(f"서기: 대기 관찰 {st.get('pending', 0)}건 · 등재 {st.get('filed_total', 0)}건"
                   + (f" · 마지막 {last.get('started_at')}" if last else ""))
             if st.get("pending"):
-                print("  정리: jv secretary once  (자동: jv secretary auto on)")
+                print("  정리: scribe secretary once  (자동: scribe secretary auto on)")
         except SystemExit:
-            print("서기: 서버 확인 실패 — 오프라인이면 jv status --offline 를 쓰세요.")
+            print("서기: 서버 확인 실패 — 오프라인이면 scribe status --offline 를 쓰세요.")
 
     conns = _load_conns()
     if conns:
@@ -3140,14 +3223,14 @@ def status(args: argparse.Namespace) -> None:
             print(f"  [{i}] {c.get('name') or c['project']} — {c['project']} @ {c['url']}{mark}")
     else:
         print("저장된 연결: 없음")
-    print("명령: jv connect <이름>|--url … --key … · jv switch <이름> · jv disconnect · jv list · jv disable")
+    print("명령: scribe connect <이름>|--url … --key … · scribe switch <이름> · scribe disconnect · scribe list · scribe disable")
 
 
 def disconnect(args: argparse.Namespace) -> None:
     """이 폴더를 도서관에서 떼다 (git 의 폴더 정리). 다른 폴더·저장된 연결은 그대로.
 
-    폴더 안의 jv 흔적(연결 파일 + Claude Code 훅)을 지워서 — 이 폴더에서는 정말 아무
-    기록도 남지 않게 한다. 저장된 연결(키)은 남는다 → jv connect 로 언제든 다시 붙는다.
+    폴더 안의 scribe 흔적(연결 파일 + Claude Code 훅)을 지워서 — 이 폴더에서는 정말 아무
+    기록도 남지 않게 한다. 저장된 연결(키)은 남는다 → scribe connect 로 언제든 다시 붙는다.
     """
     cwd = Path(getattr(args, "cwd", "") or os.getcwd())
     did = []
@@ -3163,7 +3246,7 @@ def disconnect(args: argparse.Namespace) -> None:
             data = json.loads(hook_file.read_text())
         except (OSError, ValueError):
             data = {}
-        data, removed = _strip_jv_hooks(data)
+        data, removed = _strip_scribe_hooks(data)
         if removed:
             hook_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
             did.append(f"Claude Code 훅 제거 {removed}개")
@@ -3175,7 +3258,7 @@ def disconnect(args: argparse.Namespace) -> None:
     # jcode MCP 는 '전역' 파일(~/.jcode/mcp.json)이라 폴더 해제로도 남으면 '이 머신의 모든 jcode
     # 세션' 이 마지막 연결된 프로젝트로 기록된다 — 연동이 설치돼 있으면 무조건 함께 제거한다.
     if _jcode_integration_installed() and _mcp_remove():
-        print("✓ jcode MCP(~/.jcode/mcp.json) 의 myviking 항목도 제거했습니다 — 다른 프로젝트로 새지 않습니다")
+        print("✓ jcode MCP(~/.jcode/mcp.json) 의 scribe 항목도 제거했습니다 — 다른 프로젝트로 새지 않습니다")
     print("  이 폴더의 세션(pi·omp·Claude Code·jcode)은 이제 도서관 없이 동작합니다.")
 
     if getattr(args, "all", False):
@@ -3184,7 +3267,7 @@ def disconnect(args: argparse.Namespace) -> None:
             _save_conns([])
             print(f"✓ 저장된 연결 {len(rest)}개 삭제 (키 포함): " +
                   ", ".join(c.get("name") or c["project"] for c in rest))
-    print("다시 쓰려면: jv connect <이름>  (저장된 연결이 없으면 키가 필요합니다: jv connect --url … --key …)")
+    print("다시 쓰려면: scribe connect <이름>  (저장된 연결이 없으면 키가 필요합니다: scribe connect --url … --key …)")
 
 
 def _cmd_list(args: argparse.Namespace) -> None:
@@ -3211,7 +3294,7 @@ def _cmd_enable(args: argparse.Namespace) -> None:
 def _cmd_disable(args: argparse.Namespace) -> None:
     _set_enabled(False)
     print("✓ 이 컴퓨터에서 도서관을 껐습니다 — 모든 폴더가 자유 사용이 됩니다.")
-    print("  켜기: jv enable")
+    print("  켜기: scribe enable")
 
 
 def uninstall(args: argparse.Namespace) -> None:
@@ -3238,14 +3321,14 @@ def uninstall(args: argparse.Namespace) -> None:
         print("✓ 저장된 연결 삭제 (키 포함)")
     if _secretary_home().exists():
         shutil.rmtree(_secretary_home(), ignore_errors=True)
-        print("✓ 서기 실행 기록·원칙 제거 (~/.myviking/secretary)")
+        print("✓ 서기 실행 기록·원칙 제거 (~/.scribe/secretary)")
     _set_enabled(False)
-    print("✓ 제거 완료 — jv connect 로 언제든 다시 연결할 수 있습니다.")
+    print("✓ 제거 완료 — scribe connect 로 언제든 다시 연결할 수 있습니다.")
 
 
 # ══════════════════ main ══════════════════ #
 def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(prog="jv", description="myviking 클라이언트")
+    p = argparse.ArgumentParser(prog="scribe", description="scribe 클라이언트")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def hooks_common(sp):
@@ -3308,7 +3391,7 @@ def main(argv: list[str] | None = None) -> None:
                         help="연결 — 저장 + 폴더 연결 + 감지된 모든 에이전트(Claude Code·pi·omp·jcode) 설치. "
                              "인자 없이 주소·키만 물어봅니다 (git remote add 느낌)")
     hooks_common(sp)
-    sp.add_argument("name", nargs="?", default="", help="저장된 연결 이름/슬러그 (예: jv connect 데이터자판기)")
+    sp.add_argument("name", nargs="?", default="", help="저장된 연결 이름/슬러그 (예: scribe connect 데이터자판기)")
     sp.add_argument("--agent", default="", help="하나만 설치: claude | pi | omp | jcode | mcp (기본: 전부 감지)")
     sp.add_argument("--cwd", default="")
     sp.set_defaults(func=connect)
@@ -3371,7 +3454,7 @@ def main(argv: list[str] | None = None) -> None:
     sps = secrem.add_parser("auto", help="관찰이 N건 쌓이면 서기를 스스로 깨운다")
     sps.add_argument("flag", nargs="?", default="on", choices=["on", "off"])
     sps.add_argument("--every", default="", help="몇 건마다 깨울지")
-    sps.add_argument("--folder", action="store_true", help="이 폴더 설정(.myviking-secretary.json)에 저장")
+    sps.add_argument("--folder", action="store_true", help="이 폴더 설정(.scribe-secretary.json)에 저장")
     sps.set_defaults(func=secretary_auto)
     sps = secrem.add_parser("stop", help="백그라운드 서기 중지")
     sps.set_defaults(func=secretary_stop)

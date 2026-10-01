@@ -12,30 +12,36 @@ from . import model_settings
 
 
 def _env(key: str, default: str = "") -> str:
-    return os.environ.get(key, default).strip()
+    """새 SCRIBE_* 이름 우선, 구 VIKING_* 이름 폴백 (무중단 개명)."""
+    v = os.environ.get(key, "")
+    if v == "" and key.startswith("SCRIBE_"):
+        v = os.environ.get("VIKING_" + key[len("SCRIBE_"):], "")
+    if v == "":
+        v = default
+    return v.strip()
 
 
 class Config:
     def __init__(self) -> None:
         # 데이터 디렉터리 — SQLite DB + 자동 생성된 서명 시크릿이 여기 저장됩니다.
-        self.data_dir = Path(_env("VIKING_DATA", "/data"))
+        self.data_dir = Path(_env("SCRIBE_DATA", "/data"))
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # 세션 쿠키 서명용 시크릿. 없으면 data_dir 에 생성해 보관(재시작에도 유지).
-        self.secret = _env("VIKING_SECRET") or self._load_or_create_secret()
+        self.secret = _env("SCRIBE_SECRET") or self._load_or_create_secret()
 
         # 서버가 외부에서 보이는 주소 (연결 가이드에 표시용). 비우면 요청 Host 사용.
-        self.base_url = _env("VIKING_BASE_URL", "").rstrip("/")
+        self.base_url = _env("SCRIBE_BASE_URL", "").rstrip("/")
 
         # 사람들 스스로 가입 가능 여부. 운영 중 막으려면 false.
-        self.allow_signup = _env("VIKING_ALLOW_SIGNUP", "true").lower() == "true"
+        self.allow_signup = _env("SCRIBE_ALLOW_SIGNUP", "true").lower() == "true"
 
         # 첫 가입자가 자동으로 관리자가 되지 않게 하려면... 기본은 자동 승격(true).
-        self.first_user_admin = _env("VIKING_FIRST_USER_ADMIN", "true").lower() == "true"
+        self.first_user_admin = _env("SCRIBE_FIRST_USER_ADMIN", "true").lower() == "true"
 
         # 관리자를 특정 이메일로 고정하고 싶을 때 (여러 명은 쉼표 구분).
         self.admin_emails = {
-            e.strip().lower() for e in _env("VIKING_ADMIN_EMAILS").split(",") if e.strip()
+            e.strip().lower() for e in _env("SCRIBE_ADMIN_EMAILS").split(",") if e.strip()
         }
 
         # ── 선택: LLM / 임베딩 (없어도 전부 동작. 있으면 요약·검색 품질이 좋아짐) ──
@@ -43,7 +49,7 @@ class Config:
         # 우선순위: 웹 설정(models.json) > 환경변수 > 기본값. 재시작 없이도 웹에서 변경 가능.
         model_settings.apply_env(self)  # 1차: 환경변수 기준
 
-        self.port = int(_env("VIKING_PORT", "8787"))
+        self.port = int(_env("SCRIBE_PORT", "8787"))
 
     # ------------------------------------------------------------------ #
     def _load_or_create_secret(self) -> str:

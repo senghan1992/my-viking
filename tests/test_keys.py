@@ -11,7 +11,7 @@ def test_seal_roundtrip_and_tamper():
     assert unseal_api_key(sealed) == raw
     assert unseal_api_key(sealed[:-4] + "AAAA") is None   # 태그 손상
     assert unseal_api_key(None) is None
-    assert unseal_api_key("jv_plaintext") is None         # 봉인 아닌 값은 열지 않는다
+    assert unseal_api_key("sc_plaintext") is None         # 봉인 아닌 값은 열지 않는다
     assert hash_api_key(raw) == digest
 
 

@@ -34,7 +34,7 @@ def login(request: Request, email: str = Form(""), password: str = Form("")):
     if user["disabled"]:
         return RedirectResponse(_flash("/login", "비활성화된 계정입니다. 관리자에게 문의하세요."), status_code=303)
     resp = RedirectResponse("/", status_code=303)
-    resp.set_cookie("viking_session", sign_session(user["id"]), httponly=True, max_age=30 * 24 * 3600, samesite="lax")
+    resp.set_cookie("scribe_session", sign_session(user["id"]), httponly=True, max_age=30 * 24 * 3600, samesite="lax")
     return resp
 
 
@@ -64,14 +64,14 @@ def signup(request: Request, name: str = Form(""), email: str = Form(""), passwo
         (email, name, hash_password(password), role, db.now()),
     )
     resp = RedirectResponse("/", status_code=303)
-    resp.set_cookie("viking_session", sign_session(uid), httponly=True, max_age=30 * 24 * 3600, samesite="lax")
+    resp.set_cookie("scribe_session", sign_session(uid), httponly=True, max_age=30 * 24 * 3600, samesite="lax")
     return resp
 
 
 _INSTALL_SH = r"""#!/usr/bin/env bash
-# myviking 자동 연결 (install.sh) — jv 설치(없으면) + '이 폴더만' 프로젝트에 연결 + 이 머신의 에이전트 전부 설치
+# scribe 자동 연결 (install.sh) — scribe 설치(없으면) + '이 폴더만' 프로젝트에 연결 + 이 머신의 에이전트 전부 설치
 # 연결은 폴더 단위다: 이 명령을 실행한 폴더에서 여는 세션만 도서관을 쓰고, 다른 폴더는 영향 없다.
-# 사용법: curl -fsSL __BASE__/install.sh | bash -s -- --url __BASE__ --key jv_... --project <슬러그>
+# 사용법: curl -fsSL __BASE__/install.sh | bash -s -- --url __BASE__ --key sc_... --project <슬러그>
 set -u
 URL=""; KEY=""; PROJECT=""
 while [ "$#" -gt 0 ]; do
@@ -83,38 +83,38 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 if [ -z "$URL" ] || [ -z "$KEY" ]; then
-  echo "사용법: curl -fsSL __BASE__/install.sh | bash -s -- --url __BASE__ --key jv_... --project <슬러그>"
+  echo "사용법: curl -fsSL __BASE__/install.sh | bash -s -- --url __BASE__ --key sc_... --project <슬러그>"
   exit 2
 fi
 
-if ! command -v jv >/dev/null 2>&1; then
-  echo "► jv 설치 중 (python3 pip, 잠시 기다리세요)..."
-  (python3 -m pip install --user --quiet git+https://github.com/senghan1992/my-viking.git \
-    || python3 -m pip install --user --break-system-packages --quiet git+https://github.com/senghan1992/my-viking.git \
-    || python3 -m pip install --quiet git+https://github.com/senghan1992/my-viking.git) \
-    && echo "✓ jv 설치 완료" || echo "⚠ jv 설치가 실패했습니다 — 아래에서 계속 시도합니다."
+if ! command -v scribe >/dev/null 2>&1; then
+  echo "► scribe 설치 중 (python3 pip, 잠시 기다리세요)..."
+  (python3 -m pip install --user --quiet git+https://github.com/senghan1992/scribe.git \
+    || python3 -m pip install --user --break-system-packages --quiet git+https://github.com/senghan1992/scribe.git \
+    || python3 -m pip install --quiet git+https://github.com/senghan1992/scribe.git) \
+    && echo "✓ scribe 설치 완료" || echo "⚠ scribe 설치가 실패했습니다 — 아래에서 계속 시도합니다."
 fi
-# pyenv / --user 설치 경로를 PATH 에 보충 (재부팅에도 살아있는 jv 인지 확인)
+# pyenv / --user 설치 경로를 PATH 에 보충 (재부팅에도 살아있는 scribe 인지 확인)
 export PATH="$HOME/.local/bin:$PATH"
-if ! command -v jv >/dev/null 2>&1; then
-  for c in "$HOME"/.pyenv/versions/*/bin/jv; do
+if ! command -v scribe >/dev/null 2>&1; then
+  for c in "$HOME"/.pyenv/versions/*/bin/scribe; do
     [ -x "$c" ] && { export PATH="$(dirname "$c"):$PATH"; break; }
   done
 fi
 
-if command -v jv >/dev/null 2>&1; then
+if command -v scribe >/dev/null 2>&1; then
   if [ -n "$PROJECT" ]; then
-    jv connect --url "$URL" --key "$KEY" --project "$PROJECT"
+    scribe connect --url "$URL" --key "$KEY" --project "$PROJECT"
   else
-    jv connect --url "$URL" --key "$KEY"
+    scribe connect --url "$URL" --key "$KEY"
   fi
   echo "  pi/omp: 이 폴더에서 여는 새 세션만 자동 연결 — 작업은 '관찰'로 쌓입니다"
-  echo "  (열려 있는 세션은 /myviking use)"
-  echo "  서기 agent 가 관찰을 지식으로 정리합니다 → jv secretary once · 자동: jv secretary auto on"
-  echo "상태: jv status · 관찰함: jv inbox · 이 폴더에서 쓰지 않기: jv disconnect · 전체 끄기: jv disable"
+  echo "  (열려 있는 세션은 /scribe use)"
+  echo "  서기 agent 가 관찰을 지식으로 정리합니다 → scribe secretary once · 자동: scribe secretary auto on"
+  echo "상태: scribe status · 관찰함: scribe inbox · 이 폴더에서 쓰지 않기: scribe disconnect · 전체 끄기: scribe disable"
 else
-  echo "⚠ jv 를 찾지 못했습니다 — python3/pip 가 설치되어 있는지 확인하고,"
-  echo "  pip install git+https://github.com/senghan1992/my-viking.git 후 다시 시도하세요."
+  echo "⚠ scribe 를 찾지 못했습니다 — python3/pip 가 설치되어 있는지 확인하고,"
+  echo "  pip install git+https://github.com/senghan1992/scribe.git 후 다시 시도하세요."
   exit 1
 fi
 """
@@ -141,7 +141,7 @@ def _install_base_url(request: Request) -> str:
 @router.post("/logout")
 def logout():
     resp = RedirectResponse("/login", status_code=303)
-    resp.delete_cookie("viking_session")
+    resp.delete_cookie("scribe_session")
     return resp
 
 

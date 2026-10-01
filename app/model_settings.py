@@ -2,7 +2,7 @@
 
 환경변수를 몰라도 관리자 화면에서 LLM/임베딩 제공자를 설정할 수 있게 합니다.
 
-우선순위: **웹 설정 > 환경변수(VIKING_LLM_* / VIKING_EMBED_*) > 기본값**
+우선순위: **웹 설정 > 환경변수(SCRIBE_LLM_* / SCRIBE_EMBED_*) > 기본값**
 저장 시 즉시 config 에 반영되어 재시작이 필요 없습니다 (핫스왑).
 
 파일 구조:
@@ -48,9 +48,9 @@ def seed_if_empty() -> bool:
     - llm 설정: app/models_seed.json 의 llm (배포본 = pi 의 models.json(databricks) 기준)
     - registered: 사전 등록 카탈로그 전체를 드롭다운에 미리 채운다
     이미 웹 설정이나 등록 모델이 있으면 아무것도 하지 않는다 (관리자 결정 존중).
-    VIKING_SEED_MODELS=false 로 끌 수 있다.
+    SCRIBE_SEED_MODELS=false 로 끌 수 있다.
     """
-    if os.environ.get("VIKING_SEED_MODELS", "true").lower() == "false":
+    if os.environ.get("SCRIBE_SEED_MODELS", "true").lower() == "false":
         return False
     p = file_path()
     if p.exists():
@@ -67,11 +67,11 @@ def seed_if_empty() -> bool:
 
     llm = seed.get("llm") or {}
     # 시드 파일의 api_key 는 절대 쓰지 않는다 (GitHub push 보호에 걸린 사고 —
-    # 비밀은 저장소에 넣지 않는다). 키는 VIKING_LLM_API_KEY 또는 관리자 화면에서.
+    # 비밀은 저장소에 넣지 않는다). 키는 SCRIBE_LLM_API_KEY 또는 관리자 화면에서.
     _map = {"base_url": "llm_base_url", "api_key": "llm_api_key", "model": "llm_model"}
     values = {_map.get(k, k): str(v).strip()
               for k, v in llm.items() if _map.get(k, k) in FIELDS and str(v).strip()}
-    key_env = os.environ.get("VIKING_LLM_API_KEY", "").strip()
+    key_env = os.environ.get("SCRIBE_LLM_API_KEY", "").strip()
     if key_env:
         values["llm_api_key"] = key_env
     regs = seed.get("registered")
@@ -206,12 +206,12 @@ def delete_registered(rid: str) -> bool:
 def apply_env(cfg) -> None:
     """config 의 LLM/임베딩 필드를 환경변수 기준으로 재계산. (테스트 격리·핫스왑용)"""
     env = os.environ
-    cfg.llm_base_url = env.get("VIKING_LLM_BASE_URL", "").strip() or _DEF["llm_base_url"]
-    cfg.llm_api_key = env.get("VIKING_LLM_API_KEY", "").strip()
-    cfg.llm_model = env.get("VIKING_LLM_MODEL", "").strip() or _DEF["llm_model"]
-    cfg.embed_base_url = env.get("VIKING_EMBED_BASE_URL", "").strip() or cfg.llm_base_url
-    cfg.embed_api_key = env.get("VIKING_EMBED_API_KEY", "").strip()
-    cfg.embed_model = env.get("VIKING_EMBED_MODEL", "").strip() or _DEF["embed_model"]
+    cfg.llm_base_url = env.get("SCRIBE_LLM_BASE_URL", "").strip() or _DEF["llm_base_url"]
+    cfg.llm_api_key = env.get("SCRIBE_LLM_API_KEY", "").strip()
+    cfg.llm_model = env.get("SCRIBE_LLM_MODEL", "").strip() or _DEF["llm_model"]
+    cfg.embed_base_url = env.get("SCRIBE_EMBED_BASE_URL", "").strip() or cfg.llm_base_url
+    cfg.embed_api_key = env.get("SCRIBE_EMBED_API_KEY", "").strip()
+    cfg.embed_model = env.get("SCRIBE_EMBED_MODEL", "").strip() or _DEF["embed_model"]
 
 
 def apply_to(cfg) -> None:
@@ -226,7 +226,7 @@ def apply_to(cfg) -> None:
         cfg.llm_model = web["llm_model"]
     if web.get("embed_base_url"):
         cfg.embed_base_url = web["embed_base_url"]
-    elif not os.environ.get("VIKING_EMBED_BASE_URL", "").strip():
+    elif not os.environ.get("SCRIBE_EMBED_BASE_URL", "").strip():
         cfg.embed_base_url = cfg.llm_base_url  # 별도 지정 없으면 LLM과 동일 주소
     if web.get("embed_api_key"):
         cfg.embed_api_key = web["embed_api_key"]

@@ -1,4 +1,4 @@
-# myviking 아키텍처 — 사람별 프로젝트 지식 도서관 (서기 agent 구조)
+# scribe 아키텍처 — 사람별 프로젝트 지식 도서관 (서기 agent 구조)
 
 > **한 줄 요약** — 여러 사람이 가입해 프로젝트 도서관을 만들고, pi 세션은 작업의 **관찰**만
 > 남긴다. **서기 agent**(별도 pi 세션)가 관찰함을 읽고 재발 실수·반복 요청만 골라 지식으로
@@ -19,13 +19,13 @@
 
 | 층 | 무엇 | 무엇을 하는가 / 무엇을 하지 않는가 |
 |---|---|---|
-| 작업 세션 확장 | `jv` 가 까는 pi 허브 확장 | 관찰을 올리고, 브리핑·관련 지식을 주입받는다. **판단하지 않는다.** |
+| 작업 세션 확장 | `scribe` 가 까는 pi 허브 확장 | 관찰을 올리고, 브리핑·관련 지식을 주입받는다. **판단하지 않는다.** |
 | Agent API | `routes/agent.py` | 적재·검색·등재·채점. **증류하지 않는다** (`auto_distill` 레거시만). |
 | 관찰 엔진 | `engine/observe.py` | 지문·반복 클러스터·작업함·선점·처리통보·실행장. 결정론적 계산만. |
 | 등재 | `engine/distill.py` | 같은 제목 갱신+`occurrences` 누적, 교정(superseded), L0/L1/L2 생성. |
 | 적응 | `engine/trust.py` | good→확립, bad→검증 필요, evidence·브리핑 섹션. |
 | 검색 | `engine/retrieve.py` | 키워드(+선택 임베딩) 점수, 티어 팩킹, 관련 없으면 빈 책. |
-| 서기 agent | `jv secretary` + `secretary.md` | 관찰함→판단→등재→통보. **모델 연결은 내 pi 를 재사용** (서버에 키 불필요). |
+| 서기 agent | `scribe secretary` + `secretary.md` | 관찰함→판단→등재→통보. **모델 연결은 내 pi 를 재사용** (서버에 키 불필요). |
 
 ## 2. 데이터 모델 (SQLite 가 원본)
 
@@ -49,10 +49,10 @@ users(id, email, pw_hash, role[admin|user], disabled)
      └─ events(id, project_id, kind[session|memory|key|project|secretary|trace], detail)
 ```
 
-- 키 인증은 SHA-256 해시로만 판단합니다. 평문은 `VIKING_SECRET` 으로 봉인(seal_api_key, HMAC-CTR +
+- 키 인증은 SHA-256 해시로만 판단합니다. 평문은 `SCRIBE_SECRET` 으로 봉인(seal_api_key, HMAC-CTR +
   encrypt-then-MAC)해 `api_keys.key_secret` 에 두며, 프로젝트 주인의 로그인된 연결 탭에서만
   풀립니다(폐기된 키는 풀지 않음). DB 백업 단독으로는 평문이 나오지 않습니다.
-- 지식 URI: `viking://{project_id}/memories/{category}/{id}`
+- 지식 URI: `scribe://{project_id}/memories/{category}/{id}`
 - 관찰은 원문을 `MAX_TEXT(3000)` 로 잘라 보관합니다. 전체 트랜스크립트는 에이전트 머신의
   `~/.pi/agent/sessions/**.jsonl` 에 있고, 서기가 같은 머신에서 직접 `read` 합니다.
 
@@ -66,7 +66,7 @@ before_agent    → 질문 기억 (pi 명령어 / 로 시작하면 무시)
 turn_end(stop)  → POST /observe   — {prompt, reply, error} + 건드린 파일 + transcript 경로
                     └ 서버: 지문 계산, 같은 세션 반복은 hits+1, 불만은 직전 주입 지식 강등(암묵 피드백)
 agent_settled   → 최종 답 없이 멈춘 턴은 질문만이라도 관찰로 남기고 대기열 정리
-                → (auto 켜면) 대기 관찰 ≥ threshold → jv secretary once --detach
+                → (auto 켜면) 대기 관찰 ≥ threshold → scribe secretary once --detach
 ```
 
 ### 3b. 서기 루프 (판단은 여기)
@@ -123,42 +123,42 @@ established ──같은 제목으로 교정──▶ superseded(대체됨, 주�
 
 | 경로 | 인증 | 비고 |
 |---|---|---|
-| 웹 화면 | 세션 쿠키(HMAC 서명, 30일) | `VIKING_SECRET` 으로 서명 |
-| Agent API | `Authorization: Bearer jv_…` | 프로젝트 스코프 — 다른 프로젝트 접근 시 404 |
+| 웹 화면 | 세션 쿠키(HMAC 서명, 30일) | `SCRIBE_SECRET` 으로 서명 |
+| Agent API | `Authorization: Bearer sc_…` | 프로젝트 스코프 — 다른 프로젝트 접근 시 404 |
 | 소유권 | 프로젝트 owner or admin | 그 외 403 |
-| pi 확장 | 폴더 연결 파일(`.myviking-connection.json`) + `~/.myviking/connections.json`(0600) | 전역 env 로는 연결이 정해지지 않음 |
+| pi 확장 | 폴더 연결 파일(`.scribe-connection.json`) + `~/.scribe/connections.json`(0600) | 전역 env 로는 연결이 정해지지 않음 |
 
-서기 세션도 같은 키·같은 폴더 연결을 씁니다. 단 `MYVIKING_ROLE=secretary` 로 열린 세션은
+서기 세션도 같은 키·같은 폴더 연결을 씁니다. 단 `SCRIBE_ROLE=secretary` 로 열린 세션은
 관찰을 올리지 않고(되먹임 차단), 관찰함 도구만 등록합니다.
 
 ## 8. 서기 agent — 실행 방식
 
 ```bash
-jv secretary once [-f|--dry-run] [--limit N] [--task "..."]   # 관찰함 정리 한 번
-jv secretary auto on|off [--every N]                          # 작업 세션이 스스로 깨우기
-jv secretary status | log | stop | install | charter
+scribe secretary once [-f|--dry-run] [--limit N] [--task "..."]   # 관찰함 정리 한 번
+scribe secretary auto on|off [--every N]                          # 작업 세션이 스스로 깨우기
+scribe secretary status | log | stop | install | charter
 ```
 
 - `once` 는 **pi 를 별도 세션으로 띄웁니다**(`pi --print --append-system-prompt
-  ~/.myviking/secretary/secretary.md --tools read,grep,find,ls,viking_* --session-dir
-  ~/.myviking/secretary/sessions`, env `MYVIKING_ROLE=secretary`). 기본은 백그라운드 +
+  ~/.scribe/secretary/secretary.md --tools read,grep,find,ls,scribe_* --session-dir
+  ~/.scribe/secretary/sessions`, env `SCRIBE_ROLE=secretary`). 기본은 백그라운드 +
   `run.pid` 로 이중 실행 방지, `-f` 로 지켜볼 수 있습니다.
 - `secretary.md`(서기 원칙)는 설치 시 생성되고 사용자가 고칠 수 있습니다(기본 덮어쓰기 안 함).
-  같은 내용을 `~/.pi/agent/agents/myviking-secretary.md`(pi 에이전트 정의) 와
-  `~/.pi/agent/prompts/myviking-secretary.md`( `/myviking-secretary` 템플릿) 으로도 깔아
+  같은 내용을 `~/.pi/agent/agents/scribe-secretary.md`(pi 에이전트 정의) 와
+  `~/.pi/agent/prompts/scribe-secretary.md`( `/scribe-secretary` 템플릿) 으로도 깔아
   두므로, pi 안에서 직접 서기를 부를 수도 있습니다.
 - `pi` 실행파일이 없으면 명확히 안내하고 멈니다(3 exit). 관찰은 계속 쌓여 있습니다.
-- `/myviking secretary once|status|auto on|off|stop` 은 pi 안에서 같은 일을 합니다.
+- `/scribe secretary once|status|auto on|off|stop` 은 pi 안에서 같은 일을 합니다.
 
 ## 9. 에이전트 연결 (pi 중심, 나머지는 유지)
 
 | 방법 | 대상 | 하는 일 |
 |---|---|---|
-| pi 확장(`jv connect`/`jv pi install`) | pi·omp | 관찰 전송 + 브리핑/검색/메모 도구 + 서기 세션 호출 |
-| 훅(`jv hook install`) | Claude Code | SessionStart/UserPromptSubmit/Stop → brief·prepare·**observe** |
-| 훅+스킬+MCP(`jv jcode install`) | jcode | turn_end → **observe**, 스킬로 brief 안내, MCP 도구 |
-| MCP(`jv mcp`) | Cursor·Codex 등 | brief/search/note/inbox/ack/remember/score 도구 |
-| 셸 | 어떤 에이전트든 | `jv brief·search·note·observe·inbox·ack·remember·score` |
+| pi 확장(`scribe connect`/`scribe pi install`) | pi·omp | 관찰 전송 + 브리핑/검색/메모 도구 + 서기 세션 호출 |
+| 훅(`scribe hook install`) | Claude Code | SessionStart/UserPromptSubmit/Stop → brief·prepare·**observe** |
+| 훅+스킬+MCP(`scribe jcode install`) | jcode | turn_end → **observe**, 스킬로 brief 안내, MCP 도구 |
+| MCP(`scribe mcp`) | Cursor·Codex 등 | brief/search/note/inbox/ack/remember/score 도구 |
+| 셸 | 어떤 에이전트든 | `scribe brief·search·note·observe·inbox·ack·remember·score` |
 
 셋 다 같은 API 를 씁니다. 훅이 실패해도 코딩 세션은 막지 않습니다(fail-open).
 
@@ -186,10 +186,10 @@ app/
   engine/llm.py       OpenAI 호환 summarize/embed (조용한 폴백)
   templates/       + secretary.html (관찰함·반복 후보·마지막 업무)
   static/          style.css (지도 제작실 월드 + 관찰함 판) · app.js · fonts/
-jv/cli.py          jv — 허브 확장(v11)·서기 조립·observe/inbox/ack·훅·MCP
+scribe/cli.py          scribe — 허브 확장(v11)·서기 조립·observe/inbox/ack·훅·MCP
 docker-compose.yml  배포 파일 하나 · .env.example
 docs/CONCEPT-SECRETARY.md  컨셉 전환의 이유와 경계
-tools/pi-extension-smoke.mjs  pi 확장(myviking.ts)을 실제로 load 시켜 관찰/서기 경로를 검증
+tools/pi-extension-smoke.mjs  pi 확장(scribe.ts)을 실제로 load 시켜 관찰/서기 경로를 검증
 tests/             관찰함·서기·레거시·CLI·훅·MCP·웹 화면
 ```
 
@@ -199,6 +199,6 @@ tests/             관찰함·서기·레거시·CLI·훅·MCP·웹 화면
 - 브리핑만 받고 죽은 세션(질문 0회)은 24시간 유예 후 정리. 관찰이 있는 세션은 지우지 않습니다.
 - 대시보드 → 프로젝트 → **서기** 에서 관찰함·반복 요청·마지막 업무 보고를 사람이 확인한다.
 - 백업 = 볼륨 스냅샷 또는 프로젝트 `export.md`
-- 가입을 닫으려면 `VIKING_ALLOW_SIGNUP=false`
+- 가입을 닫으려면 `SCRIBE_ALLOW_SIGNUP=false`
 - `legacy` 브랜치 = 재건축 전 코드. 서버 증류 컨셉(v10)은 git 히스토리와
   `auto_distill` 스위치로 되살릴 수 있습니다.

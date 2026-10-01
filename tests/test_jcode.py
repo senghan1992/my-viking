@@ -1,4 +1,4 @@
-"""jv jcode — J-Code 에이전트 연동 테스트 (훅 스플라이스·MCP 병합·턴 자동 기록)."""
+"""scribe jcode — J-Code 에이전트 연동 테스트 (훅 스플라이스·MCP 병합·턴 자동 기록)."""
 import json
 import os
 import sys
@@ -6,13 +6,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import jv.cli as cli
+import scribe.cli as cli
 
 
 def _fake_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".jcode").mkdir(parents=True)
-    (home / ".myviking").mkdir(parents=True)
+    (home / ".scribe").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     return home
 
@@ -61,13 +61,13 @@ def test_mcp_merge_preserves_others(tmp_path, monkeypatch):
     _fake_home(tmp_path, monkeypatch)
     cli._jcode_mcp_file().write_text(json.dumps(
         {"servers": {"other": {"command": "/bin/other"}}}), encoding="utf-8")
-    conn = {"url": "http://s", "key": "jv_k", "project": "p1", "name": "n"}
+    conn = {"url": "http://s", "key": "sc_k", "project": "p1", "name": "n"}
     data = cli._mcp_merge(conn)
-    assert set(data["servers"]) == {"other", "myviking"}
-    assert data["servers"]["myviking"]["env"]["MYVIKING_PROJECT"] == "p1"
+    assert set(data["servers"]) == {"other", "scribe"}
+    assert data["servers"]["scribe"]["env"]["SCRIBE_PROJECT"] == "p1"
     cli._jcode_mcp_file().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     assert cli._mcp_remove() is True
-    assert "myviking" not in json.loads(cli._jcode_mcp_file().read_text())["servers"]
+    assert "scribe" not in json.loads(cli._jcode_mcp_file().read_text())["servers"]
 
 
 # ── 설치/점검 ──
@@ -96,21 +96,21 @@ def test_jcode_install_writes_all(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_resolve_project_by_key", fake_me)
     monkeypatch.setattr(cli, "_verify_server", fake_verify)
 
-    cli.jcode_install(_Args(url="http://srv", key="jv_0123456789abcdef01234567", cwd=str(proj)))
+    cli.jcode_install(_Args(url="http://srv", key="sc_0123456789abcdef01234567", cwd=str(proj)))
 
-    assert (proj / ".myviking-connection.json").exists()
-    conns = json.loads((home / ".myviking" / "connections.json").read_text())["connections"]
-    assert conns[0]["project"] == "p1" and conns[0]["key"] == "jv_0123456789abcdef01234567"
+    assert (proj / ".scribe-connection.json").exists()
+    conns = json.loads((home / ".scribe" / "connections.json").read_text())["connections"]
+    assert conns[0]["project"] == "p1" and conns[0]["key"] == "sc_0123456789abcdef01234567"
 
     cfg = (home / ".jcode" / "config.toml").read_text()
-    launcher = str(home / ".jcode" / "myviking-hook.sh")
+    launcher = str(home / ".jcode" / "scribe-hook.sh")
     assert f'turn_end = "{launcher}"' in cfg and "pre_tool_timeout_ms" in cfg
-    assert (home / ".jcode" / "myviking-hook.sh").exists()
-    skill = home / ".jcode" / "skills" / "myviking" / "SKILL.md"
-    assert skill.exists() and "jv brief" in skill.read_text()
+    assert (home / ".jcode" / "scribe-hook.sh").exists()
+    skill = home / ".jcode" / "skills" / "scribe" / "SKILL.md"
+    assert skill.exists() and "scribe brief" in skill.read_text()
     mcp = json.loads((home / ".jcode" / "mcp.json").read_text())
-    assert mcp["servers"]["myviking"]["env"]["MYVIKING_URL"] == "http://srv"
-    assert json.loads((home / ".jcode" / ".myviking.json").read_text())["version"] == cli._JCODE_VERSION
+    assert mcp["servers"]["scribe"]["env"]["SCRIBE_URL"] == "http://srv"
+    assert json.loads((home / ".jcode" / ".scribe.json").read_text())["version"] == cli._JCODE_VERSION
 
 
 def test_jcode_check_green(tmp_path, monkeypatch):
@@ -118,9 +118,9 @@ def test_jcode_check_green(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
     conn = {"id": "http://srv|p1", "name": "앱", "url": "http://srv",
-            "key": "jv_0123456789abcdef01234567", "project": "p1"}
+            "key": "sc_0123456789abcdef01234567", "project": "p1"}
     cli._save_conns([conn])
-    (proj / ".myviking-connection.json").write_text(json.dumps({"connection": conn["id"]}))
+    (proj / ".scribe-connection.json").write_text(json.dumps({"connection": conn["id"]}))
     monkeypatch.setattr(cli, "_verify_server", lambda u, k, p: {"project_name": "앱"})
     cli.jcode_install(_Args(url="http://srv", key=conn["key"], project="p1", cwd=str(proj)))
 
@@ -140,18 +140,18 @@ def test_jcode_check_reports_proxy_down(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
     conn = {"id": "http://srv|p1", "name": "앱", "url": "http://srv",
-            "key": "jv_0123456789abcdef01234567", "project": "p1"}
+            "key": "sc_0123456789abcdef01234567", "project": "p1"}
     cli._save_conns([conn])
-    (proj / ".myviking-connection.json").write_text(json.dumps({"connection": conn["id"]}))
+    (proj / ".scribe-connection.json").write_text(json.dumps({"connection": conn["id"]}))
     monkeypatch.setattr(cli, "_verify_server", lambda u, k, p: {"project_name": "앱"})
     monkeypatch.setattr(cli, "_jcode_proxy_health", lambda: False)
     monkeypatch.setattr(cli, "_jcode_integration_installed", lambda: True)
-    monkeypatch.setattr(cli, "_jcode_launcher", lambda: proj / "myviking-hook.sh")
-    (proj / "myviking-hook.sh").write_text("#!/bin/bash\n")
+    monkeypatch.setattr(cli, "_jcode_launcher", lambda: proj / "scribe-hook.sh")
+    (proj / "scribe-hook.sh").write_text("#!/bin/bash\n")
     monkeypatch.setattr(cli, "_jcode_skill", lambda: proj / "SKILL.md")
     (proj / "SKILL.md").write_text("x")
     monkeypatch.setattr(cli, "_jcode_mcp_file", lambda: proj / "mcp.json")
-    (proj / "mcp.json").write_text(json.dumps({"servers": {"myviking": {}}}))
+    (proj / "mcp.json").write_text(json.dumps({"servers": {"scribe": {}}}))
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
     cli.jcode_check(_Args(cwd=str(proj)))
@@ -165,10 +165,10 @@ def test_jcode_install_respects_existing_hook(tmp_path, monkeypatch):
     (home / ".jcode" / "config.toml").write_text('[hooks]\nturn_end = "~/bin/이미 있음"\n', encoding="utf-8")
     monkeypatch.setattr(cli, "_resolve_project_by_key", lambda u, k: {"project": "p1", "project_name": "앱"})
     monkeypatch.setattr(cli, "_verify_server", lambda u, k, p: {"project_name": "앱"})
-    cli.jcode_install(_Args(url="http://srv", key="jv_0123456789abcdef01234567", cwd=str(proj)))
+    cli.jcode_install(_Args(url="http://srv", key="sc_0123456789abcdef01234567", cwd=str(proj)))
     cfg = (home / ".jcode" / "config.toml").read_text()
     assert 'turn_end = "~/bin/이미 있음"' in cfg  # 사용자 훅 유지
-    assert "turn_end" in json.loads((home / ".jcode" / ".myviking.json").read_text()).get("events", []) or \
+    assert "turn_end" in json.loads((home / ".jcode" / ".scribe.json").read_text()).get("events", []) or \
            'session_start' in (home / ".jcode" / "config.toml").read_text()
 
 
@@ -190,9 +190,9 @@ def test_hook_turn_end_observes(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
     conn = {"id": "http://srv|p1", "name": "앱", "url": "http://srv",
-            "key": "jv_0123456789abcdef01234567", "project": "p1"}
+            "key": "sc_0123456789abcdef01234567", "project": "p1"}
     cli._save_conns([conn])
-    (proj / ".myviking-connection.json").write_text(json.dumps({"connection": conn["id"]}))
+    (proj / ".scribe-connection.json").write_text(json.dumps({"connection": conn["id"]}))
 
     sent = {}
     def fake_api(url, key, method, path, **kw):
@@ -215,9 +215,9 @@ def test_hook_skips_slash_cmd_and_error_status(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
     conn = {"id": "http://srv|p1", "name": "앱", "url": "http://srv",
-            "key": "jv_0123456789abcdef01234567", "project": "p1"}
+            "key": "sc_0123456789abcdef01234567", "project": "p1"}
     cli._save_conns([conn])
-    (proj / ".myviking-connection.json").write_text(json.dumps({"connection": conn["id"]}))
+    (proj / ".scribe-connection.json").write_text(json.dumps({"connection": conn["id"]}))
     monkeypatch.setattr(cli, "_api", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("호출되면 안 됨")))
 
     _hook_env(monkeypatch, JCODE_HOOK_CWD=str(proj),
@@ -238,9 +238,9 @@ def test_hook_question_falls_back_to_session_file(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
     conn = {"id": "http://srv|p1", "name": "앱", "url": "http://srv",
-            "key": "jv_0123456789abcdef01234567", "project": "p1"}
+            "key": "sc_0123456789abcdef01234567", "project": "p1"}
     cli._save_conns([conn])
-    (proj / ".myviking-connection.json").write_text(json.dumps({"connection": conn["id"]}))
+    (proj / ".scribe-connection.json").write_text(json.dumps({"connection": conn["id"]}))
     sdir = home / ".jcode" / "sessions"
     sdir.mkdir(parents=True)
     (sdir / "session_a_1_xyz.json").write_text(json.dumps({
@@ -270,32 +270,32 @@ def test_hook_no_connection_no_crash(tmp_path, monkeypatch):
     assert "연결 없음" in cli._jcode_log_file().read_text()
 
 
-# ── 폴더 연결 폴백 (스킬의 jv brief/search/remember 가 인자 없이 동작) ──
+# ── 폴더 연결 폴백 (스킬의 scribe brief/search/remember 가 인자 없이 동작) ──
 
 def test_remote_commands_resolve_from_folder(tmp_path, monkeypatch):
     home = _fake_home(tmp_path, monkeypatch)
     proj = tmp_path / "proj"
     proj.mkdir()
     conn = {"id": "http://srv|p1", "name": "앱", "url": "http://srv",
-            "key": "jv_0123456789abcdef01234567", "project": "p1"}
+            "key": "sc_0123456789abcdef01234567", "project": "p1"}
     cli._save_conns([conn])
-    (proj / ".myviking-connection.json").write_text(json.dumps({"connection": conn["id"]}))
+    (proj / ".scribe-connection.json").write_text(json.dumps({"connection": conn["id"]}))
 
     calls = []
     monkeypatch.setattr(cli, "_api", lambda url, key, method, path, **kw: calls.append((url, key, path)) or {"items": [], "warnings": []})
     monkeypatch.chdir(proj)
     cli.remote(_Args(cmd="search", q="배포", url="", key="", project="", cwd=""))
-    assert calls and calls[0][0] == "http://srv" and calls[0][1] == "jv_0123456789abcdef01234567"
+    assert calls and calls[0][0] == "http://srv" and calls[0][1] == "sc_0123456789abcdef01234567"
 
 
 def test_folder_conn_walks_up(tmp_path, monkeypatch):
     home = _fake_home(tmp_path, monkeypatch)
     conn = {"id": "http://srv|p1", "name": "앱", "url": "http://srv",
-            "key": "jv_0123456789abcdef01234567", "project": "p1"}
+            "key": "sc_0123456789abcdef01234567", "project": "p1"}
     cli._save_conns([conn])
     deep = tmp_path / "a" / "b" / "c"
     deep.mkdir(parents=True)
-    (tmp_path / "a" / ".myviking-connection.json").write_text(json.dumps({"connection": conn["id"]}))
+    (tmp_path / "a" / ".scribe-connection.json").write_text(json.dumps({"connection": conn["id"]}))
     got = cli._folder_conn(deep)
     assert got and got["project"] == "p1"
     assert cli._folder_conn(tmp_path / "elsewhere") is None

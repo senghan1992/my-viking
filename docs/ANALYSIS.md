@@ -6,7 +6,7 @@
 
 ## 1. 시작하기 전에: 요청하신 그림 vs 기존 코드
 
-| 원하시는 것 | 기존 코드 상태 (my-viking @ legacy) | 결론 |
+| 원하시는 것 | 기존 코드 상태 (scribe @ legacy) | 결론 |
 |---|---|---|
 | 서버로 띄워서(docker) 도서관처럼 | ✅ 완성 — docker-compose/up.sh/stack.yml + Caddy | 유지 방향 맞음 |
 | **사람들별로** 프로젝트 생성 | ⚠️ 절반 — '사람' 개념은 없고 **관리자 1인이** 프로젝트·키 발급 | **없던 것 — 새로 구현** |
@@ -54,7 +54,7 @@
 |---|---|
 | L0/L1/L2 티어 로딩 | `app/engine/tiers.py` — 그대로 |
 | 세션이 장기 메모리로 증류 | `app/engine/distill.py` — 그대로 |
-| viking:// 가상 파일시스템 | `viking://{project}/memories/{category}/{id}` URI + 검색 결과로 노출 |
+| scribe:// 가상 파일시스템 | `scribe://{project}/memories/{category}/{id}` URI + 검색 결과로 노출 |
 | 검색 결과 관찰(trace) | `trace_id` + 프로젝트 활동 로그로 단순화 |
 | 멀티 에이전트 허브 | **이번 재건축의 핵심 변경: 사용자(사람) 계층 추가** — 사람 → 내 프로젝트 → 에이전트 연결 |
 
@@ -66,7 +66,7 @@
 3. **의존성 최소화** — FastAPI + uvicorn + jinja2 + httpx + pydantic. (기존: firecrawl, scrapy,
    pdfplumber, litellm, SQLAlchemy 등 20여 개)
 4. **키는 프로젝트 스코프만** (사용자 전역 키 없음) — "내 에이전트 = 내 프로젝트"가 명확.
-5. **첫 가입자 = 관리자**, `VIKING_ADMIN_EMAILS` 로 고정 가능.
+5. **첫 가입자 = 관리자**, `SCRIBE_ADMIN_EMAILS` 로 고정 가능.
 
 ## 5. 파일 지도 (재건축 후, 약 4,000줄)
 
@@ -81,7 +81,7 @@ app/            서버 (FastAPI)
   engine/       redact·tokens·tiers·retrieve·distill·trust·llm
   templates/    Jinja2 8개 (서버 렌더 + 가벼운 JS)
   static/       style.css, app.js
-jv/             에이전트 머신용 CLI (훅 설치·4종 이벤트·원격·MCP stdio)
+scribe/             에이전트 머신용 CLI (훅 설치·4종 이벤트·원격·MCP stdio)
 docker-compose.yml   배포 파일 하나 · .env.example
 Dockerfile      단일 스테이지
 tests/          가입→키→에이전트 루프→적응까지 통합 테스트 24건

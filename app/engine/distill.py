@@ -141,7 +141,7 @@ def remember(
             _append_evidence(match["id"], "updated", note)
         db.log_event(project_id, "memory", f"갱신 [{category}] {title[:50]}")
         return {"memory_id": match["id"], "merged": match["id"], "superseded": 0,
-                "uri": f"viking://{project_id}/memories/{category}/{match['id']}"}
+                "uri": f"scribe://{project_id}/memories/{category}/{match['id']}"}
 
     superseded = match["id"] if (correcting and match) else 0
     mid = _store_memory(project_id, category, title, body, source or "manual",
@@ -153,7 +153,7 @@ def remember(
                    (mid, superseded))
         _append_evidence(superseded, "superseded", f"같은 제목으로 교정 → 새 지식 #{mid}")
     db.log_event(project_id, "memory", f"기록 [{category}] {title[:60]}")
-    return {"memory_id": mid, "uri": f"viking://{project_id}/memories/{category}/{mid}",
+    return {"memory_id": mid, "uri": f"scribe://{project_id}/memories/{category}/{mid}",
             "superseded": superseded}
 
 

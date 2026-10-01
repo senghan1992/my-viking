@@ -9,7 +9,7 @@ web
 ## Users
 
 - **코딩 에이전트 사용자(개발자)** — Claude Code·Cursor·Codex·셸 에이전트로 작업하는 사람. 브라우저에서 가입하고 프로젝트(서가)를 만들고, 에이전트를 연결하면 작업 지식이 자동으로 쌓인다.
-- **관리자** — 첫 가입자가 자동 승격 (VIKING_FIRST_USER_ADMIN). 사용자 활성화/비활성화와 서버 LLM·임베딩 연결을 담당.
+- **관리자** — 첫 가입자가 자동 승격 (SCRIBE_FIRST_USER_ADMIN). 사용자 활성화/비활성화와 서버 LLM·임베딩 연결을 담당.
 - *추론(inferred): 주 사용자는 한국어 사용 팀/개인 개발자. (저장소의 모든 UI·문서·테스트 카피가 한국어)*
 
 ## Product Purpose
@@ -32,19 +32,19 @@ web
 - 브라우저 대시보드: 가입 → 프로젝트(서가) 만들기(첫 키 자동 발급) → **연결 탭**에서 키가 박힌 명령 한 줄 복사 → 터미널에 붙여 넣기.
   연결 탭은 곧 **키 보관함**이다 — 발급 직후가 아니어도 언제든 다시 복사·전환·폐기할 수 있다. 프로젝트 화면의 **서기** 탭에서
   관찰함·반복 요청·마지막 업무 보고를 사람이 확인한다.
-- 에이전트 머신: `jv` 가 폴더 연결(`.myviking-connection.json`) 기준으로 동작. pi 허브 확장은 매 턴을 `POST /observe` 로, Claude Code·jcode 훅도 같은 관찰함으로 보낸다.
-- 서기: `jv secretary once`(또는 `jv secretary auto on`) 가 **별도 pi 세션**을 띄워 `/inbox` 를 읽고 `/remember`·`/inbox/ack` 로 정리한다. 코드 수정 도구는 없다.
+- 에이전트 머신: `scribe` 가 폴더 연결(`.scribe-connection.json`) 기준으로 동작. pi 허브 확장은 매 턴을 `POST /observe` 로, Claude Code·jcode 훅도 같은 관찰함으로 보낸다.
+- 서기: `scribe secretary once`(또는 `scribe secretary auto on`) 가 **별도 pi 세션**을 띄워 `/inbox` 를 읽고 `/remember`·`/inbox/ack` 로 정리한다. 코드 수정 도구는 없다.
 - 매일의 코딩 세션이 원료(관찰)이고, 서기가 골라낸 것만 지식(권)이 된다.
-- 배포: Docker 단일 컨테이너, 볼륨 `viking-data` 의 `index.db` 하나. 서버 LLM/임베딩은 선택(요약·의미 검색 품질용).
+- 배포: Docker 단일 컨테이너, 볼륨 `scribe-data` 의 `index.db` 하나. 서버 LLM/임베딩은 선택(요약·의미 검색 품질용).
 
 ## Capabilities and Constraints
 
 - 멀티유저 계정(가입/로그인/세션 쿠키), 역할(사용자/관리자), 비활성화.
 - 프로젝트(서가) CRUD, 지식 4개 카테고리(📖 지식 / 🛠️ 명령 / ⚠️ 함정 / 🧭 결정), 상태 칩 3종(검증 전/확립/검증 필요), 동일 제목 대체·교정 기록.
-- Agent API: brief / prepare / **observe** / **inbox** / **inbox/ack** / **secretary/status** / remember / seen / score / search / health (+레거시 commit) — Bearer `jv_` 키 (프로젝트 스코프).
+- Agent API: brief / prepare / **observe** / **inbox** / **inbox/ack** / **secretary/status** / remember / seen / score / search / health (+레거시 commit) — Bearer `sc_` 키 (프로젝트 스코프).
 - 관찰 데이터: 세션별 관찰(kind prompt|reply|error|edit|note|decision|request), 지문(`norm`)·`hits`, 세션 트랜스크립트 경로, 처리 상태(open|claimed|filed|skipped), 서기 실행장(secretary_runs: found/filed/merged/skipped/report).
 - 지식 계보: `source`(manual|secretary|session), `occurrences`(반복 요청 누적), evidence(어떤 관찰에서 왔나).
-- 서기 agent: `jv secretary once|auto|status|log|stop|install`, `~/.myviking/secretary/secretary.md`(원칙, 사용자 편집 가능), pi 에이전트 정의/프롬프트 템플릿 설치.
+- 서기 agent: `scribe secretary once|auto|status|log|stop|install`, `~/.scribe/secretary/secretary.md`(원칙, 사용자 편집 가능), pi 에이전트 정의/프롬프트 템플릿 설치.
 - 선택 기능: OpenAI 호환 LLM 한 줄 요약, 임베딩 의미 검색 — 없으면 추출식·키워드로 폴백. 설정은 env 또는 관리자 → 모델 설정 화면 (data/models.json, 0600, 웹>env>기본값, 핫스왑). **서기 동작에는 모델 연결이 필요 없다.**
 - 비밀값 마스킹(서버·클라이언트), 키는 해시 인증 + 봉인된 평문 보관(주인만 재복사), 세션 HMAC 서명. SQLite 단일 파일, export.md 내보내기.
 - 기술 제약: FastAPI + Jinja2 서버 렌더 + 소량 JS, python:3.12-slim, `app/main.py` 단일 앱, 의존성은 pyproject.toml 에 명시(python-multipart 필요).
@@ -52,7 +52,7 @@ web
 
 ## Brand Commitments
 
-- 이름 **myviking**, 도서관 은유를 제품 용어로 사용 (서가/권/도서관, 카테고리 이모지).
+- 이름 **scribe**, 도서관 은유를 제품 용어로 사용 (서가/권/도서관, 카테고리 이모지).
 - 모든 UI 카피 한국어. 로고·이미지·외부 브랜드 에셋 없음 (텍스트 + 이모지 위주).
 - MIT 라이선스.
 

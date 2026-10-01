@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * pi 확장 스모크 테스트 — jv 가 깐 myviking.ts 를 실제로 로드해서
+ * pi 확장 스모크 테스트 — scribe 가 깐 scribe.ts 를 실제로 로드해서
  * '작업 세션은 관찰만 올리고, 서기 세션은 서기 도구를 쓴다' 는 컨셉을 검증한다.
  *
  * 서버도 pi 도 필요 없다 — pi ExtensionAPI 를 가짜로 대고 fetch 를 가로챈다.
  *   node tools/pi-extension-smoke.mjs [확장파일]
- * 확장 파일을 생략하면 jv 가 설치하는 위치(~/.pi/agent/extensions/myviking.ts)를 쓰고,
+ * 확장 파일을 생략하면 scribe 가 설치하는 위치(~/.pi/agent/extensions/scribe.ts)를 쓰고,
  * 없으면 템플릿을 직접 조립해 테스트한다.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -36,13 +36,13 @@ function findPiRoot() {
 const PI_ROOT = findPiRoot();
 const { build } = await import(pathToFileURL(join(PI_ROOT, "node_modules", "esbuild", "lib", "main.js")).href);
 
-// ── 1. 확장 소스 확보 (설치본 없으면 jv 로부터 템플릿을 뽑는다) ─────────
+// ── 1. 확장 소스 확보 (설치본 없으면 scribe 로부터 템플릿을 뽑는다) ─────────
 function extensionSource(explicit) {
   if (explicit && existsSync(explicit)) return readFileSync(explicit, "utf8");
-  const installed = join(homedir(), ".pi", "agent", "extensions", "myviking.ts");
+  const installed = join(homedir(), ".pi", "agent", "extensions", "scribe.ts");
   if (existsSync(installed)) return readFileSync(installed, "utf8");
   const py = process.env.PYV || "python3";
-  const out = execFileSync(py, ["-c", "import jv.cli as c; import sys; sys.stdout.write(c._PI_EXT_TEMPLATE.replace('@CREATED@','smoke'))"],
+  const out = execFileSync(py, ["-c", "import scribe.cli as c; import sys; sys.stdout.write(c._PI_EXT_TEMPLATE.replace('@CREATED@','smoke'))"],
     { cwd: join(import.meta.dirname, ".."), encoding: "utf8" });
   return out;
 }
@@ -51,9 +51,9 @@ function extensionSource(explicit) {
 let EXT_SEQ = 0;
 async function loadExtension(src) {
   const dir = mkdtempSafe("mv-ext-smoke-");
-  const tsPath = join(dir, "myviking.ts");
+  const tsPath = join(dir, "scribe.ts");
   EXT_SEQ += 1;
-  const jsPath = join(dir, `myviking-${EXT_SEQ}.mjs`);
+  const jsPath = join(dir, `scribe-${EXT_SEQ}.mjs`);
   writeFileSync(tsPath, src);
   await build({
     entryPoints: [tsPath], outfile: jsPath, bundle: true, format: "esm", platform: "node",
@@ -101,7 +101,7 @@ function stubFetch(log) {
     log.calls.push(rec);
     const reply = {
       orientation: "📚 브리핑", pending: 3, repeat_hits: 2, ok: true, logged: [1],
-      uri: "viking://1/memories/pitfalls/1", memory_id: 1, status: "established", items: [], warnings: [],
+      uri: "scribe://1/memories/pitfalls/1", memory_id: 1, status: "established", items: [], warnings: [],
     };
     return { ok: true, json: async () => reply, async text() { return "ok"; } };
   };
@@ -111,15 +111,15 @@ function stubFetch(log) {
 // 확장은 로드 시점에 homedir() 을 고정해서 쓴다 — HOME 은 로드 전에 하나만 만든다.
 const TEST_HOME = mkdtempSafe("mv-home-");
 process.env.HOME = TEST_HOME;
-mkdirSync(join(TEST_HOME, ".myviking"), { recursive: true });
-writeFileSync(join(TEST_HOME, ".myviking", "connections.json"), JSON.stringify({
-  connections: [{ id: "http://srv|p1", name: "E2E", url: "http://srv", key: "jv_testkeytestkeytest", project: "p1" }],
+mkdirSync(join(TEST_HOME, ".scribe"), { recursive: true });
+writeFileSync(join(TEST_HOME, ".scribe", "connections.json"), JSON.stringify({
+  connections: [{ id: "http://srv|p1", name: "E2E", url: "http://srv", key: "sc_testkeytestkeytest", project: "p1" }],
 }));
 
 function folderWithLink(id = "http://srv|p1") {
   const dir = mkdtempSafe("mv-proj-");
   mkdirSync(join(dir, ".git"));
-  writeFileSync(join(dir, ".myviking-connection.json"), JSON.stringify({ connection: id }));
+  writeFileSync(join(dir, ".scribe-connection.json"), JSON.stringify({ connection: id }));
   return dir;
 }
 
@@ -142,10 +142,10 @@ async function scenarioWorker(factory) {
   const ctx = fakeCtx({ cwd: dir, sessionId: "sess-w", transcript: join(dir, "session.jsonl") });
 
   await Promise.all(pi.handlers.session_start.map((h) => h({ type: "session_start", reason: "startup" }, ctx)));
-  check("작업 세션: 워커 도구가 등록된다", log.tools.includes("viking_brief") && log.tools.includes("viking_note"), log.tools.join(","));
-  check("작업 세션: 서기 도구는 등록되지 않는다", !log.tools.includes("viking_file"));
+  check("작업 세션: 워커 도구가 등록된다", log.tools.includes("scribe_brief") && log.tools.includes("scribe_note"), log.tools.join(","));
+  check("작업 세션: 서기 도구는 등록되지 않는다", !log.tools.includes("scribe_file"));
   check("작업 세션: 브리핑이 주입된다 (/brief role=worker)", log.calls.some((c) => c.url.includes("/brief") && c.url.includes("role=worker")));
-  check("작업 세션: /myviking 명령이 있다", log.commands.includes("myviking"));
+  check("작업 세션: /scribe 명령이 있다", log.commands.includes("scribe"));
 
   log.calls.length = 0;
   await Promise.all(pi.handlers.before_agent_start.map((h) => h({ type: "before_agent_start", prompt: "마이그레이션 어떻게 실행해?" }, ctx)));
@@ -165,7 +165,7 @@ async function scenarioWorker(factory) {
 
   // pi 슬래시 명령은 관찰하지 않는다
   log.calls.length = 0;
-  await Promise.all(pi.handlers.before_agent_start.map((h) => h({ type: "before_agent_start", prompt: "/myviking status" }, ctx)));
+  await Promise.all(pi.handlers.before_agent_start.map((h) => h({ type: "before_agent_start", prompt: "/scribe status" }, ctx)));
   await Promise.all(pi.handlers.turn_end.map((h) => h({ type: "turn_end", turnIndex: 2, message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "설명" }] }, toolResults: [] }, ctx)));
   check("pi 슬래시 명령은 관찰하지 않는다", !log.calls.some((c) => c.url.includes("/observe")));
 
@@ -189,14 +189,14 @@ async function scenarioWorker(factory) {
   
   log.calls.length = 0;
   await log.command.handler("note 이건 기록할 가치 있음", ctx);
-  check("/myviking note 는 지식을 만들지 않고 관찰에 넣는다",
+  check("/scribe note 는 지식을 만들지 않고 관찰에 넣는다",
     log.calls.some((c) => c.url.includes("/observe") && c.body.items[0].kind === "note"),
     JSON.stringify(log.calls.map((c) => c.url)));
 
   log.calls.length = 0; log.execs.length = 0;
   await log.command.handler("secretary once", ctx);
-  check("/myviking secretary once 는 jv 를 백그라운드 서기로 부른다",
-    log.execs.some((e) => e[0] === "jv" && e[1] === "secretary" && e[2] === "once"), JSON.stringify(log.execs));
+  check("/scribe secretary once 는 scribe 를 백그라운드 서기로 부른다",
+    log.execs.some((e) => e[0] === "scribe" && e[1] === "secretary" && e[2] === "once"), JSON.stringify(log.execs));
 
   // 이번 턴에 건드린 파일·실패한 도구까지 관찰에 들어간다 (재발 실수의 원료)
   log.calls.length = 0;
@@ -223,9 +223,9 @@ async function scenarioSecretary(factory) {
 
   await Promise.all(pi.handlers.session_start.map((h) => h({ type: "session_start", reason: "startup" }, ctx)));
   check("서기 세션: 서기 도구가 등록된다",
-    ["viking_inbox", "viking_file", "viking_ack", "viking_report", "viking_session"].every((t) => log.tools.includes(t)),
+    ["scribe_inbox", "scribe_file", "scribe_ack", "scribe_report", "scribe_session"].every((t) => log.tools.includes(t)),
     log.tools.join(","));
-  check("서기 세션: 워커 도구(note)는 없다", !log.tools.includes("viking_note"));
+  check("서기 세션: 워커 도구(note)는 없다", !log.tools.includes("scribe_note"));
 
   await Promise.all(pi.handlers.before_agent_start.map((h) => h({ type: "before_agent_start", prompt: "관찰함 정리해" }, ctx)));
   await Promise.all(pi.handlers.turn_end.map((h) => h({ type: "turn_end", turnIndex: 1, message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "정리했습니다" }] }, toolResults: [] }, ctx)));
@@ -235,25 +235,25 @@ async function scenarioSecretary(factory) {
 
   // 서기 업무 자체를 실행해 본다 — inbox → file(등재) → report(통보)
   log.calls.length = 0;
-  await pi.toolDefs.viking_inbox.execute("t1", {}, undefined, undefined, ctx);
+  await pi.toolDefs.scribe_inbox.execute("t1", {}, undefined, undefined, ctx);
   const inboxCall = log.calls.find((c) => c.url.includes("/inbox"));
-  check("viking_inbox 는 이 세션 id 로 관찰함을 선점한다",
+  check("scribe_inbox 는 이 세션 id 로 관찰함을 선점한다",
     inboxCall && inboxCall.url.includes("worker=sess-secretary"), inboxCall?.url);
 
-  await pi.toolDefs.viking_file.execute("t2", {
+  await pi.toolDefs.scribe_file.execute("t2", {
     title: "재시도 금지 규칙", content: "승인 실패 응답에서는 재시도하지 않는다",
     category: "pitfalls", occurrences: 3, observation_ids: [11, 12], reason: "3번 반복됨",
   }, undefined, undefined, ctx);
   const fileCall = log.calls.find((c) => c.url.includes("/remember"));
-  check("viking_file 은 source=secretary 로 등재하고 관찰 id 를 함께 보낸다",
+  check("scribe_file 은 source=secretary 로 등재하고 관찰 id 를 함께 보낸다",
     fileCall && fileCall.body.source === "secretary" && fileCall.body.observation_ids.join() === "11,12"
       && fileCall.body.occurrences === 3, JSON.stringify(fileCall?.body));
 
   log.calls.length = 0;
-  await pi.toolDefs.viking_report.execute("t3", { report: "1권 등재", found: 2, skipped_ids: [13], skip_reason: "일회성" },
+  await pi.toolDefs.scribe_report.execute("t3", { report: "1권 등재", found: 2, skipped_ids: [13], skip_reason: "일회성" },
     undefined, undefined, ctx);
   const ackCall = log.calls.find((c) => c.url.includes("/inbox/ack"));
-  check("viking_report 은 보고와 함께 버린 관찰을 통보한다",
+  check("scribe_report 은 보고와 함께 버린 관찰을 통보한다",
     ackCall && ackCall.body.report === "1권 등재" && ackCall.body.results[0].ids.join() === "13"
       && ackCall.body.results[0].action === "skipped", JSON.stringify(ackCall?.body));
 
@@ -268,20 +268,20 @@ async function scenarioUnconnected(factory) {
   const free = mkdtempSafe("mv-free-");
   const ctx = fakeCtx({ cwd: free, sessionId: "sess-free", transcript: "" });
   await Promise.all(pi.handlers.session_start.map((h) => h({ type: "session_start", reason: "startup" }, ctx)));
-  check("연결 안 한 폴더: viking 도구가 아예 등록되지 않는다", log.tools.length === 0, log.tools.join(","));
+  check("연결 안 한 폴더: scribe 도구가 아예 등록되지 않는다", log.tools.length === 0, log.tools.join(","));
   await Promise.all(pi.handlers.turn_end.map((h) => h({ type: "turn_end", turnIndex: 1, message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "답" }] }, toolResults: [] }, ctx)));
   check("연결 안 한 폴더: 서버 호출이 0건", log.calls.length === 0, JSON.stringify(log.calls));
 }
 
 async function main() {
   const src = extensionSource(process.argv[2]);
-  check("pi 확장: 폴더 서기 설정 오버라이드를 읽는다", src.includes(".myviking-secretary.json"), "folder secretary override missing");
+  check("pi 확장: 폴더 서기 설정 오버라이드를 읽는다", src.includes(".scribe-secretary.json"), "folder secretary override missing");
   console.log("── 작업 세션 (worker) ──");
   await scenarioWorker(await loadExtension(src));
-  console.log("── 서기 세션 (MYVIKING_ROLE=secretary) ──");
-  process.env.MYVIKING_ROLE = "secretary";
+  console.log("── 서기 세션 (SCRIBE_ROLE=secretary) ──");
+  process.env.SCRIBE_ROLE = "secretary";
   await scenarioSecretary(await loadExtension(src));
-  delete process.env.MYVIKING_ROLE;
+  delete process.env.SCRIBE_ROLE;
   console.log("── 연결하지 않은 폴더 ──");
   await scenarioUnconnected(await loadExtension(src));
   const failed = results.filter((r) => !r.pass);

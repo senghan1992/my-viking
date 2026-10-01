@@ -9,7 +9,7 @@ from .security import hash_api_key, verify_session
 
 def current_user(request: Request) -> dict | None:
     """쿠키 세션 → 사용자. 없거나 비활성이면 None."""
-    token = request.cookies.get("viking_session")
+    token = request.cookies.get("scribe_session")
     if not token:
         return None
     uid = verify_session(token)
@@ -36,7 +36,7 @@ def admin_required(request: Request):
 
 
 def bearer_auth(authorization: str | None = Header(default=None)) -> dict:
-    """Agent API 용 — Bearer jv_ 키를 프로젝트로 해석."""
+    """Agent API 용 — Bearer sc_ 키를 프로젝트로 해석."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Bearer API 키가 필요합니다.")
     raw = authorization[7:].strip()

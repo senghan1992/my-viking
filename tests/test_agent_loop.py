@@ -107,7 +107,7 @@ def test_brief_reports_secretary_backlog(client, user1):
     brief = c.get(f"/api/v1/projects/{slug}/brief?session_id=s9&agent=pi", headers=h).json()
     assert "서기" in brief["orientation"]
     assert brief["pending_observations"] == 1
-    assert "jv secretary once" in brief["orientation"]
+    assert "scribe secretary once" in brief["orientation"]
 
 
 def test_secretary_run_is_audited(client, user1):
@@ -231,7 +231,7 @@ def test_me_identifies_project_from_key(client, user1):
     raw = create_key(c, slug, "그냥 내 노트북")
     r = c.get("/api/v1/me", headers=auth_h(c, raw))
     assert r.json() == {"project": slug, "project_name": "키로 찾는 프로젝트"}
-    assert c.get("/api/v1/me", headers=auth_h(c, "jv_wrong")).status_code == 401
+    assert c.get("/api/v1/me", headers=auth_h(c, "sc_wrong")).status_code == 401
 
 
 def test_isolation_via_api_key(client, user1, user2):

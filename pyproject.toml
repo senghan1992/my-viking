@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "myviking"
+name = "scribe-kb"
 version = "2.0.0"
-description = "사람별 프로젝트 지식 도서관 — coding agent가 자동으로 채우고 참조하는 knowledge library"
+description = "Scribe — a per-project knowledge library your pi scribe fills and recalls"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -22,10 +22,11 @@ dependencies = [
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [project.scripts]
-jv = "jv.cli:main"
+scribe = "scribe.cli:main"
+jv = "scribe.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["app*", "jv*"]
+include = ["app*", "scribe*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -29,7 +29,7 @@ def test_secretary_page_shows_inbox(client, user1):
     assert "정리 대기 관찰" in page.text
     assert "마이그레이션" in page.text
     assert "alembic: command not found" in page.text
-    assert "jv secretary once" in page.text          # 복사할 실행 명령
+    assert "scribe secretary once" in page.text          # 복사할 실행 명령
     assert "x.jsonl" in page.text                    # 세션 공유: 트랜스크립트 위치
 
 

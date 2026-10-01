@@ -2,8 +2,8 @@
 
 - 비밀번호: PBKDF2-SHA256 (표준 라이브러리만 사용, 취약점 없음)
 - 쿠키 세션: HMAC 서명된 {uid, exp} 토큰 (서버 시크릿으로 서명)
-- API 키:  jv_ + 24자리 랜덤. 인증은 SHA-256 해시로만 판단한다.
-  평문은 서버 시크릿(VIKING_SECRET)으로 봉인(seal)해 따로 보관 — 발급 화면이 아니라
+- API 키:  sc_ + 24자리 랜덤. 인증은 SHA-256 해시로만 판단한다.
+  평문은 서버 시크릿(SCRIBE_SECRET)으로 봉인(seal)해 따로 보관 — 발급 화면이 아니라
   프로젝트 주인만(로그인 세션) 언제든 다시 복사할 수 있다. DB 백업만으로는 평문이 안 나온다.
 """
 from __future__ import annotations
@@ -75,7 +75,7 @@ def verify_session(token: str) -> int | None:
 # ── API 키 (에이전트 Bearer 인증) ───────────────────────── #
 def generate_api_key() -> tuple[str, str]:
     """평문 키와 (hash, prefix) 반환. 평문은 즉시 사용자에게 보여주고 버려야 함."""
-    raw = "jv_" + secrets.token_hex(12)
+    raw = "sc_" + secrets.token_hex(12)
     digest = hashlib.sha256(raw.encode()).hexdigest()
     return raw, digest, raw[:10]
 
@@ -87,7 +87,7 @@ def hash_api_key(raw: str) -> str:
 # ── 키 평문 봉인 (발급 후에도 주인이 다시 복사할 수 있게) ───────── #
 # 표준 라이브러리로 만든 encrypt-then-MAC: HMAC-SHA256 스트림 암호 + 자른 태그.
 # 인증 실패(위조/손상)는 None 을 반환한다. 키 해시는 인증에 쓰고, 이 값은 표시/복사용뿐이다.
-_KEK_LABEL = b"myviking.apikey.v1"
+_KEK_LABEL = b"scribe.apikey.v1"
 _NONCE = 12
 _TAG = 16
 

@@ -222,7 +222,7 @@ def connect_page(request: Request, slug: str, user: dict = Depends(login_require
     base = _base_url(request)
     return request.app.state.templates.TemplateResponse(request, "connect.html", {
         "request": request, "user": user, "project": project, "keys": keys,
-        "active": active, "install_only": "pip install git+https://github.com/senghan1992/my-viking.git",
+        "active": active, "install_only": "pip install git+https://github.com/senghan1992/scribe.git",
         "base": base, "msg": msg, "status_labels": STATUS_LABELS},
     )
 
@@ -290,7 +290,7 @@ def export_md(slug: str, user: dict = Depends(login_required)):
     require_owner(project, user)
     memories = _query_memories(project["id"])
     lines = [
-        f"# {project['name']} — 지식 도서관 (myviking 내보내기)",
+        f"# {project['name']} — 지식 도서관 (scribe 내보내기)",
         f"> 생성 {db.utc(project['created_at'])} · 지식 {len(memories)}권",
         "",
     ]

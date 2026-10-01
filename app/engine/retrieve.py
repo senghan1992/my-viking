@@ -103,7 +103,7 @@ def _pack(mem: dict, max_tier: int) -> dict:
     tier = min(max_tier, 2)
     return {
         "id": mem["id"],
-        "uri": f"viking://{mem['project_id']}/memories/{mem['category']}/{mem['id']}",
+        "uri": f"scribe://{mem['project_id']}/memories/{mem['category']}/{mem['id']}",
         "category": mem["category"],
         "title": mem["title"],
         "status": mem["status"],
