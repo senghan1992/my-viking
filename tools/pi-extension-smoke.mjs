@@ -275,6 +275,7 @@ async function scenarioUnconnected(factory) {
 
 async function main() {
   const src = extensionSource(process.argv[2]);
+  check("pi 확장: 폴더 서기 설정 오버라이드를 읽는다", src.includes(".myviking-secretary.json"), "folder secretary override missing");
   console.log("── 작업 세션 (worker) ──");
   await scenarioWorker(await loadExtension(src));
   console.log("── 서기 세션 (MYVIKING_ROLE=secretary) ──");

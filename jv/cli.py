@@ -952,17 +952,36 @@ function machineEnabled(): boolean {
   } catch { return true; }
 }
 
-function secretarySetting(): { auto: boolean; every: number } {
-  // jv secretary auto on / --every N — 작업 세션이 언제 서기를 스스로 깨울지
+function secretarySetting(cwd: string): { auto: boolean; every: number } {
+  const fallback = (() => {
+    try {
+      const s = JSON.parse(readFileSync(CONFIG_FILE, "utf8"))?.secretary || {};
+      return { auto: s.auto === true, every: Math.max(1, Number(s.every) || 12) };
+    } catch { return { auto: false, every: 12 }; }
+  })();
   try {
-    const s = JSON.parse(readFileSync(CONFIG_FILE, "utf8"))?.secretary || {};
-    return { auto: s.auto === true, every: Math.max(1, Number(s.every) || 12) };
-  } catch { return { auto: false, every: 12 }; }
+    let dir = resolve(cwd || process.cwd());
+    for (let i = 0; i < 12; i++) {
+      const f = join(dir, ".myviking-secretary.json");
+      if (existsSync(f)) {
+        const j = JSON.parse(readFileSync(f, "utf8"));
+        if (j && (typeof j.auto !== "undefined" || typeof j.every !== "undefined"))
+          return { auto: typeof j.auto === "undefined" ? fallback.auto : !!j.auto,
+                   every: Math.max(1, Number(j.every) || fallback.every) };
+        return fallback;
+      }
+      if (existsSync(join(dir, ".git"))) return fallback;
+      const parent = resolve(dir, "..");
+      if (parent === dir) return fallback;
+      dir = parent;
+    }
+  } catch { /* fall through */ }
+  return fallback;
 }
 
 interface Conn { id: string; name: string; url: string; key: string; project: string }
 interface Active { name: string; url: string; key: string; project: string }
-interface AnyCtx { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string } }
+interface AnyCtx { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string }; cwd?: string }
 
 const SECRETARY = (process.env.MYVIKING_ROLE || "").toLowerCase() === "secretary";
 
@@ -1096,7 +1115,7 @@ async function observe(c: Active, pi: ExtensionAPI, ctx: AnyCtx, items: any[]): 
       toldByThread.add(sid);
       if (ctx.hasUI) ctx.ui.notify(`myviking 서기: 같은 요청이 ${r.repeat_hits}번 있었습니다 — 이번 관찰에 기록했습니다`, "info");
     }
-    const s = secretarySetting();
+    const s = secretarySetting(ctx.cwd || process.cwd());
     if (s.auto && r && r.pending >= s.every) {
       // 서기를 스스로 깨운다 — 백그라운드 pi 세션 (jv secretary auto on)
       toldByThread.add(sid);
@@ -1683,7 +1702,7 @@ export default function (pi: ExtensionAPI) {
       else if (lc) lines.push(`이 프로젝트 설정: '${lc.name}' — 이 세션은 연결 없음 → /myviking use`);
       else if (info) lines.push(`이 프로젝트 설정 '${info.id}': 저장된 키가 없음 → /myviking connect`);
       else lines.push(`이 프로젝트는 연결 설정 없음 (자유 사용) — /myviking connect 로 이 폴더만 연결`);
-      const s = secretarySetting();
+      const s = secretarySetting(ctx.cwd || process.cwd());
       lines.push(`서기: 자동 ${s.auto ? `ON (관찰 ${s.every}건마다)` : "OFF"} — 켜기: /myviking secretary auto on`);
       if (conns.length) {
         lines.push("");
@@ -1756,6 +1775,7 @@ def _link_folder(conn_id: str, cwd: Path, url: str, key: str, project: str,
         print(f"⚠ 폴더 연결 파일을 쓸 수 없습니다: {e}", file=sys.stderr)
         raise SystemExit(1)
     _git_exclude_add(cwd)
+    _git_exclude_add(cwd, _SECRETARY_FOLDER_FILE)
     return conn
 
 
@@ -2681,6 +2701,41 @@ def _secretary_home() -> Path:
     return Path(home) / ".myviking" / _SECRETARY_DIRNAME
 
 
+_SECRETARY_FOLDER_FILE = ".myviking-secretary.json"
+
+
+def _secretary_folder_file(cwd: Path) -> Path:
+    return _project_link(cwd).parent / _SECRETARY_FOLDER_FILE
+
+
+def _secretary_effective(cwd: Path | None = None) -> dict:
+    default = {"auto": False, "every": 12, "source": "default"}
+    glob = (_load_config().get("secretary") or {})
+    try:
+        every_g = max(1, int(glob.get("every", 12) or 12))
+    except (TypeError, ValueError):
+        every_g = 12
+    eff = {"auto": bool(glob.get("auto", False)),
+           "every": every_g,
+           "source": "global" if glob else "default"}
+    if cwd is None:
+        try:
+            cwd = Path(os.getcwd())
+        except OSError:
+            return eff
+    try:
+        p = _secretary_folder_file(Path(cwd))
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and ("auto" in data or "every" in data):
+                return {"auto": bool(data.get("auto", eff["auto"])),
+                        "every": max(1, int(data.get("every", eff["every"]) or eff["every"])),
+                        "source": "folder"}
+    except (OSError, ValueError):
+        pass
+    return eff if glob else default
+
+
 def _secretary_charter() -> Path:
     return _secretary_home() / "secretary.md"
 
@@ -2917,6 +2972,27 @@ def secretary_install(args: argparse.Namespace) -> None:
 def secretary_auto(args: argparse.Namespace) -> None:
     flag = (getattr(args, "flag", "") or "on").lower()
     every = getattr(args, "every", None)
+    auto = flag != "off"
+    if getattr(args, "folder", False):
+        cwd = Path(getattr(args, "cwd", "") or os.getcwd())
+        target = _secretary_folder_file(cwd)
+        try:
+            cur = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cur = {}
+        if not isinstance(cur, dict):
+            cur = {}
+        cur["auto"] = auto
+        if every:
+            cur["every"] = max(1, int(every))
+        cur.setdefault("every", 12)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(cur, ensure_ascii=False, indent=2))
+        _git_exclude_add(cwd, _SECRETARY_FOLDER_FILE)
+        state = "켜졌습니다" if auto else "꺼졌습니다"
+        print(f"✓ 이 폴더 서기 자동 실행 {state} — 관찰 {cur['every']}건이 쌓이면 작업 세션이 스스로 서기를 깨웁니다. ({target.parent})")
+        print("  (끄기/켜기: jv secretary auto off|on --folder · 지금 정리: jv secretary once)")
+        return
     p = _config_path()
     data = _load_config()
     sec = data.get("secretary") or {}
@@ -3034,6 +3110,11 @@ def status(args: argparse.Namespace) -> None:
     else:
         why = "꺼져 있어서" if not _is_enabled() else "연결이 없어서"
         print(f"연결: 없음 ({why} 이 폴더에서는 도서관 없이 자유 사용)")
+
+    eff = _secretary_effective(cwd)
+    src = {"folder": "이 폴더 설정", "global": "전역 설정", "default": "기본값"}[eff["source"]]
+    auto_txt = f"자동 ON (관찰 {eff['every']}건마다)" if eff["auto"] else "수동"
+    print(f"이 폴더 서기: {auto_txt} · {src}")
 
     print("에이전트 연동:")
     for name, state, hint in _agent_states():
@@ -3290,6 +3371,7 @@ def main(argv: list[str] | None = None) -> None:
     sps = secrem.add_parser("auto", help="관찰이 N건 쌓이면 서기를 스스로 깨운다")
     sps.add_argument("flag", nargs="?", default="on", choices=["on", "off"])
     sps.add_argument("--every", default="", help="몇 건마다 깨울지")
+    sps.add_argument("--folder", action="store_true", help="이 폴더 설정(.myviking-secretary.json)에 저장")
     sps.set_defaults(func=secretary_auto)
     sps = secrem.add_parser("stop", help="백그라운드 서기 중지")
     sps.set_defaults(func=secretary_stop)

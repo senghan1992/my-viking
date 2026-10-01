@@ -210,3 +210,69 @@ def test_note_and_inbox_remote_commands(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "claim=false" in calls[-1][1]
     assert "×2" in out and "재시도?" in out and "/x.jsonl" in out
+
+
+def test_secretary_effective_folder_overrides_global(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".myviking").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    work = tmp_path / "proj"
+    work.mkdir()
+    (home / ".myviking" / "config.json").write_text('{"secretary": {"auto": false, "every": 12}}')
+    (work / ".myviking-secretary.json").write_text('{"auto": true, "every": 5}')
+    eff = cli._secretary_effective(work)
+    assert eff == {"auto": True, "every": 5, "source": "folder"}
+
+
+def test_secretary_effective_broken_folder_falls_back(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    (home / ".myviking").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    work = tmp_path / "proj"
+    work.mkdir()
+    (home / ".myviking" / "config.json").write_text('{"secretary": {"auto": true, "every": 8}}')
+    (work / ".myviking-secretary.json").write_text('{broken')
+    eff = cli._secretary_effective(work)
+    assert eff["auto"] is True and eff["source"] == "global"
+
+
+def test_status_shows_folder_secretary(tmp_path, monkeypatch, capsys):
+    home = _home(tmp_path, monkeypatch)
+    work = tmp_path / "proj"
+    work.mkdir()
+    (work / ".myviking-secretary.json").write_text('{"auto": true, "every": 5}')
+    args = _Args()
+    args.cwd = str(work)
+    cli.status(args)
+    out = capsys.readouterr().out
+    assert "이 폴더 서기" in out and "5" in out
+
+
+def test_secretary_auto_folder_writes_folder_file(tmp_path, monkeypatch):
+    home = _home(tmp_path, monkeypatch)
+    work = tmp_path / "proj"
+    work.mkdir()
+    cli.secretary_auto(argparse.Namespace(flag="on", every="5", folder=True, cwd=str(work)))
+    data = json.loads((work / ".myviking-secretary.json").read_text())
+    assert data == {"auto": True, "every": 5}
+    assert not (home / ".myviking" / "config.json").exists()
+
+
+def test_secretary_effective_broken_global_every_falls_back(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".myviking").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    work = tmp_path / "proj"
+    work.mkdir()
+    (home / ".myviking" / "config.json").write_text('{"secretary": {"auto": true, "every": "abc"}}')
+    assert cli._secretary_effective(work) == {"auto": True, "every": 12, "source": "global"}
+
+
+def test_secretary_auto_folder_git_excludes_folder_file(tmp_path, monkeypatch):
+    _home(tmp_path, monkeypatch)
+    work = tmp_path / "proj"
+    work.mkdir()
+    (work / ".git").mkdir()
+    cli.secretary_auto(argparse.Namespace(flag="on", every="5", folder=True, cwd=str(work)))
+    assert (work / ".myviking-secretary.json").exists()
+    assert ".myviking-secretary.json" in (work / ".git" / "info" / "exclude").read_text()
