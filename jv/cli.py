@@ -736,8 +736,10 @@ def mcp(args: argparse.Namespace) -> None:
                              json={"kind": "note", "text": mask(str(inp.get("text", ""))), "agent": _agent_name()})
                     text = f"서기에게 전달했습니다 (정리 대기 {r.get('pending', 0)}건)"
                 elif name == "viking_inbox":
+                    # 읽기 전용 — 선점하지 않는다 (서기의 일감을 가로채면 안 되므로 claim=false).
+                    # jv inbox CLI 와 같은 규칙: --claim 을 명시할 때만 잡는다.
                     r = _api(url, key, "GET",
-                             f"/projects/{project}/inbox?limit={int(inp.get('limit') or 60)}&worker=mcp")
+                             f"/projects/{project}/inbox?limit={int(inp.get('limit') or 60)}&claim=false&worker=mcp")
                     lines = [f"정리 대기 {r.get('pending', 0)}건"]
                     for s in r.get("sessions", []):
                         lines.append(f"── 세션 {s['session_id']} ({s['agent']}) {s.get('transcript') or ''}")
