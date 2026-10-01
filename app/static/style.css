@@ -479,6 +479,98 @@ label input, label textarea, label select { margin-top: 6px; font-weight: 400; }
   border-radius: 9px; font-size: 12.5px; box-shadow: var(--shadow-sm);
 }
 .cmd-code:hover { background: #33301f; }
+/* ── 연결 탭 — 한 판에서 끝내는 연결 (명령판 · 키 보관함 · 접힌 고급) ── */
+.cmd-card { border-top: 2px solid var(--brass); }
+.cmd-plate {
+  position: relative; cursor: pointer; margin-top: 12px; padding: 17px 18px;
+  user-select: all; -webkit-user-select: all; font-size: 13px; line-height: 1.75;
+  word-break: normal; overflow-wrap: anywhere;   /* 값이 길 때만 끊는다 — 단어 한복판은 아니다 */
+}
+.cmd-plate .k {                                   /* 명령 속의 키 — 붙여 넣기의 심장 */
+  background: rgba(214, 178, 102, .18); color: #f2dcae; border-radius: 4px; padding: 1px 4px;
+  box-shadow: inset 0 -1.5px 0 var(--brass);
+}
+.cmd-plate::after {                               /* 지도 판의 여백 각서: 클릭 하나로 복사 */
+  content: "클릭하면 복사"; position: absolute; right: 11px; top: 11px;
+  font: 600 10px/1 var(--font-ui); letter-spacing: .04em; color: #b9ae8f;
+  border: 1px solid #46402f; border-radius: 999px; padding: 4px 8px; background: #201d14;
+  opacity: 0; transition: opacity .15s;
+}
+.cmd-plate:hover::after, .cmd-plate:focus-visible::after { opacity: 1; }
+.cmd-plate.is-copied { border-top-color: var(--green); }
+.cmd-plate.is-copied::after { content: "복사됨 ✓"; opacity: 1; color: #f2dcae; border-color: var(--brass); }
+.copy-row { margin-top: 14px; align-items: center; }
+.copy-row .where { margin-left: auto; }
+.copy-row .where code { font-size: 11.5px; }
+
+.btn.is-copied { background: var(--green-bg); border-color: #c9d6c8; color: var(--green); box-shadow: none; }
+.btn.primary.is-copied { background: var(--green); border-color: var(--green); color: #f3f6ef; }
+.cmd-code.is-copied { box-shadow: inset 0 0 0 1px var(--brass); }
+.cmd-code.is-copied::after { content: " ✓"; color: #dfc99a; }
+
+/* 순서가 정보인 세 줄 — 서기까지 가는 길 */
+.flow { list-style: none; margin: 22px 0 0; padding: 0; counter-reset: fstep; }
+.flow li {
+  counter-increment: fstep; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+  padding: 11px 0 10px; border-top: 1px dashed var(--line); font-size: 13.5px;
+}
+.flow li:last-child { padding-bottom: 2px; }
+.flow li::before {
+  content: counter(fstep); font-family: var(--font-display); font-size: 11.5px; color: var(--brass-ink);
+  width: 21px; height: 21px; flex: none; border: 1px solid var(--brass); border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center; transform: translateY(3px);
+}
+.flow b { font-weight: 650; }
+.flow .muted { flex: 1 1 150px; }
+
+/* 키 보관함 — 발급 후에도 여기 있다 */
+.keyring { list-style: none; margin: 0 0 18px; padding: 0; }
+.keyring li {
+  display: flex; gap: 9px; align-items: center; flex-wrap: wrap;
+  padding: 11px 0; border-top: 1px solid var(--line);
+}
+.keyring li:first-child { border-top: none; }
+.keyring li.revoked { opacity: .5; }
+.keyring li.is-active { box-shadow: inset 2px 0 0 var(--brass); padding-left: 11px; background: linear-gradient(90deg, var(--brass-bg), rgba(251, 248, 240, 0) 58%); }
+.keyring .kname { font-weight: 650; }
+.keyring .krow-act { margin-left: auto; display: flex; gap: 13px; align-items: center; }
+.pill-on { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; font-weight: 650; color: var(--green); }
+.note { margin-top: 12px; }
+
+/* 접어 둔 나머지 방법 */
+.more {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm); margin-bottom: 20px;
+}
+.more > summary {
+  cursor: pointer; list-style: none; display: flex; gap: 9px; align-items: center;
+  padding: 15px 22px; font-size: 14px; font-weight: 650; color: var(--ink-2);
+}
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary .ic { color: var(--brass); }
+.more > summary:hover { color: var(--ink); }
+.more > summary::after {
+  content: ""; width: 8px; height: 8px; margin-left: auto; flex: none;
+  border-right: 1.5px solid var(--brass); border-bottom: 1.5px solid var(--brass);
+  transform: rotate(45deg); transition: transform .18s;
+}
+.more[open] > summary::after { transform: rotate(-135deg); }
+.more-body { padding: 4px 22px 22px; border-top: 1px solid var(--line); }
+.more-body .tabs { margin-top: 16px; }
+
+/* 복사 기관(器官) — 스크린리더·폴백·직접복사 판 */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.copy-well {
+  position: fixed; top: 1px; left: 1px; width: 1px; height: 1px; padding: 0; border: 0;
+  outline: 0; background: transparent; color: transparent; box-shadow: none; z-index: -1;
+}
+.copy-modal textarea {
+  min-height: 108px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
+}
+
 /* ── 반응형 ── */
 @media (max-width: 700px) {
   body { font-size: 14.5px; }
@@ -493,4 +585,10 @@ label input, label textarea, label select { margin-top: 6px; font-weight: 400; }
   .auth-card { margin: 26px auto; padding: 30px 24px 28px; }
   main.wrap { padding-top: 22px; }
   .card { padding: 18px; }
+  .cmd-plate { padding: 15px 14px; font-size: 12px; }
+  .cmd-plate::after { display: none; }
+  .copy-row .where { margin-left: 0; flex: 1 1 100%; }
+  .keyring .krow-act { margin-left: 0; flex: 1 1 100%; }
+  .more > summary { padding: 13px 16px; }
+  .more-body { padding: 4px 16px 18px; }
 }

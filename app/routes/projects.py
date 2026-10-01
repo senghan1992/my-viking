@@ -13,7 +13,7 @@ from ..engine import observe as observe_engine
 from ..engine import redact as redact_engine
 from ..engine import tiers, trust as trust_engine
 from ..engine import llm
-from ..security import generate_api_key
+from ..security import generate_api_key, seal_api_key, unseal_api_key
 
 router = APIRouter(tags=["projects"])
 
@@ -48,6 +48,18 @@ def _unique_slug(base: str) -> str:
 
 
 # ── 프로젝트 생성 ─────────────────────────────────────── #
+def _issue_key(project: dict, user: dict, name: str) -> int:
+    """키 발급 — 해시(인증) + 봉인 평문(재복사용). 키 id 를 반환."""
+    raw, digest, prefix = generate_api_key()
+    kid = db.execute(
+        "INSERT INTO api_keys(project_id, user_id, name, key_hash, key_prefix, key_secret, created_at)"
+        " VALUES(?,?,?,?,?,?,?)",
+        (project["id"], user["id"], name.strip()[:40], digest, prefix, seal_api_key(raw), db.now()),
+    )
+    db.log_event(project["id"], "key", f"키 발급: {name or user['name']}")
+    return kid
+
+
 @router.post("/projects")
 def create_project(request: Request, user: dict = Depends(login_required),
                    name: str = Form(""), description: str = Form("")):
@@ -61,7 +73,13 @@ def create_project(request: Request, user: dict = Depends(login_required),
         (user["id"], slug, name, description.strip()[:500], now, now),
     )
     db.log_event(pid, "project", "프로젝트 생성")
-    return RedirectResponse(f"/projects/{slug}?msg=프로젝트 도서관이 생겼습니다. 이제 연결 탭에서 에이전트를 붙이세요.", status_code=303)
+    # 서가를 만들면 첫 연결 키까지 함께 준비된다 — 가입→명령 복사까지 단계 두 개로 줄이기 위해
+    project = db.one("SELECT * FROM projects WHERE id=?", (pid,))
+    kid = _issue_key(project, user, "기본 연결")
+    return RedirectResponse(
+        f"/projects/{slug}/connect?key={kid}&msg=연결 명령이 준비됐습니다 — 복사해 터미널에 붙여 넣으면 끝입니다.",
+        status_code=303,
+    )
 
 
 # ── 도서관 본체 ───────────────────────────────────────── #
@@ -189,17 +207,35 @@ def search_json(slug: str, q: str = "", user: dict = Depends(login_required)):
 
 # ── 연결 탭 ───────────────────────────────────────────── #
 @router.get("/projects/{slug}/connect")
-def connect_page(request: Request, slug: str, user: dict = Depends(login_required), msg: str = ""):
+def connect_page(request: Request, slug: str, user: dict = Depends(login_required),
+                 key: int = 0, msg: str = ""):
     project = get_project_or_404(slug)
     require_owner(project, user)
-    keys = db.rows(
-        "SELECT * FROM api_keys WHERE project_id=? ORDER BY revoked_at IS NULL DESC, id",
+    keys = [_key_view(k) for k in db.rows(
+        "SELECT * FROM api_keys WHERE project_id=? ORDER BY revoked_at IS NULL DESC, id DESC",
         (project["id"],),
-    )
+    )]
+    # 명령판에 쓸 키: 명시로 고른 것 → 가장 최근 유효 키 순
+    active = next((k for k in keys if k["id"] == key and not k["revoked"]), None)
+    if active is None:
+        active = next((k for k in keys if k["usable"]), None)
     base = _base_url(request)
-    return request.app.state.templates.TemplateResponse(request, "connect.html", {"request": request, "user": user, "project": project, "keys": keys,
-         "base": base, "msg": msg, "status_labels": STATUS_LABELS},
+    return request.app.state.templates.TemplateResponse(request, "connect.html", {
+        "request": request, "user": user, "project": project, "keys": keys,
+        "active": active, "install_only": "pip install git+https://github.com/senghan1992/my-viking.git",
+        "base": base, "msg": msg, "status_labels": STATUS_LABELS},
     )
+
+
+def _key_view(k: dict) -> dict:
+    """키 행(行) — 봉인된 평문을 주인에게만 풀어 명령판에 심는다."""
+    k = dict(k)
+    k["revoked"] = bool(k.get("revoked_at"))
+    k["secret"] = None if k["revoked"] else unseal_api_key(k.get("key_secret"))
+    k["usable"] = bool(k["secret"])
+    k["created"] = db.utc(k.get("created_at"))
+    k["revoked_disp"] = db.utc(k.get("revoked_at"))
+    return k
 
 
 def _base_url(request: Request) -> str:
@@ -214,14 +250,12 @@ def create_key(request: Request, slug: str, user: dict = Depends(login_required)
                name: str = Form("")):
     project = get_project_or_404(slug)
     require_owner(project, user)
-    raw, digest, prefix = generate_api_key()
-    kid = db.execute(
-        "INSERT INTO api_keys(project_id, user_id, name, key_hash, key_prefix, created_at) VALUES(?,?,?,?,?,?)",
-        (project["id"], user["id"], (name or user["name"]).strip()[:40], digest, prefix, db.now()),
-    )
-    db.log_event(project["id"], "key", f"키 발급: {name or user['name']}")
-    return request.app.state.templates.TemplateResponse(request, "key_reveal.html",
-        {"request": request, "user": user, "project": project, "key": raw, "key_id": kid, "base": _base_url(request)},
+    kid = _issue_key(project, user, (name or user["name"]).strip()[:40])
+    # 발급 화면을 따로 두지 않는다 — 연결 탭이 곧 키 보관함이라 언제든 다시 복사할 수 있다.
+    return RedirectResponse(
+        f"/projects/{slug}/connect?key={kid}&msg="
+        "새 키가 발급됐습니다. 이 화면에서 언제든 다시 복사할 수 있어요.",
+        status_code=303,
     )
 
 
@@ -232,6 +266,21 @@ def revoke_key(slug: str, kid: int, user: dict = Depends(login_required)):
     db.execute("UPDATE api_keys SET revoked_at=? WHERE id=? AND project_id=?",
                (db.now(), kid, project["id"]))
     return RedirectResponse(f"/projects/{slug}/connect?msg=키를 폐기했습니다.", status_code=303)
+
+
+@router.post("/projects/{slug}/keys/{kid}/rotate")
+def rotate_key(slug: str, kid: int, user: dict = Depends(login_required)):
+    """재발급 — 기존 키는 폐기하고 같은 이름으로 새 키를 발급한다 (평문이 없는 구버전 키의 회복로)."""
+    project = get_project_or_404(slug)
+    require_owner(project, user)
+    old = db.one("SELECT * FROM api_keys WHERE id=? AND project_id=?", (kid, project["id"]))
+    if not old:
+        raise HTTPException(404, "키를 찾을 수 없습니다.")
+    if not old["revoked_at"]:
+        db.execute("UPDATE api_keys SET revoked_at=? WHERE id=?", (db.now(), kid))
+    new_id = _issue_key(project, user, old["name"] or user["name"])
+    note = "재발급했습니다 — 이전 키는 폐기됐습니다." if not old["revoked_at"] else "새 키가 발급됐습니다."
+    return RedirectResponse(f"/projects/{slug}/connect?key={new_id}&msg={note}", status_code=303)
 
 
 # ── 내보내기 / 설정 / 삭제 ─────────────────────────────── #

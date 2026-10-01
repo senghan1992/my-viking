@@ -49,7 +49,9 @@ users(id, email, pw_hash, role[admin|user], disabled)
      └─ events(id, project_id, kind[session|memory|key|project|secretary|trace], detail)
 ```
 
-- 키는 평문을 저장하지 않습니다(SHA-256, 발급 화면에서 한 번만).
+- 키 인증은 SHA-256 해시로만 판단합니다. 평문은 `VIKING_SECRET` 으로 봉인(seal_api_key, HMAC-CTR +
+  encrypt-then-MAC)해 `api_keys.key_secret` 에 두며, 프로젝트 주인의 로그인된 연결 탭에서만
+  풀립니다(폐기된 키는 풀지 않음). DB 백업 단독으로는 평문이 나오지 않습니다.
 - 지식 URI: `viking://{project_id}/memories/{category}/{id}`
 - 관찰은 원문을 `MAX_TEXT(3000)` 로 잘라 보관합니다. 전체 트랜스크립트는 에이전트 머신의
   `~/.pi/agent/sessions/**.jsonl` 에 있고, 서기가 같은 머신에서 직접 `read` 합니다.

@@ -24,9 +24,9 @@
 <div class="banner">
   <div class="banner-text">
     <b>아직 에이전트가 연결되지 않았습니다</b>
-    <span class="muted small">키 발급 → 명령 복사 → 프로젝트 폴더 터미널에 붙여 넣으면 끝입니다. 이후 작업은 '관찰'로 쌓이고 서기 agent 가 정리합니다.</span>
+    <span class="muted small">연결 명령을 복사해 프로젝트 폴더 터미널에 붙여 넣으면 끝입니다. 키는 그 화면에 계속 있습니다.</span>
   </div>
-  <a class="btn primary" href="/projects/{{ project.slug }}/connect">{{ icons.icon('link') }} 1분 연결</a>
+  <a class="btn primary" href="/projects/{{ project.slug }}/connect">{{ icons.icon('command') }} 연결 명령 복사</a>
 </div>
 {% else %}
 <div class="banner{{ ' banner-ok' if not secretary.pending else '' }}">

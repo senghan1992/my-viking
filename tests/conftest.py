@@ -67,13 +67,11 @@ def create_project(c, name: str, description: str = "") -> str:
 
 
 def create_key(c, slug: str, name: str = "tester") -> str:
-    """키를 발급하고 평문을 응답 HTML에서 꺼내 반환 (서버는 해시만 저장)."""
+    """키를 발급하고 연결 탭에서 평문을 집어 온다 (발급 후에도 다시 복사 가능한지가 제품의 핵심)."""
     import re
 
     r = c.post(f"/projects/{slug}/keys", data={"name": name})
-    assert r.status_code == 200
-    m = re.search(r'class="key-box"[^>]*>([^<]+)', r.text)
-    assert m, "키 평문이 화면에 보여야 합니다"
-    raw = m.group(1).strip()
-    assert raw.startswith("jv_")
-    return raw
+    assert r.status_code == 200  # 발급 화면이 아니라 연결 탭로 돌아온다
+    m = re.search(r'id="connect-key">(jv_[0-9a-f]{20,})</span>', r.text)
+    assert m, "연결 명령에 발급된 키가 박혀 있어야 합니다"
+    return m.group(1)

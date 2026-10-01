@@ -56,8 +56,9 @@ SCHEMA = [
         project_id INTEGER NOT NULL REFERENCES projects(id),
         user_id INTEGER NOT NULL REFERENCES users(id),
         name TEXT NOT NULL DEFAULT '',
-        key_hash TEXT UNIQUE NOT NULL,          -- SHA-256, 평문은 저장하지 않음
+        key_hash TEXT UNIQUE NOT NULL,          -- SHA-256, 인증은 해시로만
         key_prefix TEXT NOT NULL,               -- 표시용 앞 8자 (jv_4f2a…)
+        key_secret TEXT,                        -- 봉인된 평문(seal_api_key) — 주인이 다시 복사할 수 있게
         created_at TEXT NOT NULL,
         revoked_at TEXT
     )""",
@@ -167,6 +168,10 @@ class DB:
             scols = {r[1] for r in con.execute("PRAGMA table_info(sessions)")}
             if "transcript" not in scols:
                 con.execute("ALTER TABLE sessions ADD COLUMN transcript TEXT NOT NULL DEFAULT ''")
+            # api_keys: 발급 후에도 복사할 수 있게 봉인된 평문 컬럼 추가
+            kcols = {r[1] for r in con.execute("PRAGMA table_info(api_keys)")}
+            if "key_secret" not in kcols:
+                con.execute("ALTER TABLE api_keys ADD COLUMN key_secret TEXT")
 
     @contextmanager
     def conn(self):

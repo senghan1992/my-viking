@@ -154,51 +154,159 @@
     });
   });
 
-  // ── 클립보드 ──
-  // navigator.clipboard 는 HTTPS 또는 localhost (보안 컨텍스트) 에서만 존재한다.
-  // 이 서버는 http:// 로 열리므로 폴백(execCommand) 없이는 어떤 복사 버튼도 죽는다.
-  async function copyText(text) {
-    if (navigator.clipboard && window.isSecureContext) {
-      try { await navigator.clipboard.writeText(text); return true; } catch { /* 폴백 */ }
+  // ── 복사 엔진 — 모든 복사 버튼이 지나는 단 하나의 경로 ──────────────────
+  // data-copy="직접 값", data-copy-src="CSS 선택자" — 화면의 텍스트를 근원으로 삼는다.
+  //   명령을 버튼 속성에 중복 저장하지 않으므로, 복사 결과와 화면이 항상 같은 문자열이다.
+  const sr = (() => {
+    let el = document.getElementById("copy-status");
+    if (!el) {
+      el = document.createElement("span");
+      el.id = "copy-status";
+      el.className = "sr-only";
+      el.setAttribute("role", "status");
+      el.setAttribute("aria-live", "polite");
+      document.body.appendChild(el);
     }
+    return el;
+  })();
+  const say = (t) => { sr.textContent = t; };
+
+  const copyValue = (btn) => {
+    const src = btn.dataset.copySrc;
+    if (!src) return btn.dataset.copy || "";
+    const el = src === "self" ? btn : document.querySelector(src);
+    if (!el) return "";
+    const raw = el.tagName === "TEXTAREA" || el.tagName === "INPUT" ? el.value : el.textContent;
+    return raw.replace(/\s+$/, "").replace(/^\s+/, "");
+  };
+
+  // 화면 안(뷰포트 안)에 숨긴 textarea — 일부 브라우저는 화면 밖 요소 복사를 막는다
+  const hiddenWell = (text) => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.className = "copy-well";
+    document.body.appendChild(ta);
+    return ta;
+  };
+
+  function legacyCopy(text) {
+    const ta = hiddenWell(text);
     try {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.top = "-1000px";
-      ta.style.left = "-1000px";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
+      ta.focus({ preventScroll: true });
       ta.setSelectionRange(0, ta.value.length);
-      const ok = document.execCommand("copy");
-      document.body.removeChild(ta);
-      return ok;
-    } catch { return false; }
+      return document.execCommand("copy");
+    } catch {
+      return false;
+    } finally {
+      ta.remove();
+    }
   }
 
-  const flash = (b, t) => { const old = b.innerHTML; b.innerHTML = t; setTimeout(() => (b.innerHTML = old), 1600); };
-
-  document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
-    const text = b.dataset.copy;
-    if (await copyText(text)) {
-      flash(b, "복사됨 ✓");
-    } else {
-      // 브라우저가 복사를 완전히 막은 환경 — 값을 보여주고 직접 복사하도록 안내
-      const v = window.prompt("브라우저가 복사를 허용하지 않습니다. 아래 값을 Ctrl+C 로 복사한 뒤 확인을 누르세요.", text);
-      if (v !== null) flash(b, "복사됨 ✓");
-    }
-  }));
-
-  // 키 상자 클릭 → 전체 선택 (복사 버튼이 막힌 환경의 수동 대안)
-  const keyBox = document.getElementById("new-key");
-  if (keyBox) keyBox.addEventListener("click", () => {
+  function selectSource(btn) {
+    const src = btn.dataset.copySrc;
+    const el = src && src !== "self" ? document.querySelector(src) : null;
+    if (!el) return false;
     const sel = window.getSelection();
     const range = document.createRange();
-    range.selectNodeContents(keyBox);
+    range.selectNodeContents(el);
     sel.removeAllRanges();
     sel.addRange(range);
+    return true;
+  }
+
+  // 최후의 창: 브라우저가 복사를 완전히 막은 환경 — 전부 선택된 상태로 열어 사람이 Ctrl+C
+  function manualSheet(text) {
+    let back = document.getElementById("copy-sheet");
+    if (!back) {
+      back = document.createElement("div");
+      back.id = "copy-sheet";
+      back.className = "modal-back";
+      back.innerHTML = `
+        <div class="modal copy-modal">
+          <div class="modal-head"><h2>직접 복사</h2>
+            <button class="link-btn" type="button" data-close>닫기</button></div>
+          <div class="modal-body">
+            <p class="muted small">브라우저가 자동 복사를 막았습니다. 아래는 이미 전체 선택되어 있으니
+              <b>Ctrl+C</b>(macOS는 ⌘C) 만 누르면 됩니다.</p>
+            <textarea id="copy-manual" readonly spellcheck="false"></textarea>
+          </div>
+        </div>`;
+      document.body.appendChild(back);
+      back.addEventListener("click", (e) => {
+        if (e.target === back || e.target.closest("[data-close]")) back.hidden = true;
+      });
+    }
+    const ta = back.querySelector("#copy-manual");
+    ta.value = text;
+    back.hidden = false;
+    ta.focus();
+    ta.setSelectionRange(0, ta.value.length);
+    return true;
+  }
+
+  async function toClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return "copied";
+      } catch { /* http 로 연 서버 여기로 온다 — 아래 폴백 */ }
+    }
+    if (legacyCopy(text)) return "copied";
+    return "manual";
+  }
+
+  const DONE = "복사됨 ✓";
+  const PICK = "선택됨 · Ctrl+C";
+  // 자기 자기가 복사 근원인 판(pre/code) 은 라벨을 바꾸면 내용이 사라진다 → 배지로 알린다
+  const isOwnSource = (btn) => {
+    const src = btn.dataset.copySrc;
+    if (!src || src === "self") return !!src;
+    const el = document.querySelector(src);
+    return el === btn || (el && el.contains(btn));
+  };
+
+  function mark(btn, how) {
+    const own = isOwnSource(btn);
+    btn.classList.add("is-copied");
+    if (!own) {
+      if (!btn.dataset.label) btn.dataset.label = btn.innerHTML;
+      btn.innerHTML = how === "copied" ? DONE : PICK;
+    }
+    clearTimeout(btn._doneT);
+    btn._doneT = setTimeout(() => {
+      if (!own && btn.dataset.label) btn.innerHTML = btn.dataset.label;
+      btn.classList.remove("is-copied");
+    }, 1700);
+    say(how === "copied" ? "클립보드에 복사했습니다." : "복사할 값이 선택되었습니다. Ctrl+C 로 복사하세요.");
+  }
+
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-copy], [data-copy-src]");
+    if (!btn) return;
+    e.preventDefault();
+    const text = copyValue(btn);
+    if (!text) { say("복사할 내용이 비어 있습니다."); return; }
+    let how = await toClipboard(text);
+    if (how === "manual" && selectSource(btn)) how = "selected";
+    if (how === "manual") { manualSheet(text); how = "selected"; }
+    mark(btn, how === "copied" ? "copied" : "selected");
+  });
+
+  // 직접 복사 판은 Esc 로 닫는다
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const sheet = document.getElementById("copy-sheet");
+    if (sheet && !sheet.hidden) sheet.hidden = true;
+  });
+
+  // 코드 칩·판 등 버튼이 아닌 복사 대상도 키보드로 열 수 있게
+  document.querySelectorAll("[data-copy], [data-copy-src]").forEach((el) => {
+    if (el.tagName === "BUTTON" || el.tagName === "A") return;
+    el.setAttribute("role", "button");
+    el.setAttribute("tabindex", "0");
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); el.click(); }
+    });
   });
 })();
