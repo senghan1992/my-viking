@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-label="Scribe banner">
+  <rect x="0" y="0" width="1200" height="400" fill="#f1ede2"/>
+  <g stroke="#8a6b2f" opacity="0.18">
+    <line x1="0" y1="100" x2="1200" y2="100"/>
+    <line x1="0" y1="200" x2="1200" y2="200"/>
+    <line x1="0" y1="300" x2="1200" y2="300"/>
+    <line x1="300" y1="0" x2="300" y2="400"/>
+    <line x1="600" y1="0" x2="600" y2="400"/>
+    <line x1="900" y1="0" x2="900" y2="400"/>
+  </g>
+  <rect x="14" y="14" width="1172" height="372" fill="none" stroke="#8a6b2f" stroke-width="2"/>
+  <rect x="22" y="22" width="1156" height="356" fill="none" stroke="#c9bea4" stroke-width="1"/>
+  <g transform="translate(200,200)">
+    <circle r="110" fill="none" stroke="#8a6b2f" stroke-width="3"/>
+    <circle r="96" fill="none" stroke="#8a6b2f" stroke-width="1"/>
+    <g stroke="#221f18" stroke-width="2">
+      <line x1="0" y1="-96" x2="0" y2="96"/>
+      <line x1="-96" y1="0" x2="96" y2="0"/>
+    </g>
+    <polygon points="0,-78 14,0 0,78 -14,0" fill="#8a6b2f"/>
+    <polygon points="-78,0 0,14 78,0 0,-14" fill="#221f18" opacity="0.75"/>
+    <circle r="8" fill="#f1ede2" stroke="#8a6b2f" stroke-width="2"/>
+    <text y="-122" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="28" fill="#6c5224">N</text>
+  </g>
+  <text x="360" y="188" font-family="Georgia, 'Times New Roman', serif" font-size="120" font-weight="600" letter-spacing="6" fill="#221f18">Scribe</text>
+  <line x1="364" y1="218" x2="1060" y2="218" stroke="#8a6b2f" stroke-width="2"/>
+  <text x="364" y="262" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="30" fill="#6f6752">A per-project knowledge library for your pi scribe</text>
+  <text x="364" y="308" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="22" fill="#6c5224">observe &#8594; scribe &#8594; recall &#183; no more repeated mistakes</text>
+</svg>
